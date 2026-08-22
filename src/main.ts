@@ -3,7 +3,8 @@
 import type { Road } from './world/road.ts';
 import { DEMO_ROADS } from './demo.ts';
 import { roadWidth } from './world/road.ts';
-import { buildWorld } from './world/world.ts';
+import { MAX_GRADE, buildWorld } from './world/world.ts';
+import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
 import { buildRoadRibbon, buildSurface } from './surface.ts';
 import { VIEWS, show } from './render.ts';
 import { createBuilder } from './build.ts';
@@ -11,8 +12,9 @@ import { createBuilder } from './build.ts';
 const startView = new URLSearchParams(location.search).get('view') ?? 'road';
 
 const roads: Road[] = [...DEMO_ROADS];
+let terrainName = DEFAULT_TERRAIN;
 
-let world = buildWorld(roads);
+let world = buildWorld(roads, terrainName);
 let surface = buildSurface(world);
 let rebuildMs = 0;
 
@@ -21,7 +23,7 @@ const canvas = document.querySelector('canvas');
 
 function rebuild(): void {
   const started = performance.now();
-  world = buildWorld(roads);
+  world = buildWorld(roads, terrainName);
   surface = buildSurface(world);
   rebuildMs = performance.now() - started;
   viewer.setSurface(surface);
@@ -40,7 +42,8 @@ function readout(): void {
       ['длина', `${Math.round(length)} м`],
       ['полос в сторону', String(builder.lanes())],
       ['ширина', `${widest.toFixed(2)} м`],
-      ['треугольников', surface.stats.triangles.toLocaleString('ru-RU')],
+      ['уклон', `${(world.grade * 100).toFixed(1)}% из ${(MAX_GRADE * 100).toFixed(0)}%`],
+      ['отрыв от земли', `${world.lift.toFixed(1)} м${world.lift > 6 ? ' — нужен мост' : ''}`],
       ['пересборка', `${rebuildMs.toFixed(0)} мс`],
     ];
     facts.innerHTML = rows.map(([k, v]) => `<div>${k} <b>${v}</b></div>`).join('');
@@ -57,7 +60,7 @@ const builder = createBuilder({
     readout();
   },
   preview: (road) => {
-    viewer.setGhost(road ? buildRoadRibbon(buildWorld([road]).shapes[0]) : null);
+    viewer.setGhost(road ? buildRoadRibbon(buildWorld([road], terrainName).shapes[0]) : null);
   },
 });
 
@@ -98,6 +101,21 @@ if (tools) {
     tools.querySelectorAll<HTMLButtonElement>('button[data-tool]').forEach((b) => {
       if (b.dataset.tool !== 'undo') b.setAttribute('aria-pressed', String(b.dataset.tool === tool));
     });
+  });
+}
+
+// --- кнопки рельефа ---
+const terrains = document.getElementById('terrains');
+if (terrains) {
+  terrains.innerHTML = Object.entries(TERRAINS)
+    .map(([key, t]) => `<button type="button" data-terrain="${key}" aria-pressed="${key === terrainName}">${t.label}</button>`)
+    .join('');
+  terrains.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-terrain]');
+    if (!button) return;
+    terrainName = button.dataset.terrain ?? DEFAULT_TERRAIN;
+    rebuild();
+    terrains.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
   });
 }
 

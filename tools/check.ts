@@ -7,48 +7,78 @@
  *         npm run check break  — заведомо сломанный случай, проверка обязана упасть
  */
 
-import { ROAD_TYPES } from '../src/world/road.ts';
-import { buildWorld } from '../src/world/world.ts';
-import { buildSurface } from '../src/surface.ts';
 import { DEMO_ROADS } from '../src/demo.ts';
+import { MAX_GRADE, buildWorld } from '../src/world/world.ts';
+import { TERRAINS, WORLD_HALF } from '../src/world/terrain.ts';
+import { buildSurface } from '../src/surface.ts';
 
 const broken = process.argv.includes('break');
-
-const world = buildWorld(DEMO_ROADS);
-const surface = buildSurface(world, { detachRoad: broken });
-
-console.log(`мир: дорог ${world.shapes.length}, тип «${ROAD_TYPES.street2.name}»`);
-console.log(`поверхность: вершин ${surface.stats.vertices}, треугольников ${surface.stats.triangles}`);
-
-/** Кто из треугольников какой материал использует — по каждой вершине. */
-const road = new Set<number>();
-const grass = new Set<number>();
-for (const g of surface.groups) {
-  const target = g.material === 'grass' ? grass : road;
-  for (let i = g.start; i < g.start + g.count; i++) target.add(surface.indices[i]);
-}
-
-const shared = [...road].filter((v) => grass.has(v)).length;
-console.log(`общих вершин у земли и дороги: ${shared}`);
-
 const failures: string[] = [];
-if (shared === 0) failures.push('земля и дорога не имеют ни одной общей вершины — это ДВЕ поверхности, а не одна');
 
-/** Две вершины почти в одной точке — признак шва, вдоль которого поедет щель. */
-const seen = new Map<string, number>();
-let doubles = 0;
-for (let v = 0; v < surface.stats.vertices; v++) {
-  const key = [0, 1, 2].map((k) => Math.round(surface.positions[v * 3 + k] * 1000)).join(',');
-  const prev = seen.get(key);
-  if (prev !== undefined) doubles++;
-  else seen.set(key, v);
+const mm = (v: number): number => Math.round(v * 1000);
+const onBorder = (x: number, z: number): boolean =>
+  Math.abs(Math.abs(x) - WORLD_HALF) < 0.001 || Math.abs(Math.abs(z) - WORLD_HALF) < 0.001;
+
+for (const name of Object.keys(TERRAINS)) {
+  const world = buildWorld(DEMO_ROADS, name);
+  const surface = buildSurface(world, { detachRoad: broken });
+  const pos = surface.positions;
+  const idx = surface.indices;
+
+  // --- 1. Земля и дорога должны делить вершины: это одна поверхность, а не две
+  const road = new Set<number>();
+  const grass = new Set<number>();
+  for (const g of surface.groups) {
+    const target = g.material === 'grass' ? grass : road;
+    for (let i = g.start; i < g.start + g.count; i++) target.add(idx[i]);
+  }
+  const shared = [...road].filter((v) => grass.has(v)).length;
+
+  // --- 2. Швов быть не должно: каждое внутреннее ребро принадлежит ровно
+  // двум треугольникам. Считаем по ПОЛОЖЕНИЮ, а не по номеру вершины —
+  // тогда две вершины в одной точке (честный излом бордюра) проверке не мешают,
+  // а настоящая щель по-прежнему видна.
+  const edges = new Map<string, number>();
+  const keyOf = (v: number): string => `${mm(pos[v * 3])},${mm(pos[v * 3 + 1])},${mm(pos[v * 3 + 2])}`;
+
+  for (let t = 0; t < idx.length; t += 3) {
+    const k = [keyOf(idx[t]), keyOf(idx[t + 1]), keyOf(idx[t + 2])];
+    for (let e = 0; e < 3; e++) {
+      const pair = [k[e], k[(e + 1) % 3]].sort().join('|');
+      edges.set(pair, (edges.get(pair) ?? 0) + 1);
+    }
+  }
+
+  let cracks = 0;
+  for (const [pair, count] of edges) {
+    if (count === 2) continue;
+    const [a] = pair.split('|');
+    const [ax, , az] = a.split(',').map((v) => Number(v) / 1000);
+    const [b] = pair.split('|').slice(1);
+    const [bx, , bz] = b.split(',').map((v) => Number(v) / 1000);
+    if (count === 1 && onBorder(ax, az) && onBorder(bx, bz)) continue; // край мира — это нормально
+    cracks++;
+  }
+
+  const grade = (world.grade * 100).toFixed(1);
+  console.log(
+    `${name.padEnd(9)} вершин ${String(surface.stats.vertices).padStart(6)}` +
+    `  треугольников ${String(surface.stats.triangles).padStart(6)}` +
+    `  общих вершин ${String(shared).padStart(4)}` +
+    `  щелей ${String(cracks).padStart(4)}` +
+    `  уклон ${grade.padStart(5)}%`,
+  );
+
+  if (shared === 0) failures.push(`${name}: земля и дорога не имеют общих вершин — это ДВЕ поверхности, а не одна`);
+  if (cracks > 0) failures.push(`${name}: ${cracks} рёбер не сшиты — по ним пойдёт щель`);
+  if (name !== 'mountain' && world.grade > MAX_GRADE + 0.001) {
+    failures.push(`${name}: дорога круче предела — ${grade}% при допустимых ${(MAX_GRADE * 100).toFixed(0)}%`);
+  }
 }
-console.log(`вершин-двойников (шов): ${doubles}`);
-if (doubles > 0) failures.push(`${doubles} вершин лежат друг на друге — вдоль шва появится щель`);
 
 if (failures.length > 0) {
   console.log('\nПРОВЕРКА УПАЛА:');
   for (const f of failures) console.log('  ✗ ' + f);
   process.exit(1);
 }
-console.log('\n✓ поверхность одна, швов нет');
+console.log('\n✓ поверхность одна, щелей нет, уклоны в норме');

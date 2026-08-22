@@ -10,11 +10,13 @@ import type { Point2 } from './world/road.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
-  asphalt: 0x40444a,
-  sidewalk: 0x9a988f,
-  marking: 0xe8e4d2,
+  asphalt: 0x3c4046,
+  // тротуар светлее асфальта, бордюр темнее тротуара: настоящий бордюр
+  // читается тёмной линией, потому что его вертикальная грань в тени
+  sidewalk: 0xbbb6a9,
+  curb: 0x807c72,
+  marking: 0xf0ecdc,
   median: 0x6f8a52,
-  curb: 0xb4b1a6,
 };
 
 interface View {
@@ -29,7 +31,7 @@ export const VIEWS: Record<string, View> = {
   over: { label: 'сверху', from: [-210, 155, -205], at: [0, -2, 0], fog: 900 },
   road: { label: 'вдоль', from: [-118, 52, -128], at: [15, 2, 8], fog: 480 },
   close: { label: 'вблизи', from: [-52, 14, -34], at: [-4, 4, 4], fog: 320 },
-  curb: { label: 'вплотную', from: [1.5, 7.6, 25.0], at: [15.5, 1.6, 20.5], fog: 150 },
+  curb: { label: 'с дороги', from: [-48.1, 1.1, -12.7], at: [-8.8, 2.5, 10.0], fog: 200 },
 };
 
 export interface Viewer {
