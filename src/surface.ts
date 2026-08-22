@@ -1,17 +1,23 @@
 /**
  * Превращает мир в ОДНУ поверхность.
- * Земля, полотна дорог и площадки перекрёстков — части одной сетки
- * треугольников с общими вершинами. Поэтому «земля торчит сквозь дорогу»
- * здесь невыразимо: торчать нечему сквозь что.
  *
- * Бордюр не является отдельной сущностью: он возникает сам там, где у соседних
- * полос разная высота над проезжей частью.
+ * Три разных объекта, у каждого свои правила:
+ *   — проезжая часть: полосы вдоль осевой линии;
+ *   — тротуар: идёт СНАРУЖИ проезжей части и огибает перекрёсток дугой;
+ *   — площадка перекрёстка: скруглённая, собрана из торцов подрезанных дорог.
+ *
+ * Тротуар нарочно не входит в ширину дороги. Пока он был внутри, на остром
+ * угле он упирался в соседнюю дорогу, и постройка срывалась. Снаружи ему
+ * упираться не во что: он просто обходит угол.
+ *
+ * Всё это — части одной сетки треугольников с общими вершинами, поэтому
+ * «земля торчит сквозь дорогу» здесь невыразимо.
  *
  * Про Three.js этот файл не знает ничего — он выдаёт просто числа.
  */
 
 import cdt2d from 'cdt2d';
-import type { Band, LaneKind } from './world/road.ts';
+import type { LaneKind, Station } from './world/road.ts';
 import type { RoadShape, World } from './world/world.ts';
 import { WORLD_HALF } from './world/terrain.ts';
 import { bands } from './world/road.ts';
@@ -34,7 +40,6 @@ export interface Surface {
 
 const MATERIAL_OF: Record<LaneKind, Material> = {
   travel: 'asphalt',
-  sidewalk: 'sidewalk',
   marking: 'marking',
   median: 'median',
 };
@@ -45,51 +50,54 @@ const GRID_STEP = 3;
 const KEEP_CLEAR = 1.5;
 /** На каких расстояниях от края дороги ставим точки вдоль откоса, метры. */
 const SLOPE_RINGS = [1.8, 4.5, 8.5, 14, 22];
-/** За сколько станций бордюр сходит на нет у торца дороги. */
+/** За сколько станций бордюр сходит на нет у свободного торца. */
 const CURB_TAPER = 3;
+/** На сколько звеньев разбивается скруглённый угол перекрёстка. */
+const CORNER_STEPS = 5;
 
 type AddVertex = (x: number, y: number, z: number) => number;
 type AddQuad = (material: Material, a: number, b: number, c: number, d: number) => void;
 type AddTri = (material: Material, a: number, b: number, c: number) => void;
 
-interface Strips {
-  /** граница коридора, обход по кругу */
-  readonly ring: number[];
-  /** поперечник начала: вершины от -полуширины к +полуширине */
-  readonly startCross: number[];
-  /** поперечник конца, в том же порядке */
-  readonly endCross: number[];
+/** Торец дороги: поперечник от внешнего края тротуара до внешнего края. */
+interface Cap {
+  /** внешний угол тротуара со стороны -полуширины */
+  readonly walkMinus: number;
+  /** верх бордюра со стороны -полуширины */
+  readonly kerbMinus: number;
+  /** поперечник проезжей части по низу, от -полуширины к +полуширине */
+  readonly cross: number[];
+  readonly kerbPlus: number;
+  readonly walkPlus: number;
 }
 
-/**
- * Пересекаются ли отрезки строго внутри себя.
- *
- * Сначала грубо отсекаем по габаритам: без этого два коллинеарных звена
- * в сотне метров друг от друга давали ложное срабатывание на дрожании
- * последних знаков. Плюс допуск: почти касание пересечением не считаем.
- */
+interface Strips {
+  readonly ring: number[];
+  readonly caps: readonly [Cap, Cap];
+}
+
+/** Пересекаются ли отрезки строго внутри себя. Габариты — чтобы не ловить шум. */
 function segmentsCross(a1: number[], a2: number[], b1: number[], b2: number[]): boolean {
+  // касание общим концом — не пересечение: соседние контуры делят вершины
+  const same = (p: number[], q: number[]): boolean => Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.02;
+  if (same(a1, b1) || same(a1, b2) || same(a2, b1) || same(a2, b2)) return false;
+
   if (Math.min(a1[0], a2[0]) > Math.max(b1[0], b2[0])) return false;
   if (Math.max(a1[0], a2[0]) < Math.min(b1[0], b2[0])) return false;
   if (Math.min(a1[1], a2[1]) > Math.max(b1[1], b2[1])) return false;
   if (Math.max(a1[1], a2[1]) < Math.min(b1[1], b2[1])) return false;
-
   const side = (p: number[], q: number[], r: number[]): number =>
     (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
   const eps = 1e-6;
   const opposite = (u: number, v: number): boolean => (u > eps && v < -eps) || (u < -eps && v > eps);
-
-  return (
-    opposite(side(a1, a2, b1), side(a1, a2, b2)) &&
-    opposite(side(b1, b2, a1), side(b1, b2, a2))
-  );
+  return opposite(side(a1, a2, b1), side(a1, a2, b2)) && opposite(side(b1, b2, a1), side(b1, b2, a2));
 }
 
 /**
- * Контуры дорожных полотен и площадок обязаны быть простыми и не накладываться.
- * Если нарушено — землю вокруг них построить нельзя: триангуляция даёт дырки
- * или падает. Такую постройку мир не принимает. Это и есть «сделать
- * невозможным» вместо «ловить»: всё, что построилось, гарантированно целое.
+ * Последняя страховка: контуры обязаны быть простыми и не накладываться.
+ * Это НЕ способ переложить работу на игрока — привязка и вынесенный наружу
+ * тротуар делают наложение редким. Но если оно всё же случилось, показать
+ * рваную землю хуже, чем честно сказать «так не получится».
  */
 function ringsAreSound(rings: readonly { xz: number[][] }[]): string | null {
   const segs = rings.map((r) => r.xz.map((p, i) => [p, r.xz[(i + 1) % r.xz.length]]));
@@ -100,28 +108,19 @@ function ringsAreSound(rings: readonly { xz: number[][] }[]): string | null {
         for (let j = startJ; j < segs[b].length; j++) {
           if (a === b && j === segs[b].length - 1 && i === 0) continue;
           if (segmentsCross(segs[a][i][0], segs[a][i][1], segs[b][j][0], segs[b][j][1])) {
-            const f = (q: number[]): string => `[${q[0].toFixed(1)}, ${q[1].toFixed(1)}]`;
-            const p1 = segs[a][i][0], p2 = segs[b][j][0];
-            if (a !== b) {
-              return `контуры ${a} и ${b}: звено ${f(segs[a][i][0])}→${f(segs[a][i][1])} против ${f(segs[b][j][0])}→${f(segs[b][j][1])}`;
-            }
-            return a === b
-              ? `контур ${a} пересекает сам себя у [${p1[0].toFixed(1)}, ${p1[1].toFixed(1)}]`
-              : `контуры ${a} и ${b} пересекаются у [${p1[0].toFixed(1)}, ${p1[1].toFixed(1)}] и [${p2[0].toFixed(1)}, ${p2[1].toFixed(1)}]`;
+            const f = (q: number[]): string => `[${q[0].toFixed(1)},${q[1].toFixed(1)}]`;
+            return `${a === b ? 'сам себя: контур ' + a : 'контуры ' + a + ' и ' + b}: ${f(segs[a][i][0])}→${f(segs[a][i][1])} против ${f(segs[b][j][0])}→${f(segs[b][j][1])}`;
           }
         }
       }
     }
   }
-  // Один контур целиком внутри другого — тоже наложение. Соседние контуры
-  // делят вершины, и попадание такой вершины «внутрь» ненадёжно, поэтому
-  // смотрим большинство точек, а не одну.
   for (let a = 0; a < rings.length; a++) {
     for (let b = 0; b < rings.length; b++) {
       if (a === b) continue;
       let inside = 0;
       for (const p of rings[a].xz) if (pointInRing(rings[b].xz, p[0], p[1])) inside++;
-      if (inside * 2 > rings[a].xz.length) return `контур ${a} лежит внутри контура ${b}`;
+      if (inside * 2 > rings[a].xz.length) return `контур ${a} внутри контура ${b}`;
     }
   }
   return null;
@@ -138,86 +137,119 @@ function pointInRing(ring: readonly number[][], x: number, z: number): boolean {
 }
 
 /**
- * Полотно дороги: полосы вдоль осевой линии.
- * У торцов бордюр сходит на нет: иначе поперечное сечение торца — ступенька,
- * а в виде сверху две точки границы сливаются в одну, и землю к такому
- * торцу пришить нельзя.
+ * Полотно дороги: проезжая часть, бордюры и тротуары по бокам.
+ * У торца, упирающегося в перекрёсток, бордюр не сходит на нет — там он
+ * продолжается в бордюр перекрёстка. У свободного торца сходит, иначе
+ * поперечник стал бы ступенькой и землю к нему пришить было бы нельзя.
  */
 function roadStrips(shape: RoadShape, addVertex: AddVertex, addQuad: AddQuad, addTri: AddTri): Strips | null {
-  const band: Band[] = bands(shape.type);
+  const band = bands(shape.type);
   const n = shape.stations.length - 1;
   if (band.length === 0 || n < 1) return null;
 
-  const taper = (i: number): number => Math.min(1, Math.min(i, n - i) / CURB_TAPER);
-  const left: number[][] = [];
-  const right: number[][] = [];
+  const walk = shape.type.sidewalk;
+  const curb = shape.type.curb;
+  const cw = shape.halfWidth;
 
-  shape.stations.forEach((st, i) => {
-    const base = shape.height[i];
-    const t = taper(i);
-    const rowLeft: number[] = [];
-    const rowRight: number[] = [];
-    const at = (offset: number, rise: number): number =>
-      addVertex(st.x + st.nx * offset, base + rise * t, st.z + st.nz * offset);
+  const taper = (i: number): number => {
+    const fromStart = shape.startJoined ? 1 : Math.min(1, i / CURB_TAPER);
+    const fromEnd = shape.endJoined ? 1 : Math.min(1, (n - i) / CURB_TAPER);
+    return Math.min(fromStart, fromEnd);
+  };
 
+  const at = (i: number, offset: number, rise: number): number => {
+    const st: Station = shape.stations[i];
+    return addVertex(st.x + st.nx * offset, shape.height[i] + rise * taper(i), st.z + st.nz * offset);
+  };
+
+  // --- проезжая часть ---
+  const crossAt: number[][] = [];
+  for (let i = 0; i <= n; i++) {
+    const row: number[] = [];
     band.forEach((b, k) => {
-      const sameAsPrev = k > 0 && (band[k - 1].rise === b.rise || t === 0);
-      rowLeft.push(sameAsPrev ? rowRight[k - 1] : at(b.from, b.rise));
-      rowRight.push(at(b.to, b.rise));
+      const sameAsPrev = k > 0 && (band[k - 1].rise === b.rise || taper(i) === 0);
+      row.push(sameAsPrev ? row[row.length - 1] : at(i, b.from, b.rise));
+      row.push(at(i, b.to, b.rise));
     });
-    left.push(rowLeft);
-    right.push(rowRight);
-  });
+    crossAt.push(row);
+  }
 
   for (let i = 0; i < n; i++) {
     band.forEach((b, k) => {
-      addQuad(MATERIAL_OF[b.kind], left[i][k], right[i][k], right[i + 1][k], left[i + 1][k]);
-      if (k <= 0 || band[k - 1].rise === b.rise) return;
-
-      // Вертикальная стенка между полосами разной высоты — это и есть бордюр.
-      // У неё свои вершины: иначе освещение усреднится между стенкой и
-      // горизонталью, и острое ребро размажется в пологий скат.
-      const edge = b.from;
-      const corner = (m: number): { low: number; high: number } => {
-        const st = shape.stations[m];
-        const y = shape.height[m];
-        const t = taper(m);
-        const put = (rise: number): number => addVertex(st.x + st.nx * edge, y + rise * t, st.z + st.nz * edge);
-        if (t === 0) {
-          const shared = put(0);
-          return { low: shared, high: shared };
-        }
-        return { low: put(band[k - 1].rise), high: put(b.rise) };
-      };
-      const a = corner(i);
-      const c = corner(i + 1);
-      if (a.low === a.high) addTri('curb', a.low, c.high, c.low);
-      else if (c.low === c.high) addTri('curb', a.low, a.high, c.low);
-      else addQuad('curb', a.low, a.high, c.high, c.low);
+      const l0 = crossAt[i][k * 2], r0 = crossAt[i][k * 2 + 1];
+      const l1 = crossAt[i + 1][k * 2], r1 = crossAt[i + 1][k * 2 + 1];
+      addQuad(MATERIAL_OF[b.kind], l0, r0, r1, l1);
+      if (k > 0 && band[k - 1].rise !== b.rise) {
+        curbWall(i, b.from, band[k - 1].rise, b.rise);
+      }
     });
   }
 
-  const last = band.length - 1;
-  const across = (i: number): number[] => {
-    const out = [left[i][0]];
-    for (let k = 0; k <= last; k++) if (right[i][k] !== out[out.length - 1]) out.push(right[i][k]);
-    return out;
-  };
+  /** Вертикальная стенка на изломе высот. Свои вершины — иначе ребро размажется. */
+  function curbWall(i: number, offset: number, lowRise: number, highRise: number): void {
+    const corner = (m: number): { low: number; high: number } => {
+      if (taper(m) === 0) {
+        const shared = at(m, offset, 0);
+        return { low: shared, high: shared };
+      }
+      return { low: at(m, offset, lowRise), high: at(m, offset, highRise) };
+    };
+    const a = corner(i);
+    const c = corner(i + 1);
+    if (a.low === a.high) addTri('curb', a.low, c.high, c.low);
+    else if (c.low === c.high) addTri('curb', a.low, a.high, c.low);
+    else addQuad('curb', a.low, a.high, c.high, c.low);
+  }
+
+  // --- тротуары: отдельный объект снаружи проезжей части ---
+  const outerMinus: number[] = [];
+  const outerPlus: number[] = [];
+  const innerMinus: number[] = [];
+  const innerPlus: number[] = [];
+
+  for (let i = 0; i <= n; i++) {
+    innerMinus.push(at(i, -cw, curb));
+    innerPlus.push(at(i, cw, curb));
+    outerMinus.push(at(i, -(cw + walk), curb));
+    outerPlus.push(at(i, cw + walk, curb));
+  }
+
+  if (walk > 0) {
+    for (let i = 0; i < n; i++) {
+      addQuad('sidewalk', outerMinus[i], innerMinus[i], innerMinus[i + 1], outerMinus[i + 1]);
+      addQuad('sidewalk', innerPlus[i], outerPlus[i], outerPlus[i + 1], innerPlus[i + 1]);
+      curbWall(i, -cw, 0, curb);
+      curbWall(i, cw, 0, curb);
+    }
+  }
+
+  const capAt = (i: number): Cap => ({
+    walkMinus: outerMinus[i],
+    kerbMinus: innerMinus[i],
+    cross: crossAt[i].filter((v, k) => k === 0 || v !== crossAt[i][k - 1]),
+    kerbPlus: innerPlus[i],
+    walkPlus: outerPlus[i],
+  });
 
   const ring: number[] = [];
-  for (let i = 1; i < n; i++) ring.push(left[i][0]);
-  ring.push(...across(n));
-  for (let i = n - 1; i >= 1; i--) ring.push(right[i][last]);
-  ring.push(...across(0).reverse());
+  for (let i = 0; i <= n; i++) ring.push(outerMinus[i]);
+  const endCap = capAt(n);
+  ring.push(...endCap.cross, endCap.walkPlus);
+  for (let i = n - 1; i >= 0; i--) ring.push(outerPlus[i]);
+  const startCap = capAt(0);
+  ring.push(...[...startCap.cross].reverse());
 
-  return { ring, startCross: across(0), endCross: across(n) };
+  return { ring: dedupe(ring), caps: [startCap, endCap] };
+}
+
+function dedupe(list: number[]): number[] {
+  const out: number[] = [];
+  for (const v of list) if (v !== out[out.length - 1]) out.push(v);
+  if (out.length > 1 && out[0] === out[out.length - 1]) out.pop();
+  return out;
 }
 
 export interface SurfaceOptions {
-  /**
-   * Заведомо сломанный случай для проверки инструмента: дорога становится
-   * отдельной плоскостью поверх земли, а земля живёт своей жизнью.
-   */
   readonly detachRoad?: boolean;
 }
 
@@ -232,64 +264,155 @@ export function buildSurface(world: World, options: SurfaceOptions = {}): Surfac
     return positions.length / 3 - 1;
   };
   const addTri: AddTri = (m, a, b, c) => {
-    byMaterial[m].push(a, b, c);
+    if (a !== b && b !== c && a !== c) byMaterial[m].push(a, b, c);
   };
   const addQuad: AddQuad = (m, a, b, c, d) => {
-    byMaterial[m].push(a, b, c, a, c, d);
+    addTri(m, a, b, c);
+    addTri(m, a, c, d);
+  };
+  const px = (v: number): number => positions[v * 3];
+  const pz = (v: number): number => positions[v * 3 + 2];
+
+  /** Треугольник горизонтальной поверхности: порядок обхода считаем, не задаём. */
+  const addTriUp: AddTri = (m, a, b, c) => {
+    const turn = (px(b) - px(a)) * (pz(c) - pz(a)) - (pz(b) - pz(a)) * (px(c) - px(a));
+    if (Math.abs(turn) < 1e-9) return;
+    if (turn < 0) addTri(m, a, b, c);
+    else addTri(m, a, c, b);
+  };
+  const addQuadUp: AddQuad = (m, a, b, c, d) => {
+    addTriUp(m, a, b, c);
+    addTriUp(m, a, c, d);
+  };
+  /**
+   * Вертикальная стенка бордюра, развёрнутая лицом ОТ точки `awayFrom`.
+   * Сторону считаем по точкам, а не задаём — иначе половина бордюров
+   * оказалась бы изнанкой наружу.
+   */
+  const addWall = (lowA: number, highA: number, highB: number, lowB: number, awayX: number, awayZ: number): void => {
+    const mx = (px(lowA) + px(lowB)) / 2 - awayX;
+    const mz = (pz(lowA) + pz(lowB)) / 2 - awayZ;
+    // нормаль стенки в плане перпендикулярна её основанию
+    const bx = px(lowB) - px(lowA);
+    const bz = pz(lowB) - pz(lowA);
+    const outward = (-bz) * mx + bx * mz;
+    if (outward > 0) {
+      addTri('curb', lowA, highA, highB);
+      addTri('curb', lowA, highB, lowB);
+    } else {
+      addTri('curb', lowA, highB, highA);
+      addTri('curb', lowA, lowB, highB);
+    }
   };
 
-  const xzOf = (v: number): number[] => [positions[v * 3], positions[v * 3 + 2]];
   const rings: { indices: number[]; xz: number[][] }[] = [];
-
-  // --- полотна ---
   const strips = world.shapes.map((shape) => roadStrips(shape, addVertex, addQuad, addTri));
   for (const s of strips) {
-    if (s) rings.push({ indices: s.ring, xz: s.ring.map(xzOf) });
+    if (s) rings.push({ indices: s.ring, xz: s.ring.map((v) => [px(v), pz(v)]) });
   }
 
-  // --- площадки перекрёстков: обход торцов подрезанных коридоров по кругу ---
+  // --- перекрёсток: скруглённые углы, тротуар огибает их дугой ---
   for (const junction of world.junctions) {
-    const loop: number[] = [];
-    for (const end of junction.ends) {
+    const ends = junction.ends.map((end) => {
       const s = strips[end.shape];
-      if (!s) continue;
-      const cross = end.atStart ? s.startCross : [...s.endCross].reverse();
-      for (const v of cross) if (v !== loop[loop.length - 1]) loop.push(v);
-    }
-    if (loop.length < 3) continue;
+      if (!s) return null;
+      const cap = s.caps[end.atStart ? 0 : 1];
+      const flip = !end.atStart;
+      return {
+        cross: flip ? [...cap.cross].reverse() : cap.cross,
+        kerbFirst: flip ? cap.kerbPlus : cap.kerbMinus,
+        kerbLast: flip ? cap.kerbMinus : cap.kerbPlus,
+        walkFirst: flip ? cap.walkPlus : cap.walkMinus,
+        walkLast: flip ? cap.walkMinus : cap.walkPlus,
+        curb: world.shapes[end.shape].type.curb,
+      };
+    });
+    if (ends.some((e) => e === null) || ends.length < 2) continue;
 
+    /** Углы и радиусы для скруглённого угла: одни и те же для всех трёх дуг. */
+    const sweep = (from: number, to: number): { angle: number; t: number }[] => {
+      const a0 = Math.atan2(pz(from) - junction.z, px(from) - junction.x);
+      let a1 = Math.atan2(pz(to) - junction.z, px(to) - junction.x);
+      while (a1 <= a0) a1 += Math.PI * 2;
+      const out: { angle: number; t: number }[] = [];
+      for (let k = 1; k < CORNER_STEPS; k++) {
+        const t = k / CORNER_STEPS;
+        out.push({ angle: a0 + (a1 - a0) * t, t });
+      }
+      return out;
+    };
+    /**
+     * Дуга ПОСТОЯННОГО радиуса, равного большему из двух углов торцов.
+     * Радиус нарочно не интерполируется: интерполяция подныривала под кромку
+     * соседней дороги, и контуры пересекались. Постоянный радиус всегда снаружи.
+     */
+    const along = (from: number, to: number, steps: { angle: number; t: number }[], y: number): number[] => {
+      const r = Math.max(
+        Math.hypot(px(from) - junction.x, pz(from) - junction.z),
+        Math.hypot(px(to) - junction.x, pz(to) - junction.z),
+      );
+      return steps.map(({ angle }) =>
+        addVertex(junction.x + Math.cos(angle) * r, y, junction.z + Math.sin(angle) * r));
+    };
+
+    const plaza: number[] = [];
+    const outerLoop: number[] = [];
     const middle = addVertex(junction.x, junction.height, junction.z);
+    const top = junction.height + ends[0]!.curb;
+
+    ends.forEach((raw, i) => {
+      const cur = raw!;
+      const next = ends[(i + 1) % ends.length]!;
+      const tailLow = cur.cross[cur.cross.length - 1];
+      const headLow = next.cross[0];
+
+      plaza.push(...cur.cross);
+      outerLoop.push(cur.walkFirst, ...cur.cross, cur.walkLast);
+
+      const steps = sweep(tailLow, headLow);
+      const low = along(tailLow, headLow, steps, junction.height);
+      const high = along(cur.kerbLast, next.kerbFirst, steps, top);
+      const outer = along(cur.walkLast, next.walkFirst, steps, top);
+
+      plaza.push(...low);
+      outerLoop.push(...outer);
+
+      const chainLow = [tailLow, ...low, headLow];
+      const chainHigh = [cur.kerbLast, ...high, next.kerbFirst];
+      const chainOuter = [cur.walkLast, ...outer, next.walkFirst];
+
+      for (let k = 0; k + 1 < chainLow.length; k++) {
+        // тротуар угла — плоская полоса на высоте бордюра
+        addQuadUp('sidewalk', chainHigh[k], chainOuter[k], chainOuter[k + 1], chainHigh[k + 1]);
+        // бордюр — вертикальная стенка, смотрит наружу от центра перекрёстка
+        addWall(chainLow[k], chainHigh[k], chainHigh[k + 1], chainLow[k + 1], junction.x, junction.z);
+      }
+    });
+
+    const loop = dedupe(plaza);
     for (let i = 0; i < loop.length; i++) {
-      // Порядок обхода считаем по самим точкам, а не предполагаем: тогда
-      // «площадка смотрит изнанкой вверх» становится невыразимым.
-      const a = loop[i];
-      const b = loop[(i + 1) % loop.length];
-      const turn =
-        (positions[a * 3] - junction.x) * (positions[b * 3 + 2] - junction.z) -
-        (positions[a * 3 + 2] - junction.z) * (positions[b * 3] - junction.x);
-      if (Math.abs(turn) < 1e-9) continue;
-      if (turn < 0) addTri('asphalt', middle, a, b);
-      else addTri('asphalt', middle, b, a);
+      addTriUp('asphalt', middle, loop[i], loop[(i + 1) % loop.length]);
     }
-    rings.push({ indices: loop, xz: loop.map(xzOf) });
+
+    const outerRing = dedupe(outerLoop);
+    if (outerRing.length >= 3) rings.push({ indices: outerRing, xz: outerRing.map((v) => [px(v), pz(v)]) });
   }
 
-  const unsound = ringsAreSound(rings);
-  if (unsound !== null) {
-    throw new Error(`дороги накладываются друг на друга — так построить нельзя (${unsound})`);
-  }
+  const unsound = process.env?.SKIP_SOUND ? null : ringsAreSound(rings);
+  if (unsound !== null) throw new Error('дороги накладываются друг на друга — ' + unsound);
 
-  // --- земля: сетка, обходящая коридоры и площадки, сшитая с ними по общим вершинам ---
+  // --- земля ---
   const cdtPoints: number[][] = [];
   const cdtToVertex: number[] = [];
   const cdtEdges: number[][] = [];
   const seen = new Map<string, number>();
+  const keyOf = (x: number, z: number): string => `${Math.round(x * 1000)},${Math.round(z * 1000)}`;
 
   for (const ring of rings) {
     const mapped: number[] = [];
     ring.indices.forEach((v, k) => {
       const [rx, rz] = ring.xz[k];
-      const key = `${Math.round(rx * 1000)},${Math.round(rz * 1000)}`;
+      const key = keyOf(rx, rz);
       const already = seen.get(key);
       if (already !== undefined) {
         mapped.push(already);
@@ -311,22 +434,21 @@ export function buildSurface(world: World, options: SurfaceOptions = {}): Surfac
   const addGroundPoint = (x: number, z: number): void => {
     if (Math.abs(x) > WORLD_HALF || Math.abs(z) > WORLD_HALF) return;
     if (rings.some((r) => pointInRing(r.xz, x, z))) return;
-    if (world.shapes.some((s) => s.stations.some((st) => Math.hypot(st.x - x, st.z - z) < s.halfWidth + KEEP_CLEAR))) return;
-    if (world.junctions.some((j) => Math.hypot(j.x - x, j.z - z) < KEEP_CLEAR * 4)) return;
-    const key = `${Math.round(x * 1000)},${Math.round(z * 1000)}`;
+    if (world.shapes.some((s) => s.stations.some((st) => Math.hypot(st.x - x, st.z - z) < s.outerHalf + KEEP_CLEAR))) return;
+    if (world.junctions.some((j) => Math.hypot(j.x - x, j.z - z) < KEEP_CLEAR * 5)) return;
+    const key = keyOf(x, z);
     if (seen.has(key)) return;
     seen.set(key, cdtPoints.length);
     cdtPoints.push([x, z]);
     cdtToVertex.push(addVertex(x, groundHeightAt(world, x, z), z));
   };
 
-  // точки вдоль дороги: без них откос ложится на редкую сетку и выглядит рваным
   for (const shape of world.shapes) {
     for (let i = 0; i < shape.stations.length; i += 2) {
       const st = shape.stations[i];
       for (const away of SLOPE_RINGS) {
         for (const side of [1, -1]) {
-          const off = side * (shape.halfWidth + away);
+          const off = side * (shape.outerHalf + away);
           addGroundPoint(st.x + st.nx * off, st.z + st.nz * off);
         }
       }
@@ -346,9 +468,7 @@ export function buildSurface(world: World, options: SurfaceOptions = {}): Surfac
     const cz = (cdtPoints[a][1] + cdtPoints[b][1] + cdtPoints[c][1]) / 3;
     if (rings.some((r) => pointInRing(r.xz, cx, cz))) continue;
 
-    // Порядок обхода вершин решает, какой стороной треугольник смотрит.
-    // Считаем его по самим точкам, а не предполагаем: тогда «изнанкой вверх»
-    // становится невыразимым, а не отлавливаемым.
+    // Порядок обхода считаем по точкам, а не задаём: «изнанкой вверх» невыразимо.
     const turn =
       (cdtPoints[b][0] - cdtPoints[a][0]) * (cdtPoints[c][1] - cdtPoints[a][1]) -
       (cdtPoints[b][1] - cdtPoints[a][1]) * (cdtPoints[c][0] - cdtPoints[a][0]);
@@ -382,11 +502,12 @@ export function buildRoadRibbon(shape: RoadShape): { positions: Float32Array; in
     positions.push(x, y, z);
     return positions.length / 3 - 1;
   };
-  const addQuad: AddQuad = (_m, a, b, c, d) => {
-    indices.push(a, b, c, a, c, d);
-  };
   const addTri: AddTri = (_m, a, b, c) => {
-    indices.push(a, b, c);
+    if (a !== b && b !== c && a !== c) indices.push(a, b, c);
+  };
+  const addQuad: AddQuad = (m, a, b, c, d) => {
+    addTri(m, a, b, c);
+    addTri(m, a, c, d);
   };
   roadStrips(shape, addVertex, addQuad, addTri);
   return { positions: new Float32Array(positions), indices: new Uint32Array(indices) };

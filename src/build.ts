@@ -20,6 +20,8 @@ import { roadTypeForLanes } from './world/road.ts';
 export type Phase = 'off' | 'idle' | 'drawing' | 'width';
 
 export interface Builder {
+  /** к чему сейчас прилипнет курсор; пустая строка — ни к чему */
+  snapped(): string;
   /** Включить или выключить режим строительства. */
   setActive(on: boolean): void;
   phase(): Phase;
@@ -40,6 +42,11 @@ export interface BuilderOptions {
   readonly onState: () => void;
   /** Показать призрак будущей дороги. */
   readonly preview: (road: Road | null) => void;
+  /**
+   * Привязка к существующей сети. Инструмент не заставляет игрока попадать
+   * мышью в пиксель: он распознаёт намерение и подставляет точную точку.
+   */
+  readonly snap: (point: Point2) => { point: Point2; kind: string } | null;
 }
 
 /** Ближе этого точки подряд не ставим — кривая вырождается. */
@@ -52,7 +59,20 @@ const PIXELS_PER_LANE = 70;
 const CURVE_STEPS = 6;
 
 export function createBuilder(options: BuilderOptions): Builder {
-  const { viewer, canvas, roads, onChanged, onState, preview } = options;
+  const { viewer, canvas, roads, onChanged, onState, preview, snap } = options;
+  let snapKind = '';
+
+  /** Точка под курсором с учётом привязки. */
+  const place = (event: PointerEvent | MouseEvent): Point2 | null => {
+    const raw = viewer.pick(event);
+    if (!raw) {
+      snapKind = '';
+      return null;
+    }
+    const hit = snap(raw);
+    snapKind = hit ? hit.kind : '';
+    return hit ? hit.point : raw;
+  };
 
   let phase: Phase = 'off';
   let points: Point2[] = [];
@@ -113,7 +133,7 @@ export function createBuilder(options: BuilderOptions): Builder {
   canvas.addEventListener('pointerdown', (event) => {
     if (phase === 'off' || event.button !== 0) return;
     pressScreen = { x: event.clientX, y: event.clientY };
-    pressGround = viewer.pick(event);
+    pressGround = place(event);
     handle = null;
   });
 
@@ -130,7 +150,9 @@ export function createBuilder(options: BuilderOptions): Builder {
       return;
     }
 
-    const ground = viewer.pick(event);
+    const before = snapKind;
+    const ground = place(event);
+    if (before !== snapKind) onState();
     if (!ground) return;
 
     // зажал и тянет — участок изгибается
@@ -156,7 +178,7 @@ export function createBuilder(options: BuilderOptions): Builder {
     }
 
     const press = pressScreen;
-    const ground = pressGround ?? viewer.pick(event);
+    const ground = pressGround ?? place(event);
     pressScreen = null;
     pressGround = null;
     if (!press || !ground) return;
@@ -213,6 +235,7 @@ export function createBuilder(options: BuilderOptions): Builder {
     },
     phase: () => phase,
     lanes: () => lanes,
+    snapped: () => snapKind,
     cancel: () => reset(),
     undo() {
       reset();
