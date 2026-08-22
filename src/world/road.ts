@@ -35,6 +35,36 @@ export interface RoadType {
 const MARK = 0.16;
 const CURB = 0.15;
 
+/**
+ * Тип дороги по числу полос в каждую сторону.
+ * Ширина — не отдельное свойство: она складывается из списка полос.
+ * Поэтому «дорога шириной 3.7 полосы» невыразима.
+ */
+export function roadTypeForLanes(perSide: number): RoadType {
+  const n = Math.max(1, Math.min(4, Math.round(perSide)));
+  const travel = (direction: -1 | 1): Lane => ({ kind: 'travel', width: 3.5, direction, rise: 0 });
+  const mark: Lane = { kind: 'marking', width: MARK, direction: 0, rise: 0 };
+  const walk: Lane = { kind: 'sidewalk', width: n >= 3 ? 3.2 : 2.4, direction: 0, rise: CURB };
+
+  const side = (direction: -1 | 1): Lane[] => {
+    const lanes: Lane[] = [];
+    for (let i = 0; i < n; i++) {
+      if (i > 0) lanes.push(mark);
+      lanes.push(travel(direction));
+    }
+    return lanes;
+  };
+
+  const middle: Lane[] = n >= 2
+    ? [{ kind: 'median', width: 2.0, direction: 0, rise: CURB }]
+    : [mark];
+
+  return {
+    name: n === 1 ? 'улица, 2 полосы' : `дорога, ${n * 2} полос`,
+    lanes: [walk, ...side(1), ...middle, ...side(-1), walk],
+  };
+}
+
 export const ROAD_TYPES: Record<string, RoadType> = {
   street2: {
     name: 'улица, 2 полосы',

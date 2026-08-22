@@ -2,7 +2,7 @@
 
 import type { Road } from './world/road.ts';
 import { DEMO_ROADS } from './demo.ts';
-import { ROAD_TYPES, roadWidth } from './world/road.ts';
+import { roadWidth } from './world/road.ts';
 import { buildWorld } from './world/world.ts';
 import { buildRoadRibbon, buildSurface } from './surface.ts';
 import { VIEWS, show } from './render.ts';
@@ -38,8 +38,9 @@ function readout(): void {
   if (facts) {
     const rows: [string, string][] = [
       ['длина', `${Math.round(length)} м`],
+      ['полос в сторону', String(builder.lanes())],
       ['ширина', `${widest.toFixed(2)} м`],
-      ['поверхность', `${surface.stats.triangles.toLocaleString('ru-RU')} треугольников, одна`],
+      ['треугольников', surface.stats.triangles.toLocaleString('ru-RU')],
       ['пересборка', `${rebuildMs.toFixed(0)} мс`],
     ];
     facts.innerHTML = rows.map(([k, v]) => `<div>${k} <b>${v}</b></div>`).join('');
@@ -51,7 +52,10 @@ const builder = createBuilder({
   canvas: canvas ?? document.body,
   roads,
   onChanged: rebuild,
-  onState: hint,
+  onState: () => {
+    hint();
+    readout();
+  },
   preview: (road) => {
     viewer.setGhost(road ? buildRoadRibbon(buildWorld([road]).shapes[0]) : null);
   },
@@ -72,16 +76,12 @@ if (views) {
 }
 
 // --- кнопки строительства ---
-let activeTool = 'look';
+let building = false;
 const tools = document.getElementById('tools');
 if (tools) {
-  const buttons = [
-    ['look', 'смотреть'],
-    ...Object.entries(ROAD_TYPES).map(([key, t]) => [key, t.name] as [string, string]),
-  ] as [string, string][];
-
   tools.innerHTML =
-    buttons.map(([key, label]) => `<button type="button" data-tool="${key}" aria-pressed="${key === activeTool}">${label}</button>`).join('') +
+    '<button type="button" data-tool="look" aria-pressed="true">смотреть</button>' +
+    '<button type="button" data-tool="road" aria-pressed="false">дорога</button>' +
     '<button type="button" class="plain" data-tool="undo">убрать последнюю</button>';
 
   tools.addEventListener('click', (event) => {
@@ -93,23 +93,24 @@ if (tools) {
       builder.undo();
       return;
     }
-    activeTool = tool;
-    builder.setType(tool === 'look' ? null : ROAD_TYPES[tool]);
+    building = tool === 'road';
+    builder.setActive(building);
     tools.querySelectorAll<HTMLButtonElement>('button[data-tool]').forEach((b) => {
       if (b.dataset.tool !== 'undo') b.setAttribute('aria-pressed', String(b.dataset.tool === tool));
     });
   });
 }
 
+const HINTS: Record<string, string> = {
+  off: 'перетаскивай — поворот    колесо — приближение',
+  idle: 'клик по земле — начать дорогу    правая кнопка — поворот камеры',
+  drawing: 'клик — участок прямой    зажми и потяни — участок изогнётся    Esc — закончить линию',
+  width: 'веди мышь — число полос щёлкает    клик — готово',
+};
+
 function hint(): void {
   const node = document.getElementById('hint');
-  if (!node) return;
-  node.textContent =
-    activeTool === 'look'
-      ? 'перетаскивай — поворот    колесо — приближение'
-      : builder.isBuilding()
-        ? 'клик — следующая точка    Esc или двойной клик — закончить    правая кнопка — поворот'
-        : 'клик по земле — начать дорогу    правая кнопка — поворот камеры';
+  if (node) node.textContent = HINTS[builder.phase()] ?? HINTS.off;
 }
 
 readout();
