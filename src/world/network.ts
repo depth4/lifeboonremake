@@ -172,39 +172,10 @@ export function planarize(roads: readonly Road[]): Network {
  * Насколько подрезать коридор у узла, чтобы полотна не налезали друг на друга.
  * Берём самую широкую из сходящихся дорог с запасом.
  */
-/** Наибольшая разумная подрезка: дальше проще признать, что так не строится. */
-export const MAX_TRIM = 45;
-
-/**
- * Насколько подрезать коридоры у узла, чтобы полотна не налезали.
- *
- * Считается из САМОГО ОСТРОГО угла между сходящимися дорогами: чем острее
- * угол, тем дальше надо отойти, чтобы полотна разошлись. Формула та же,
- * что у обычной развязки: половина ширины, делённая на тангенс половины угла.
- * Раньше подрезка была постоянной, и острые углы поэтому не строились.
- */
 export function trimRadius(network: Network, node: number): number {
   let widest = 0;
-  const angles: number[] = [];
-
   for (const edge of network.edges) {
-    if (edge.from !== node && edge.to !== node) continue;
-    widest = Math.max(widest, roadWidth(edge.type) / 2 + edge.type.sidewalk);
-    const line = edge.line;
-    const away = edge.from === node
-      ? { x: line[1].x - line[0].x, z: line[1].z - line[0].z }
-      : { x: line[line.length - 2].x - line[line.length - 1].x, z: line[line.length - 2].z - line[line.length - 1].z };
-    angles.push(Math.atan2(away.z, away.x));
+    if (edge.from === node || edge.to === node) widest = Math.max(widest, roadWidth(edge.type) / 2);
   }
-  if (angles.length < 2) return 0;
-
-  angles.sort((a, b) => a - b);
-  let sharpest = Math.PI * 2;
-  for (let i = 0; i < angles.length; i++) {
-    const next = i + 1 < angles.length ? angles[i + 1] : angles[0] + Math.PI * 2;
-    sharpest = Math.min(sharpest, next - angles[i]);
-  }
-
-  const half = Math.max(sharpest / 2, 0.06);
-  return Math.min(MAX_TRIM, widest / Math.tan(half) + widest * 0.35 + 1.5);
+  return widest * 1.35 + 1;
 }

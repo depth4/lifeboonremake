@@ -9,7 +9,7 @@ export interface Point2 {
   readonly z: number;
 }
 
-export type LaneKind = 'travel' | 'marking' | 'median';
+export type LaneKind = 'travel' | 'sidewalk' | 'marking' | 'median';
 
 /** Одна полоса вдоль осевой линии. */
 export interface Lane {
@@ -26,21 +26,10 @@ export interface Lane {
   readonly rise: number;
 }
 
-/**
- * Тип дороги — это данные, а не код.
- *
- * ВАЖНО: `lanes` — это только ПРОЕЗЖАЯ ЧАСТЬ. Тротуар сюда не входит:
- * это отдельный объект со своими правилами, который идёт снаружи проезжей
- * части и огибает перекрёстки дугой. Пока тротуар был внутри ширины дороги,
- * на остром угле он упирался в соседнюю дорогу и постройка срывалась.
- */
+/** Тип дороги — это данные, а не код. Новый тип = новая запись здесь. */
 export interface RoadType {
   readonly name: string;
   readonly lanes: readonly Lane[];
-  /** ширина тротуара с каждой стороны, 0 — тротуара нет */
-  readonly sidewalk: number;
-  /** высота бордюра над проезжей частью */
-  readonly curb: number;
 }
 
 const MARK = 0.16;
@@ -55,6 +44,7 @@ export function roadTypeForLanes(perSide: number): RoadType {
   const n = Math.max(1, Math.min(4, Math.round(perSide)));
   const travel = (direction: -1 | 1): Lane => ({ kind: 'travel', width: 3.5, direction, rise: 0 });
   const mark: Lane = { kind: 'marking', width: MARK, direction: 0, rise: 0 };
+  const walk: Lane = { kind: 'sidewalk', width: n >= 3 ? 3.2 : 2.4, direction: 0, rise: CURB };
 
   const side = (direction: -1 | 1): Lane[] => {
     const lanes: Lane[] = [];
@@ -71,11 +61,36 @@ export function roadTypeForLanes(perSide: number): RoadType {
 
   return {
     name: n === 1 ? 'улица, 2 полосы' : `дорога, ${n * 2} полос`,
-    lanes: [...side(1), ...middle, ...side(-1)],
-    sidewalk: n >= 3 ? 3.2 : 2.4,
-    curb: CURB,
+    lanes: [walk, ...side(1), ...middle, ...side(-1), walk],
   };
 }
+
+export const ROAD_TYPES: Record<string, RoadType> = {
+  street2: {
+    name: 'улица, 2 полосы',
+    lanes: [
+      { kind: 'sidewalk', width: 2.4, direction: 0, rise: CURB },
+      { kind: 'travel', width: 3.5, direction: 1, rise: 0 },
+      { kind: 'marking', width: MARK, direction: 0, rise: 0 },
+      { kind: 'travel', width: 3.5, direction: -1, rise: 0 },
+      { kind: 'sidewalk', width: 2.4, direction: 0, rise: CURB },
+    ],
+  },
+  avenue4: {
+    name: 'проспект, 4 полосы',
+    lanes: [
+      { kind: 'sidewalk', width: 3.2, direction: 0, rise: CURB },
+      { kind: 'travel', width: 3.5, direction: 1, rise: 0 },
+      { kind: 'marking', width: MARK, direction: 0, rise: 0 },
+      { kind: 'travel', width: 3.5, direction: 1, rise: 0 },
+      { kind: 'median', width: 2.0, direction: 0, rise: CURB },
+      { kind: 'travel', width: 3.5, direction: -1, rise: 0 },
+      { kind: 'marking', width: MARK, direction: 0, rise: 0 },
+      { kind: 'travel', width: 3.5, direction: -1, rise: 0 },
+      { kind: 'sidewalk', width: 3.2, direction: 0, rise: CURB },
+    ],
+  },
+};
 
 export interface Road {
   /** опорные точки; между ними линия идёт плавной кривой */

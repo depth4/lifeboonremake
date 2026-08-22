@@ -33,13 +33,7 @@ export interface RoadShape {
   readonly type: RoadType;
   readonly stations: readonly Station[];
   readonly height: readonly number[];
-  /** полуширина ПРОЕЗЖЕЙ ЧАСТИ, без тротуара */
   readonly halfWidth: number;
-  /** полуширина вместе с тротуарами */
-  readonly outerHalf: number;
-  /** торец упирается в перекрёсток, а не в чистое поле */
-  readonly startJoined: boolean;
-  readonly endJoined: boolean;
   readonly grade: number;
   readonly lift: number;
 }
@@ -180,9 +174,8 @@ export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT
     const cut = keep.map((i) => height[i]);
 
     // за краем мира земли нет — пришить к ней полотно не к чему
-    const outer = halfWidth + edge.type.sidewalk;
     const outside = stations.some(
-      (st) => Math.abs(st.x) + outer > WORLD_HALF || Math.abs(st.z) + outer > WORLD_HALF,
+      (st) => Math.abs(st.x) + halfWidth > WORLD_HALF || Math.abs(st.z) + halfWidth > WORLD_HALF,
     );
     if (outside) {
       rejected = 'дорога выходит за край мира';
@@ -195,9 +188,6 @@ export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT
       stations,
       height: cut,
       halfWidth,
-      outerHalf: halfWidth + edge.type.sidewalk,
-      startJoined: net.nodes[edge.from].degree > 1,
-      endJoined: net.nodes[edge.to].degree > 1,
       grade: steepest(stations, cut),
       lift: stations.reduce((m, st, i) => Math.max(m, Math.abs(cut[i] - terrain(st.x, st.z))), 0),
     });
@@ -255,11 +245,11 @@ export function nearestRoad(world: World, x: number, z: number): RoadProximity |
       let t = lenSq > 0 ? ((x - ax) * dx + (z - az) * dz) / lenSq : 0;
       t = Math.max(0, Math.min(1, t));
       const distance = Math.hypot(x - (ax + dx * t), z - (az + dz * t));
-      if (best === null || distance - shape.outerHalf < best.distance - best.halfWidth) {
+      if (best === null || distance < best.distance) {
         best = {
           distance,
           roadHeight: shape.height[i] + (shape.height[i + 1] - shape.height[i]) * t,
-          halfWidth: shape.outerHalf,
+          halfWidth: shape.halfWidth,
         };
       }
     }
@@ -269,7 +259,7 @@ export function nearestRoad(world: World, x: number, z: number): RoadProximity |
   for (const j of world.junctions) {
     const distance = Math.hypot(x - j.x, z - j.z);
     let radius = 0;
-    for (const e of j.ends) radius = Math.max(radius, world.shapes[e.shape].outerHalf);
+    for (const e of j.ends) radius = Math.max(radius, world.shapes[e.shape].halfWidth);
     if (best === null || distance - radius < best.distance - best.halfWidth) {
       best = { distance, roadHeight: j.height, halfWidth: radius };
     }
@@ -293,46 +283,10 @@ export function groundHeightAt(world: World, x: number, z: number): number {
   return Math.min(near.roadHeight + free / CUT_SLOPE, Math.max(near.roadHeight - free / FILL_SLOPE, natural));
 }
 
-/**
- * Привязка точки к существующей сети — то, чем инструмент помогает игроку.
- *
- * Рядом с торцом дороги — прилипаем к торцу и продолжаем её без перекрёстка.
- * Рядом с узлом — прилипаем к узлу. Рядом с осевой линией — становимся на неё,
- * и получится примыкание. Намерение распознаётся по расстоянию, а не угадывается.
- */
-export interface Snap {
-  readonly point: Point2;
-  readonly kind: 'узел' | 'торец' | 'дорога';
-}
-
-export function snapPoint(world: World, x: number, z: number, radius: number): Snap | null {
-  let best: { snap: Snap; distance: number } | null = null;
-  const offer = (p: Point2, kind: Snap['kind'], distance: number, bonus: number): void => {
-    if (distance > radius) return;
-    const score = distance - bonus;
-    if (best === null || score < best.distance) best = { snap: { point: p, kind }, distance: score };
-  };
-
-  for (const j of world.junctions) {
-    offer({ x: j.x, z: j.z }, 'узел', Math.hypot(x - j.x, z - j.z), radius * 0.5);
-  }
-
-  for (const shape of world.shapes) {
-    const st = shape.stations;
-    for (const tip of [st[0], st[st.length - 1]]) {
-      offer({ x: tip.x, z: tip.z }, 'торец', Math.hypot(x - tip.x, z - tip.z), radius * 0.35);
-    }
-    for (let i = 0; i + 1 < st.length; i++) {
-      const dx = st[i + 1].x - st[i].x, dz = st[i + 1].z - st[i].z;
-      const lenSq = dx * dx + dz * dz;
-      if (lenSq < 1e-9) continue;
-      let t = ((x - st[i].x) * dx + (z - st[i].z) * dz) / lenSq;
-      t = Math.max(0, Math.min(1, t));
-      const px = st[i].x + dx * t, pz = st[i].z + dz * t;
-      offer({ x: px, z: pz }, 'дорога', Math.hypot(x - px, z - pz), 0);
-    }
-  }
-  return best === null ? null : (best as { snap: Snap }).snap;
+/** Точки поперечника торца, от -полуширины к +полуширине в системе станции. */
+export function endProfile(shape: RoadShape, atStart: boolean): { station: Station; height: number } {
+  const i = atStart ? 0 : shape.stations.length - 1;
+  return { station: shape.stations[i], height: shape.height[i] };
 }
 
 export type { Point2 };
