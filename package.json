@@ -6,7 +6,8 @@
     "dev": "vite --port 5199",
     "build": "tsc --noEmit && vite build",
     "shot": "node tools/shot.mjs",
-    "check": "node --experimental-strip-types tools/check.ts"
+    "check": "node --experimental-strip-types tools/check.ts",
+    "page": "node tools/page.mjs"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",

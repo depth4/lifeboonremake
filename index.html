@@ -2,20 +2,162 @@
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
-    <title>lifeboonremake</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Дорога, врезанная в рельеф</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap"
+    />
     <style>
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1116; }
-      canvas { display: block; }
-      #hud {
-        position: fixed; left: 16px; bottom: 14px; color: #eef2f0;
-        font: 13px/1.5 system-ui, sans-serif; text-shadow: 0 1px 3px rgba(0,0,0,.75);
+      :root {
+        --ink: #0f1418;
+        --panel: rgba(15, 20, 24, 0.82);
+        --edge: rgba(233, 236, 233, 0.16);
+        --text: #eef1ed;
+        --muted: #97a493;
+        --mark: #e8e4d2;
+        --sans: 'IBM Plex Sans Condensed', 'Segoe UI', system-ui, sans-serif;
+        --mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--ink);
+        font-family: var(--sans);
+        color: var(--text);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      canvas { display: block; touch-action: none; }
+
+      .layer {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        padding: clamp(14px, 2.4vw, 26px);
+        gap: 12px;
         pointer-events: none;
       }
-      #hud b { font-weight: 600; }
+
+      .top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px; }
+
+      .mark {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 3px;
+        backdrop-filter: blur(8px);
+        padding: 9px 13px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--mark);
+        line-height: 1.5;
+      }
+      .mark span { display: block; color: var(--muted); letter-spacing: 0.08em; font-weight: 500; }
+
+      .views {
+        display: flex;
+        gap: 6px;
+        pointer-events: auto;
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 3px;
+        padding: 4px;
+        backdrop-filter: blur(8px);
+      }
+
+      .views button {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font: 600 12px/1 var(--sans);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        padding: 8px 12px;
+        border-radius: 2px;
+        cursor: pointer;
+        transition: color 0.15s, background 0.15s;
+      }
+      .views button:hover { color: var(--text); }
+      .views button[aria-pressed='true'] { background: var(--mark); color: #14181a; }
+      .views button:focus-visible { outline: 2px solid var(--mark); outline-offset: 2px; }
+
+      .bottom { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+
+      .readout {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 3px;
+        padding: 12px 16px;
+        backdrop-filter: blur(8px);
+        display: grid;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .readout h1 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      .facts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 20px;
+        margin: 0;
+        font-family: var(--mono);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+      }
+      .facts div { display: flex; gap: 8px; }
+      .facts b { color: var(--text); font-weight: 500; }
+
+      .hint {
+        margin: 0;
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 3px;
+        backdrop-filter: blur(8px);
+        padding: 9px 13px;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        text-align: right;
+      }
+
+      @media (max-width: 620px) {
+        .hint { display: none; }
+        .facts { font-size: 11px; gap: 4px 14px; }
+      }
     </style>
   </head>
   <body>
-    <div id="hud"></div>
+    <div class="layer">
+      <div class="top">
+        <div class="mark">lifeboonremake<span>шаг 1</span></div>
+        <div class="views" id="views" role="group" aria-label="Ракурс"></div>
+      </div>
+      <div></div>
+      <div class="bottom">
+        <div class="readout">
+          <h1 id="road-name">—</h1>
+          <div class="facts" id="facts"></div>
+        </div>
+        <p class="hint">перетаскивай — поворот&emsp;колесо — приближение</p>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

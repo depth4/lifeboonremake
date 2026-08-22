@@ -14,26 +14,36 @@ const COLORS: Record<Material, number> = {
   marking: 0xe8e4d2,
 };
 
-/** Ракурсы для снимков: имя -> откуда смотрим, куда смотрим, дальность тумана. */
-const VIEWS: Record<string, { from: [number, number, number]; at: [number, number, number]; fog: number }> = {
-  over: { from: [-210, 155, -205], at: [0, -2, 0], fog: 900 },
-  road: { from: [-118, 52, -128], at: [15, 2, 8], fog: 480 },
-  close: { from: [-24, 16, -46], at: [26, 1, 18], fog: 320 },
+interface View {
+  readonly label: string;
+  readonly from: [number, number, number];
+  readonly at: [number, number, number];
+  readonly fog: number;
+}
+
+/** Ракурсы: и для кнопок на странице, и для снимков из терминала. */
+export const VIEWS: Record<string, View> = {
+  over: { label: 'сверху', from: [-210, 155, -205], at: [0, -2, 0], fog: 900 },
+  road: { label: 'вдоль', from: [-118, 52, -128], at: [15, 2, 8], fog: 480 },
+  close: { label: 'вблизи', from: [-24, 16, -46], at: [26, 1, 18], fog: 320 },
 };
 
-export function show(surface: Surface): void {
-  const wanted = new URLSearchParams(location.search).get('view') ?? 'road';
-  const view = VIEWS[wanted] ?? VIEWS.road;
+export interface Viewer {
+  setView(name: string): void;
+}
+
+export function show(surface: Surface, startView: string): Viewer {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  document.body.appendChild(renderer.domElement);
+  document.body.prepend(renderer.domElement);
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x9fc4dd);
-  scene.fog = new THREE.Fog(0x9fc4dd, view.fog * 0.45, view.fog);
+  const fog = new THREE.Fog(0x9fc4dd, 200, 480);
+  scene.fog = fog;
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(surface.positions, 3));
@@ -56,17 +66,34 @@ export function show(surface: Surface): void {
   sun.position.set(-90, 110, -60);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  const s = sun.shadow.camera;
-  s.left = -170; s.right = 170; s.top = 170; s.bottom = -170; s.near = 1; s.far = 420;
+  const shadowBox = sun.shadow.camera;
+  shadowBox.left = -170; shadowBox.right = 170; shadowBox.top = 170; shadowBox.bottom = -170;
+  shadowBox.near = 1; shadowBox.far = 420;
   scene.add(sun);
 
   const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.5, 1400);
-  camera.position.set(...view.from);
-
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(...view.at);
   controls.enableDamping = true;
-  controls.update();
+  controls.maxPolarAngle = Math.PI * 0.495;
+
+  // плавный перелёт между ракурсами
+  let flight: { from: THREE.Vector3; to: THREE.Vector3; look: THREE.Vector3; at: THREE.Vector3; fog: number; t: number } | null = null;
+
+  const apply = (view: View, instant: boolean): void => {
+    const to = new THREE.Vector3(...view.from);
+    const at = new THREE.Vector3(...view.at);
+    if (instant) {
+      camera.position.copy(to);
+      controls.target.copy(at);
+      fog.far = view.fog;
+      fog.near = view.fog * 0.42;
+      controls.update();
+      return;
+    }
+    flight = { from: camera.position.clone(), to, look: controls.target.clone(), at, fog: view.fog, t: 0 };
+  };
+
+  apply(VIEWS[startView] ?? VIEWS.road, true);
 
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
@@ -74,8 +101,27 @@ export function show(surface: Surface): void {
     renderer.setSize(innerWidth, innerHeight);
   });
 
+  const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
+    if (flight) {
+      flight.t = Math.min(1, flight.t + clock.getDelta() * 1.4);
+      const e = flight.t < 0.5 ? 2 * flight.t * flight.t : 1 - Math.pow(-2 * flight.t + 2, 2) / 2;
+      camera.position.lerpVectors(flight.from, flight.to, e);
+      controls.target.lerpVectors(flight.look, flight.at, e);
+      fog.far = fog.far + (flight.fog - fog.far) * e * 0.25;
+      fog.near = fog.far * 0.42;
+      if (flight.t >= 1) flight = null;
+    } else {
+      clock.getDelta();
+    }
     controls.update();
     renderer.render(scene, camera);
   });
+
+  return {
+    setView(name: string): void {
+      const view = VIEWS[name];
+      if (view) apply(view, false);
+    },
+  };
 }
