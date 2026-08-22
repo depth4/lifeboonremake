@@ -9,7 +9,7 @@ export interface Point2 {
   readonly z: number;
 }
 
-export type LaneKind = 'travel' | 'sidewalk' | 'marking';
+export type LaneKind = 'travel' | 'sidewalk' | 'marking' | 'median';
 
 /** Одна полоса вдоль осевой линии. */
 export interface Lane {
@@ -18,6 +18,12 @@ export interface Lane {
   readonly width: number;
   /** 1 — по направлению линии, -1 — навстречу, 0 — не для езды */
   readonly direction: -1 | 0 | 1;
+  /**
+   * На сколько метров полоса поднята над проезжей частью.
+   * Бордюр не рисуется отдельно: он возникает сам там, где у соседних
+   * полос разная высота. Особый случай «бордюр» в правилах не нужен.
+   */
+  readonly rise: number;
 }
 
 /** Тип дороги — это данные, а не код. Новый тип = новая запись здесь. */
@@ -27,30 +33,31 @@ export interface RoadType {
 }
 
 const MARK = 0.16;
+const CURB = 0.15;
 
 export const ROAD_TYPES: Record<string, RoadType> = {
   street2: {
     name: 'улица, 2 полосы',
     lanes: [
-      { kind: 'sidewalk', width: 2.2, direction: 0 },
-      { kind: 'travel', width: 3.5, direction: 1 },
-      { kind: 'marking', width: MARK, direction: 0 },
-      { kind: 'travel', width: 3.5, direction: -1 },
-      { kind: 'sidewalk', width: 2.2, direction: 0 },
+      { kind: 'sidewalk', width: 2.4, direction: 0, rise: CURB },
+      { kind: 'travel', width: 3.5, direction: 1, rise: 0 },
+      { kind: 'marking', width: MARK, direction: 0, rise: 0 },
+      { kind: 'travel', width: 3.5, direction: -1, rise: 0 },
+      { kind: 'sidewalk', width: 2.4, direction: 0, rise: CURB },
     ],
   },
   avenue4: {
     name: 'проспект, 4 полосы',
     lanes: [
-      { kind: 'sidewalk', width: 3.0, direction: 0 },
-      { kind: 'travel', width: 3.5, direction: 1 },
-      { kind: 'marking', width: MARK, direction: 0 },
-      { kind: 'travel', width: 3.5, direction: 1 },
-      { kind: 'marking', width: 0.5, direction: 0 },
-      { kind: 'travel', width: 3.5, direction: -1 },
-      { kind: 'marking', width: MARK, direction: 0 },
-      { kind: 'travel', width: 3.5, direction: -1 },
-      { kind: 'sidewalk', width: 3.0, direction: 0 },
+      { kind: 'sidewalk', width: 3.2, direction: 0, rise: CURB },
+      { kind: 'travel', width: 3.5, direction: 1, rise: 0 },
+      { kind: 'marking', width: MARK, direction: 0, rise: 0 },
+      { kind: 'travel', width: 3.5, direction: 1, rise: 0 },
+      { kind: 'median', width: 2.0, direction: 0, rise: CURB },
+      { kind: 'travel', width: 3.5, direction: -1, rise: 0 },
+      { kind: 'marking', width: MARK, direction: 0, rise: 0 },
+      { kind: 'travel', width: 3.5, direction: -1, rise: 0 },
+      { kind: 'sidewalk', width: 3.2, direction: 0, rise: CURB },
     ],
   },
 };
@@ -70,12 +77,13 @@ export interface Band {
   readonly kind: LaneKind;
   readonly from: number;
   readonly to: number;
+  readonly rise: number;
 }
 
 export function bands(type: RoadType): Band[] {
   let offset = -roadWidth(type) / 2;
   return type.lanes.map((lane) => {
-    const band = { kind: lane.kind, from: offset, to: offset + lane.width };
+    const band = { kind: lane.kind, from: offset, to: offset + lane.width, rise: lane.rise };
     offset += lane.width;
     return band;
   });

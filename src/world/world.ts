@@ -8,8 +8,14 @@ import { naturalHeight } from './terrain.ts';
 import type { Road, Station } from './road.ts';
 import { roadWidth, sampleCenterline } from './road.ts';
 
-/** Ширина насыпи: на сколько метров в стороны земля тянется за дорогой. */
-const EMBANKMENT = 9;
+/**
+ * Крутизна откоса: сколько метров по горизонтали приходится на один метр
+ * по вертикали. Это постоянная величина, а ширина насыпи или выемки из неё
+ * вычисляется. Раньше здесь была постоянная ШИРИНА — и тогда рядом с высоким
+ * холмом получалась отвесная стена земли, загораживающая дорогу.
+ * При постоянной крутизне такая стена невыразима.
+ */
+const SLOPE = 2.5;
 
 /** Дорога, разложенная в точки: где идёт и на какой высоте. */
 export interface RoadShape {
@@ -30,7 +36,7 @@ export interface World {
  */
 function heightProfile(stations: readonly Station[]): number[] {
   const raw = stations.map((st) => naturalHeight(st.x, st.z));
-  const window = 12;
+  const window = 14;
   return raw.map((_, i) => {
     let sum = 0;
     let n = 0;
@@ -91,26 +97,20 @@ export function nearestRoad(world: World, x: number, z: number): RoadProximity |
   return best;
 }
 
-function smoothstep(t: number): number {
-  const c = Math.max(0, Math.min(1, t));
-  return c * c * (3 - 2 * c);
-}
-
 /**
  * Единственный источник правды о высоте земли.
+ *
  * Под дорогой земля равна дороге — поэтому «земля торчит сквозь дорогу»
- * не может случиться: это одна и та же высота.
+ * не может случиться: это одна и та же высота. Дальше от дороги земля вольна
+ * отклоняться от неё ровно настолько, насколько позволяет крутизна откоса.
+ * Обрыв у обочины поэтому невозможен, какой бы высоты ни был холм.
  */
 export function groundHeightAt(world: World, x: number, z: number): number {
-  const near = nearestRoad(world, x, z);
   const natural = naturalHeight(x, z);
+  const near = nearestRoad(world, x, z);
   if (near === null) return natural;
 
-  const inner = near.halfWidth;
-  const outer = near.halfWidth + EMBANKMENT;
-  if (near.distance <= inner) return near.roadHeight;
-  if (near.distance >= outer) return natural;
-
-  const t = smoothstep((near.distance - inner) / (outer - inner));
-  return near.roadHeight * (1 - t) + natural * t;
+  const free = Math.max(0, near.distance - near.halfWidth);
+  const allowed = free / SLOPE;
+  return Math.min(near.roadHeight + allowed, Math.max(near.roadHeight - allowed, natural));
 }

@@ -7,10 +7,19 @@
 /** Мир — квадрат со стороной 2 × WORLD_HALF метров, центр в нуле. */
 export const WORLD_HALF = 120;
 
-/** Высота земли до того, как её тронули дороги. */
+/**
+ * Высота земли до того, как её тронули дороги.
+ *
+ * ВРЕМЕННАЯ ЗАГЛУШКА, а не система рельефа. Рельеф нигде не хранится и
+ * не редактируется. Она нарочно злая: крутой холм, который дорога обязана
+ * прорезать, и овраг, который обязана засыпать. На ровном месте проверка
+ * «дорога врезана, а не лежит сверху» не смогла бы упасть.
+ */
 export function naturalHeight(x: number, z: number): number {
-  const slope = x * 0.055;
-  const hills = Math.sin(z / 31) * 2.6 + Math.cos(x / 26) * 1.9;
-  const ripple = Math.sin((x + z) / 17) * 0.7;
-  return slope + hills + ripple;
+  const slope = x * 0.05;
+  const hill = 17 * Math.exp(-(((x + 38) ** 2 + (z + 8) ** 2) / 2000));
+  const gully = -14 * Math.exp(-(((x - 44) ** 2 + (z - 34) ** 2) / 1500));
+  const ridge = 4.2 * Math.sin(z / 24) * Math.cos(x / 38);
+  const ripple = Math.sin((x + z) / 15) * 0.6;
+  return slope + hill + gully + ridge + ripple;
 }

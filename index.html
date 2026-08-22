@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Дорога, врезанная в рельеф</title>
+    <title>Дороги поверх рельефа</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -65,6 +65,7 @@
 
       .views {
         display: flex;
+        flex-wrap: wrap;
         gap: 6px;
         pointer-events: auto;
         background: var(--panel);
@@ -90,6 +91,27 @@
       .views button:hover { color: var(--text); }
       .views button[aria-pressed='true'] { background: var(--mark); color: #14181a; }
       .views button:focus-visible { outline: 2px solid var(--mark); outline-offset: 2px; }
+      .views button.plain { color: var(--muted); border: 1px dashed var(--edge); }
+      .views button.plain:hover { color: var(--text); }
+
+      .group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 3px;
+        padding: 4px 4px 4px 12px;
+        backdrop-filter: blur(8px);
+      }
+      .group > .tag {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .group .views { background: none; border: 0; padding: 0; backdrop-filter: none; }
 
       .bottom { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
 
@@ -146,8 +168,13 @@
   <body>
     <div class="layer">
       <div class="top">
-        <div class="mark">lifeboonremake<span>шаг 1</span></div>
-        <div class="views" id="views" role="group" aria-label="Ракурс"></div>
+        <div class="mark">lifeboonremake<span>шаг 2</span></div>
+        <div class="group"><span class="tag">ракурс</span>
+          <div class="views" id="views" role="group" aria-label="Ракурс"></div>
+        </div>
+        <div class="group"><span class="tag">строить</span>
+          <div class="views" id="tools" role="group" aria-label="Строительство"></div>
+        </div>
       </div>
       <div></div>
       <div class="bottom">
@@ -155,7 +182,7 @@
           <h1 id="road-name">—</h1>
           <div class="facts" id="facts"></div>
         </div>
-        <p class="hint">перетаскивай — поворот&emsp;колесо — приближение</p>
+        <p class="hint" id="hint"></p>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

@@ -12,6 +12,13 @@ const view = process.argv[2] ?? 'road';
 const out = `shots/${view}.png`;
 mkdirSync('shots', { recursive: true });
 
+/**
+ * Шрифты подключаются с чужого хоста и не обязательны: у каждого начертания
+ * есть запасное. В контейнере интернета у браузера нет, и падение этих
+ * запросов — не ошибка страницы. Всё остальное — ошибка.
+ */
+const OPTIONAL = /fonts\.(googleapis|gstatic)\.com/;
+
 const server = await createServer({ server: { port: PORT, strictPort: true }, logLevel: 'warn' });
 await server.listen();
 
@@ -19,15 +26,17 @@ const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 
 const problems = [];
-page.on('pageerror', (e) => problems.push(String(e)));
-page.on('console', (m) => { if (m.type() === 'error') problems.push(m.text()); });
+page.on('pageerror', (e) => problems.push('ошибка в коде: ' + String(e).split('\n')[0]));
+page.on('requestfailed', (r) => {
+  if (!OPTIONAL.test(r.url())) problems.push('не загрузилось: ' + r.url());
+});
 
 try {
   await page.goto(`http://localhost:${PORT}/?view=${view}`, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 25000 });
   await page.screenshot({ path: out });
 } catch (e) {
-  problems.push(e.message.split('\n')[0]);
+  problems.push('страница не ожила: ' + e.message.split('\n')[0]);
 }
 
 await browser.close();

@@ -6,12 +6,15 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Material, Surface } from './surface.ts';
+import type { Point2 } from './world/road.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
   asphalt: 0x40444a,
   sidewalk: 0x9a988f,
   marking: 0xe8e4d2,
+  median: 0x6f8a52,
+  curb: 0xb4b1a6,
 };
 
 interface View {
@@ -25,11 +28,17 @@ interface View {
 export const VIEWS: Record<string, View> = {
   over: { label: 'сверху', from: [-210, 155, -205], at: [0, -2, 0], fog: 900 },
   road: { label: 'вдоль', from: [-118, 52, -128], at: [15, 2, 8], fog: 480 },
-  close: { label: 'вблизи', from: [-24, 16, -46], at: [26, 1, 18], fog: 320 },
+  close: { label: 'вблизи', from: [-52, 14, -34], at: [-4, 4, 4], fog: 320 },
+  curb: { label: 'вплотную', from: [-34, 3.4, -13], at: [-20, 1.2, -1], fog: 140 },
 };
 
 export interface Viewer {
   setView(name: string): void;
+  setSurface(surface: Surface): void;
+  setGhost(mesh: { positions: Float32Array; indices: Uint32Array } | null): void;
+  setBuilding(on: boolean): void;
+  /** Куда на земле указывает курсор. null — мимо земли. */
+  pick(event: PointerEvent | MouseEvent): Point2 | null;
 }
 
 export function show(surface: Surface, startView: string): Viewer {
@@ -45,21 +54,36 @@ export function show(surface: Surface, startView: string): Viewer {
   const fog = new THREE.Fog(0x9fc4dd, 200, 480);
   scene.fog = fog;
 
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(surface.positions, 3));
-  geometry.setIndex(new THREE.BufferAttribute(surface.indices, 1));
-
-  const materials: THREE.Material[] = [];
-  surface.groups.forEach((group, i) => {
-    geometry.addGroup(group.start, group.count, i);
-    materials.push(new THREE.MeshStandardMaterial({ color: COLORS[group.material], roughness: 0.95, metalness: 0 }));
-  });
-  geometry.computeVertexNormals();
-
-  const ground = new THREE.Mesh(geometry, materials);
+  const ground = new THREE.Mesh(new THREE.BufferGeometry(), [] as THREE.Material[]);
   ground.castShadow = true;
   ground.receiveShadow = true;
   scene.add(ground);
+
+  const applySurface = (next: Surface): void => {
+    ground.geometry.dispose();
+    (ground.material as THREE.Material[]).forEach((m) => m.dispose());
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(next.positions, 3));
+    geometry.setIndex(new THREE.BufferAttribute(next.indices, 1));
+    const materials = next.groups.map((group, i) => {
+      geometry.addGroup(group.start, group.count, i);
+      return new THREE.MeshStandardMaterial({ color: COLORS[group.material], roughness: 0.95, metalness: 0 });
+    });
+    geometry.computeVertexNormals();
+    ground.geometry = geometry;
+    ground.material = materials;
+  };
+  applySurface(surface);
+
+  const ghost = new THREE.Mesh(
+    new THREE.BufferGeometry(),
+    new THREE.MeshBasicMaterial({ color: 0xffe98a, transparent: true, opacity: 0.62, depthWrite: false }),
+  );
+  ghost.visible = false;
+  ghost.renderOrder = 2;
+  ghost.position.y = 0.12;
+  scene.add(ghost);
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
   const sun = new THREE.DirectionalLight(0xfff3dd, 2.1);
@@ -76,7 +100,10 @@ export function show(surface: Surface, startView: string): Viewer {
   controls.enableDamping = true;
   controls.maxPolarAngle = Math.PI * 0.495;
 
-  // плавный перелёт между ракурсами
+  const LOOKING = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+  const BUILDING = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+  controls.mouseButtons = { ...LOOKING };
+
   let flight: { from: THREE.Vector3; to: THREE.Vector3; look: THREE.Vector3; at: THREE.Vector3; fog: number; t: number } | null = null;
 
   const apply = (view: View, instant: boolean): void => {
@@ -92,7 +119,6 @@ export function show(surface: Surface, startView: string): Viewer {
     }
     flight = { from: camera.position.clone(), to, look: controls.target.clone(), at, fog: view.fog, t: 0 };
   };
-
   apply(VIEWS[startView] ?? VIEWS.road, true);
 
   addEventListener('resize', () => {
@@ -100,28 +126,62 @@ export function show(surface: Surface, startView: string): Viewer {
     camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
   });
+  renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
 
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
+    const dt = clock.getDelta();
     if (flight) {
-      flight.t = Math.min(1, flight.t + clock.getDelta() * 1.4);
+      flight.t = Math.min(1, flight.t + dt * 1.4);
       const e = flight.t < 0.5 ? 2 * flight.t * flight.t : 1 - Math.pow(-2 * flight.t + 2, 2) / 2;
       camera.position.lerpVectors(flight.from, flight.to, e);
       controls.target.lerpVectors(flight.look, flight.at, e);
-      fog.far = fog.far + (flight.fog - fog.far) * e * 0.25;
+      fog.far += (flight.fog - fog.far) * e * 0.25;
       fog.near = fog.far * 0.42;
       if (flight.t >= 1) flight = null;
-    } else {
-      clock.getDelta();
     }
     controls.update();
     renderer.render(scene, camera);
   });
 
   return {
-    setView(name: string): void {
+    setView(name) {
       const view = VIEWS[name];
       if (view) apply(view, false);
+    },
+    setSurface(next) {
+      applySurface(next);
+    },
+    setGhost(mesh) {
+      ghost.geometry.dispose();
+      if (!mesh || mesh.indices.length === 0) {
+        ghost.geometry = new THREE.BufferGeometry();
+        ghost.visible = false;
+        return;
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+      geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+      ghost.geometry = geometry;
+      ghost.visible = true;
+    },
+    setBuilding(on) {
+      controls.mouseButtons = on ? { ...BUILDING } : { ...LOOKING };
+      renderer.domElement.style.cursor = on ? 'crosshair' : '';
+      if (!on) {
+        ghost.visible = false;
+      }
+    },
+    pick(event) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObject(ground, false)[0];
+      return hit ? { x: hit.point.x, z: hit.point.z } : null;
     },
   };
 }
