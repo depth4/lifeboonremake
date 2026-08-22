@@ -3,13 +3,16 @@
 import type { Road } from './world/road.ts';
 import { DEMO_ROADS } from './demo.ts';
 import { roadWidth } from './world/road.ts';
-import { MAX_GRADE, buildWorld } from './world/world.ts';
+import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
 import { buildRoadRibbon, buildSurface } from './surface.ts';
 import { VIEWS, show } from './render.ts';
 import { createBuilder } from './build.ts';
 
 const startView = new URLSearchParams(location.search).get('view') ?? 'road';
+
+/** На каком расстоянии инструмент начинает распознавать намерение, метры. */
+const SNAP_RADIUS = 14;
 
 const roads: Road[] = [...DEMO_ROADS];
 let terrainName = DEFAULT_TERRAIN;
@@ -89,6 +92,10 @@ const builder = createBuilder({
     const shape = buildWorld([road], terrainName).shapes[0];
     viewer.setGhost(shape ? buildRoadRibbon(shape) : null);
   },
+  snap: (point) => {
+    const hit = snapPoint(world, point.x, point.z, SNAP_RADIUS);
+    return hit ? { point: hit.point, kind: hit.kind } : null;
+  },
 });
 
 // --- кнопки ракурса ---
@@ -157,8 +164,14 @@ const HINTS: Record<string, string> = {
 function hint(): void {
   const node = document.getElementById('hint');
   if (!node) return;
-  node.textContent = refusal !== '' ? refusal : (HINTS[builder.phase()] ?? HINTS.off);
+  const snapped = builder.snapped();
+  node.textContent = refusal !== ''
+    ? refusal
+    : snapped !== ''
+      ? `привязка к ${snapped === 'узел' ? 'перекрёстку' : snapped === 'торец' ? 'концу дороги' : 'дороге'} — клик соединит`
+      : (HINTS[builder.phase()] ?? HINTS.off);
   node.classList.toggle('refused', refusal !== '');
+  node.classList.toggle('snapped', refusal === '' && snapped !== '');
 }
 
 readout();

@@ -283,10 +283,60 @@ export function groundHeightAt(world: World, x: number, z: number): number {
   return Math.min(near.roadHeight + free / CUT_SLOPE, Math.max(near.roadHeight - free / FILL_SLOPE, natural));
 }
 
-/** Точки поперечника торца, от -полуширины к +полуширине в системе станции. */
-export function endProfile(shape: RoadShape, atStart: boolean): { station: Station; height: number } {
-  const i = atStart ? 0 : shape.stations.length - 1;
-  return { station: shape.stations[i], height: shape.height[i] };
+/**
+ * Привязка точки к существующей сети — то, чем инструмент помогает игроку.
+ *
+ * Рядом с торцом дороги — прилипаем к торцу и продолжаем её.
+ * Рядом с узлом — прилипаем к узлу.
+ * Рядом с осевой линией — становимся на неё, получится примыкание.
+ *
+ * Намерение распознаётся по расстоянию с приоритетом: торец и узел «сильнее»
+ * середины дороги, потому что соединиться с ними игрок хочет чаще.
+ */
+export interface Snap {
+  readonly point: Point2;
+  readonly kind: 'узел' | 'торец' | 'дорога';
+}
+
+export function snapPoint(world: World, x: number, z: number, radius: number): Snap | null {
+  let best: { snap: Snap; score: number } | null = null;
+  const offer = (point: Point2, kind: Snap['kind'], distance: number, pull: number): void => {
+    if (distance > radius) return;
+    const score = distance - pull;
+    if (best === null || score < best.score) best = { snap: { point, kind }, score };
+  };
+
+  for (const j of world.junctions) {
+    offer({ x: j.x, z: j.z }, 'узел', Math.hypot(x - j.x, z - j.z), radius * 0.55);
+  }
+
+  /**
+   * Торец, подрезанный у перекрёстка, — внутренняя точка, а не конец дороги:
+   * строить оттуда значит залезть в площадку. Предлагаем только СВОБОДНЫЕ
+   * торцы; вместо занятых предлагается сам перекрёсток.
+   */
+  const nearJunction = (p: Point2, limit: number): boolean =>
+    world.junctions.some((j) => Math.hypot(p.x - j.x, p.z - j.z) < limit);
+
+  for (const shape of world.shapes) {
+    const st = shape.stations;
+    const guard = shape.halfWidth * 4 + 6;
+    for (const tip of [st[0], st[st.length - 1]]) {
+      if (nearJunction({ x: tip.x, z: tip.z }, guard)) continue;
+      offer({ x: tip.x, z: tip.z }, 'торец', Math.hypot(x - tip.x, z - tip.z), radius * 0.4);
+    }
+    for (let i = 0; i + 1 < st.length; i++) {
+      const dx = st[i + 1].x - st[i].x, dz = st[i + 1].z - st[i].z;
+      const lenSq = dx * dx + dz * dz;
+      if (lenSq < 1e-9) continue;
+      let t = ((x - st[i].x) * dx + (z - st[i].z) * dz) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      const px = st[i].x + dx * t, pz = st[i].z + dz * t;
+      if (nearJunction({ x: px, z: pz }, guard)) continue;
+      offer({ x: px, z: pz }, 'дорога', Math.hypot(x - px, z - pz), 0);
+    }
+  }
+  return best === null ? null : (best as { snap: Snap }).snap;
 }
 
 export type { Point2 };
