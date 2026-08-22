@@ -7,7 +7,8 @@
     "build": "tsc --noEmit && vite build",
     "shot": "node tools/shot.mjs",
     "check": "node --experimental-strip-types tools/check.ts",
-    "page": "node tools/page.mjs"
+    "page": "node tools/page.mjs",
+    "fuzz": "node --experimental-strip-types tools/fuzz.ts"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",
