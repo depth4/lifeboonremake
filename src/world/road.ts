@@ -136,6 +136,24 @@ function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): 
   return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
 }
 
+/** Превращает готовую ломаную в станции: с поперечным направлением и метражом. */
+export function stationsFromLine(raw: readonly Point2[]): Station[] {
+  const stations: Station[] = [];
+  let travelled = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const prev = raw[Math.max(0, i - 1)];
+    const next = raw[Math.min(raw.length - 1, i + 1)];
+    let tx = next.x - prev.x;
+    let tz = next.z - prev.z;
+    const len = Math.hypot(tx, tz) || 1;
+    tx /= len;
+    tz /= len;
+    if (i > 0) travelled += Math.hypot(raw[i].x - raw[i - 1].x, raw[i].z - raw[i - 1].z);
+    stations.push({ x: raw[i].x, z: raw[i].z, nx: -tz, nz: tx, s: travelled });
+  }
+  return stations;
+}
+
 /** Разбивает осевую линию на точки примерно через каждые `spacing` метров. */
 export function sampleCenterline(road: Road, spacing: number): Station[] {
   const cp = road.centerline;
@@ -154,19 +172,5 @@ export function sampleCenterline(road: Road, spacing: number): Station[] {
     }
   }
   raw.push(cp[cp.length - 1]);
-
-  const stations: Station[] = [];
-  let travelled = 0;
-  for (let i = 0; i < raw.length; i++) {
-    const prev = raw[Math.max(0, i - 1)];
-    const next = raw[Math.min(raw.length - 1, i + 1)];
-    let tx = next.x - prev.x;
-    let tz = next.z - prev.z;
-    const len = Math.hypot(tx, tz) || 1;
-    tx /= len;
-    tz /= len;
-    if (i > 0) travelled += Math.hypot(raw[i].x - raw[i - 1].x, raw[i].z - raw[i - 1].z);
-    stations.push({ x: raw[i].x, z: raw[i].z, nx: -tz, nz: tx, s: travelled });
-  }
-  return stations;
+  return stationsFromLine(raw);
 }

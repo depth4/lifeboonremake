@@ -17,17 +17,37 @@ let terrainName = DEFAULT_TERRAIN;
 let world = buildWorld(roads, terrainName);
 let surface = buildSurface(world);
 let rebuildMs = 0;
+let lastGood: Road[] = [...roads];
+let refusal = '';
 
 const viewer = show(surface, startView);
 const canvas = document.querySelector('canvas');
 
+/**
+ * Пересобрать мир. Если постройка такая, что мир её принять не может,
+ * откатываем последнее действие и говорим об этом. Кривой мир на экран
+ * не попадает никогда — в этом и смысл отказа.
+ */
 function rebuild(): void {
   const started = performance.now();
-  world = buildWorld(roads, terrainName);
-  surface = buildSurface(world);
+  try {
+    const next = buildWorld(roads, terrainName);
+    if (next.rejected !== null) throw new Error(next.rejected);
+    const nextSurface = buildSurface(next);
+    world = next;
+    surface = nextSurface;
+    lastGood = [...roads];
+    refusal = '';
+  } catch (error) {
+    refusal = String(error instanceof Error ? error.message : error).replace(/ \(.*\)$/, '');
+    roads.splice(0, roads.length, ...lastGood);
+    world = buildWorld(roads, terrainName);
+    surface = buildSurface(world);
+  }
   rebuildMs = performance.now() - started;
   viewer.setSurface(surface);
   readout();
+  hint();
 }
 
 function readout(): void {
@@ -36,7 +56,11 @@ function readout(): void {
   const length = world.shapes.reduce((sum, shape) => sum + (shape.stations.at(-1)?.s ?? 0), 0);
   const widest = roads.reduce((w, r) => Math.max(w, roadWidth(r.type)), 0);
 
-  if (name) name.textContent = roads.length === 0 ? 'дорог нет' : `дорог: ${roads.length}`;
+  if (name) {
+    name.textContent = roads.length === 0
+      ? 'дорог нет'
+      : `дорог: ${roads.length}, перекрёстков: ${world.junctions.length}`;
+  }
   if (facts) {
     const rows: [string, string][] = [
       ['длина', `${Math.round(length)} м`],
@@ -44,6 +68,7 @@ function readout(): void {
       ['ширина', `${widest.toFixed(2)} м`],
       ['уклон', `${(world.grade * 100).toFixed(1)}% из ${(MAX_GRADE * 100).toFixed(0)}%`],
       ['отрыв от земли', `${world.lift.toFixed(1)} м${world.lift > 6 ? ' — нужен мост' : ''}`],
+      ['перекрёстков', String(world.junctions.length)],
       ['пересборка', `${rebuildMs.toFixed(0)} мс`],
     ];
     facts.innerHTML = rows.map(([k, v]) => `<div>${k} <b>${v}</b></div>`).join('');
@@ -60,7 +85,9 @@ const builder = createBuilder({
     readout();
   },
   preview: (road) => {
-    viewer.setGhost(road ? buildRoadRibbon(buildWorld([road], terrainName).shapes[0]) : null);
+    if (!road) return viewer.setGhost(null);
+    const shape = buildWorld([road], terrainName).shapes[0];
+    viewer.setGhost(shape ? buildRoadRibbon(shape) : null);
   },
 });
 
@@ -114,6 +141,7 @@ if (terrains) {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-terrain]');
     if (!button) return;
     terrainName = button.dataset.terrain ?? DEFAULT_TERRAIN;
+    lastGood = [...roads];
     rebuild();
     terrains.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
   });
@@ -128,7 +156,9 @@ const HINTS: Record<string, string> = {
 
 function hint(): void {
   const node = document.getElementById('hint');
-  if (node) node.textContent = HINTS[builder.phase()] ?? HINTS.off;
+  if (!node) return;
+  node.textContent = refusal !== '' ? refusal : (HINTS[builder.phase()] ?? HINTS.off);
+  node.classList.toggle('refused', refusal !== '');
 }
 
 readout();

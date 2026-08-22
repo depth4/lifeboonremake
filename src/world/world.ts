@@ -1,53 +1,67 @@
 /**
- * Мир целиком: рельеф + дороги.
+ * Мир целиком: рельеф + дорожная сеть.
  * Здесь живёт единственный ответ на вопрос «какая высота земли в этой точке».
  * Про экран этот файл не знает ничего — его можно считать без браузера.
  */
 
-import type { Road, Station } from './road.ts';
+import type { Point2, RoadType, Road, Station } from './road.ts';
 import type { Terrain } from './terrain.ts';
-import { roadWidth, sampleCenterline } from './road.ts';
-import { DEFAULT_TERRAIN, TERRAINS } from './terrain.ts';
+import { roadWidth, stationsFromLine } from './road.ts';
+import { DEFAULT_TERRAIN, TERRAINS, WORLD_HALF } from './terrain.ts';
+import { planarize, trimRadius } from './network.ts';
 
 /**
  * Предельный продольный уклон дороги.
  * Настоящие нормы: магистраль 4–6%, сложный рельеф 8–12%, местные до 15%.
  * Дорога НЕ повторяет рельеф — она держит свой уклон, а земля подстраивается.
- * Позже станет свойством типа дороги.
  */
 export const MAX_GRADE = 0.08;
 
 /**
  * Крутизна откосов: метров по горизонтали на метр по вертикали.
  * Выемка круче насыпи — так и в настоящем строительстве (1.5:1 против 2:1).
- * Земля идёт от дороги под этим углом и КОНЧАЕТСЯ, встретив нетронутую землю.
  */
 const CUT_SLOPE = 1.5;
 const FILL_SLOPE = 2.0;
 
-/** Сколько раз прогоняем ограничение уклона и сглаживание переломов. */
 const LIMIT_PASSES = 8;
 const SMOOTH_PASSES = 25;
+/** Меньше стольких станций участок не живёт: подрезать нечего. */
+const MIN_STATIONS = 4;
 
 export interface RoadShape {
-  readonly road: Road;
+  readonly type: RoadType;
   readonly stations: readonly Station[];
-  /** высота дороги в каждой станции */
   readonly height: readonly number[];
   readonly halfWidth: number;
-  /** самый крутой участок этой дороги, доля (0.08 = 8%) */
   readonly grade: number;
-  /** насколько дорога дальше всего отошла от земли, метры */
   readonly lift: number;
+}
+
+/** Торец участка, приходящий в узел. */
+export interface JunctionEnd {
+  readonly shape: number;
+  /** торец в начале участка (иначе в конце) */
+  readonly atStart: boolean;
+}
+
+/** Площадка перекрёстка: обход по торцам подрезанных коридоров. */
+export interface Junction {
+  readonly x: number;
+  readonly z: number;
+  readonly height: number;
+  /** торцы, упорядоченные по кругу */
+  readonly ends: readonly JunctionEnd[];
 }
 
 export interface World {
   readonly shapes: readonly RoadShape[];
+  readonly junctions: readonly Junction[];
   readonly terrain: Terrain;
-  /** самый крутой участок среди всех дорог */
   readonly grade: number;
-  /** самый большой отрыв дороги от земли: где нужен мост или тоннель */
   readonly lift: number;
+  /** почему постройку не удалось собрать; null — всё в порядке */
+  readonly rejected: string | null;
 }
 
 function steepest(stations: readonly Station[], h: readonly number[]): number {
@@ -62,23 +76,26 @@ function steepest(stations: readonly Station[], h: readonly number[]): number {
 /**
  * Прижимает профиль к допустимому уклону: проходим вперёд и назад, не давая
  * соседним точкам разойтись по высоте сильнее, чем позволяет уклон.
- * После этого дорога круче предела быть НЕ МОЖЕТ — не потому что мы проверили,
- * а потому что такое состояние здесь нельзя записать.
+ * Концы закреплены на высоте узлов — иначе сходящиеся дороги разойдутся
+ * по высоте, и перекрёсток окажется ступенькой.
  */
-function limitGrade(stations: readonly Station[], h: number[]): void {
+function limitGrade(stations: readonly Station[], h: number[], ends: [number, number]): void {
   for (let pass = 0; pass < LIMIT_PASSES; pass++) {
+    h[0] = ends[0];
     for (let i = 1; i < h.length; i++) {
       const d = (stations[i].s - stations[i - 1].s) * MAX_GRADE;
       h[i] = Math.min(h[i - 1] + d, Math.max(h[i - 1] - d, h[i]));
     }
+    h[h.length - 1] = ends[1];
     for (let i = h.length - 2; i >= 0; i--) {
       const d = (stations[i + 1].s - stations[i].s) * MAX_GRADE;
       h[i] = Math.min(h[i + 1] + d, Math.max(h[i + 1] - d, h[i]));
     }
+    h[0] = ends[0];
   }
 }
 
-/** Сглаживание переломов. Уклон от него только уменьшается, поэтому предел цел. */
+/** Сглаживание переломов. Уклон от него только уменьшается, предел остаётся цел. */
 function smooth(h: number[]): void {
   for (let pass = 0; pass < SMOOTH_PASSES; pass++) {
     const prev = h.slice();
@@ -87,47 +104,126 @@ function smooth(h: number[]): void {
 }
 
 /**
- * Продольный профиль дороги.
- *
- * Настоящую дорогу проектируют так: задают её собственную линию высоты
- * с ограниченным уклоном, а землю потом режут и сыплют под неё.
- * Здесь то же самое: берём рельеф, прижимаем к пределу уклона, потом
- * скругляем переломы — получаются те самые прямые уклоны, сшитые кривыми.
- *
- * Там, где земля круче предела, дорога от неё отрывается. Насколько —
- * видно в `lift`. Большой отрыв означает, что здесь нужен мост или тоннель,
- * а не земляные работы.
+ * Продольный профиль участка.
+ * Настоящую дорогу проектируют так: сначала своя линия высоты с ограниченным
+ * уклоном, потом землю режут и сыплют под неё. Здесь то же самое.
  */
-function profile(stations: readonly Station[], terrain: Terrain): number[] {
+function profile(stations: readonly Station[], terrain: Terrain, ends: [number, number]): number[] {
   const h = stations.map((st) => terrain(st.x, st.z));
-  limitGrade(stations, h);
+  limitGrade(stations, h, ends);
   smooth(h);
-  limitGrade(stations, h);
+  h[0] = ends[0];
+  h[h.length - 1] = ends[1];
+  limitGrade(stations, h, ends);
   return h;
 }
 
 export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT_TERRAIN): World {
   const terrain = (TERRAINS[terrainName] ?? TERRAINS[DEFAULT_TERRAIN]).height;
+  const net = planarize(roads);
+  const nodeHeight = net.nodes.map((n) => terrain(n.x, n.z));
 
-  const shapes = roads.map((road) => {
-    const stations = sampleCenterline(road, 2);
-    const height = profile(stations, terrain);
-    const lift = stations.reduce((m, st, i) => Math.max(m, Math.abs(height[i] - terrain(st.x, st.z))), 0);
-    return {
-      road,
+  // Высоты узлов тоже обязаны укладываться в предельный уклон: между двумя
+  // близкими узлами с разной высотой земли дорога встала бы стеной.
+  // Сближаем их, пока каждый участок не станет проходимым.
+  for (let pass = 0; pass < 40; pass++) {
+    let moved = false;
+    for (const edge of net.edges) {
+      const line = edge.line;
+      let length = 0;
+      for (let i = 1; i < line.length; i++) length += Math.hypot(line[i].x - line[i - 1].x, line[i].z - line[i - 1].z);
+      const allowed = length * MAX_GRADE;
+      const diff = nodeHeight[edge.to] - nodeHeight[edge.from];
+      if (Math.abs(diff) <= allowed) continue;
+      const pull = (Math.abs(diff) - allowed) / 2 * Math.sign(diff);
+      nodeHeight[edge.from] += pull;
+      nodeHeight[edge.to] -= pull;
+      moved = true;
+    }
+    if (!moved) break;
+  }
+
+  const shapes: RoadShape[] = [];
+  /** для каждого участка: индексы узлов и торцы */
+  const ownerNode: { from: number; to: number }[] = [];
+  let rejected: string | null = null;
+  let dropped = 0;
+
+  for (const edge of net.edges) {
+    const full = stationsFromLine(edge.line);
+    const halfWidth = roadWidth(edge.type) / 2;
+    const height = profile(full, terrain, [nodeHeight[edge.from], nodeHeight[edge.to]]);
+
+    // подрезаем торцы там, где сходятся дороги: полотна не должны налезать
+    const cutFrom = net.nodes[edge.from].degree > 1 ? trimRadius(net, edge.from) : 0;
+    const cutTo = net.nodes[edge.to].degree > 1 ? trimRadius(net, edge.to) : 0;
+    const total = full[full.length - 1].s;
+
+    const keep: number[] = [];
+    for (let i = 0; i < full.length; i++) {
+      if (full[i].s >= cutFrom - 1e-6 && total - full[i].s >= cutTo - 1e-6) keep.push(i);
+    }
+    // слишком короткий участок между перекрёстками просто не строится:
+    // он всё равно целиком ушёл бы под площадку
+    if (keep.length < MIN_STATIONS) {
+      dropped++;
+      continue;
+    }
+
+    const stations = keep.map((i) => full[i]);
+    const cut = keep.map((i) => height[i]);
+
+    // за краем мира земли нет — пришить к ней полотно не к чему
+    const outside = stations.some(
+      (st) => Math.abs(st.x) + halfWidth > WORLD_HALF || Math.abs(st.z) + halfWidth > WORLD_HALF,
+    );
+    if (outside) {
+      rejected = 'дорога выходит за край мира';
+      continue;
+    }
+
+    ownerNode.push({ from: edge.from, to: edge.to });
+    shapes.push({
+      type: edge.type,
       stations,
-      height,
-      halfWidth: roadWidth(road.type) / 2,
-      grade: steepest(stations, height),
-      lift,
-    };
+      height: cut,
+      halfWidth,
+      grade: steepest(stations, cut),
+      lift: stations.reduce((m, st, i) => Math.max(m, Math.abs(cut[i] - terrain(st.x, st.z))), 0),
+    });
+  }
+
+  // --- площадки перекрёстков: обход торцов по кругу ---
+  const junctions: Junction[] = [];
+  net.nodes.forEach((node, index) => {
+    if (node.degree < 2) return;
+    const ends: { end: JunctionEnd; angle: number }[] = [];
+
+    shapes.forEach((shape, s) => {
+      const owner = ownerNode[s];
+      for (const atStart of [true, false]) {
+        if ((atStart ? owner.from : owner.to) !== index) continue;
+        const st = atStart ? shape.stations[0] : shape.stations[shape.stations.length - 1];
+        ends.push({ end: { shape: s, atStart }, angle: Math.atan2(st.z - node.z, st.x - node.x) });
+      }
+    });
+
+    if (ends.length < 2) return;
+    ends.sort((a, b) => a.angle - b.angle);
+    junctions.push({ x: node.x, z: node.z, height: nodeHeight[index], ends: ends.map((e) => e.end) });
   });
+
+  if (shapes.length === 0 && roads.length > 0 && rejected === null) {
+    rejected = dropped > 0 ? 'все участки короче перекрёстка' : 'дорога слишком короткая';
+  }
 
   return {
     shapes,
+    junctions,
     terrain,
     grade: shapes.reduce((g, s) => Math.max(g, s.grade), 0),
     lift: shapes.reduce((l, s) => Math.max(l, s.lift), 0),
+    rejected,
   };
 }
 
@@ -158,6 +254,16 @@ export function nearestRoad(world: World, x: number, z: number): RoadProximity |
       }
     }
   }
+
+  // площадка перекрёстка тоже держит землю: иначе вокруг неё будет провал
+  for (const j of world.junctions) {
+    const distance = Math.hypot(x - j.x, z - j.z);
+    let radius = 0;
+    for (const e of j.ends) radius = Math.max(radius, world.shapes[e.shape].halfWidth);
+    if (best === null || distance - radius < best.distance - best.halfWidth) {
+      best = { distance, roadHeight: j.height, halfWidth: radius };
+    }
+  }
   return best;
 }
 
@@ -166,8 +272,7 @@ export function nearestRoad(world: World, x: number, z: number): RoadProximity |
  *
  * Под дорогой земля равна дороге — поэтому «земля торчит сквозь дорогу»
  * не может случиться: это одна и та же высота. В стороны земля уходит
- * под постоянным углом откоса и КОНЧАЕТСЯ, как только догонит нетронутую
- * землю. Отсюда чёткий край насыпи вместо размазанного вала.
+ * под постоянным углом откоса и КОНЧАЕТСЯ, догнав нетронутую землю.
  */
 export function groundHeightAt(world: World, x: number, z: number): number {
   const natural = world.terrain(x, z);
@@ -175,7 +280,13 @@ export function groundHeightAt(world: World, x: number, z: number): number {
   if (near === null) return natural;
 
   const free = Math.max(0, near.distance - near.halfWidth);
-  const canRise = free / CUT_SLOPE;
-  const canDrop = free / FILL_SLOPE;
-  return Math.min(near.roadHeight + canRise, Math.max(near.roadHeight - canDrop, natural));
+  return Math.min(near.roadHeight + free / CUT_SLOPE, Math.max(near.roadHeight - free / FILL_SLOPE, natural));
 }
+
+/** Точки поперечника торца, от -полуширины к +полуширине в системе станции. */
+export function endProfile(shape: RoadShape, atStart: boolean): { station: Station; height: number } {
+  const i = atStart ? 0 : shape.stations.length - 1;
+  return { station: shape.stations[i], height: shape.height[i] };
+}
+
+export type { Point2 };

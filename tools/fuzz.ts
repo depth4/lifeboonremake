@@ -55,6 +55,7 @@ interface Broken {
 }
 
 const broken: Broken[] = [];
+let rejected = 0;
 let worstAspect = 0;
 let worstAspectSeed = 0;
 let maxTriangles = 0;
@@ -67,10 +68,19 @@ for (let seed = 1; seed <= TRIES; seed++) {
   let report;
   try {
     const world = buildWorld(roads, terrain);
+    if (world.rejected !== null || world.shapes.length === 0) {
+      rejected++;
+      continue;
+    }
     const surface = buildSurface(world);
     report = inspect(world, surface);
   } catch (error) {
-    broken.push({ seed, terrain, roads: roads.length, reasons: ['ПАДЕНИЕ: ' + String(error).split('\n')[0]] });
+    const text = String(error);
+    if (text.includes('накладываются')) {
+      rejected++;
+      continue;
+    }
+    broken.push({ seed, terrain, roads: roads.length, reasons: ['ПАДЕНИЕ: ' + text.split('\n')[0]] });
     continue;
   }
   slowest = Math.max(slowest, performance.now() - started);
@@ -88,6 +98,7 @@ const crossing = broken.filter((b) => b.roads > 1).length;
 
 console.log(`обстрел: ${TRIES} случайных построек`);
 console.log(`  сломалось            ${broken.length} (${((broken.length / TRIES) * 100).toFixed(0)}%)`);
+console.log(`  не построилось       ${rejected} (мир отказался их принять)`);
 console.log(`    из них с несколькими дорогами  ${crossing}`);
 console.log(`    из них с одной дорогой         ${broken.length - crossing}`);
 console.log(`  худшая вытянутость треугольника  ${worstAspect.toFixed(0)} : 1   (зерно ${worstAspectSeed})`);

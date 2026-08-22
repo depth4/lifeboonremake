@@ -1,17 +1,25 @@
-/** Рукотворные данные для первого шага: одна дорога через плато. */
+/** Рукотворные данные для первого запуска: две дороги с перекрёстком. */
 
 import type { Road } from './world/road.ts';
-import { ROAD_TYPES } from './world/road.ts';
+import { roadTypeForLanes } from './world/road.ts';
 
 export const DEMO_ROADS: Road[] = [
   {
-    type: ROAD_TYPES.street2,
+    type: roadTypeForLanes(2),
     centerline: [
-      { x: -105, z: -58 },
-      { x: -38, z: -8 },
-      { x: 8, z: 16 },
-      { x: 44, z: 34 },
-      { x: 100, z: 58 },
+      { x: -100, z: -46 },
+      { x: -40, z: -22 },
+      { x: 20, z: 6 },
+      { x: 100, z: 34 },
+    ],
+  },
+  {
+    type: roadTypeForLanes(1),
+    centerline: [
+      { x: -28, z: 96 },
+      { x: -6, z: 20 },
+      { x: 14, z: -44 },
+      { x: 30, z: -96 },
     ],
   },
 ];
