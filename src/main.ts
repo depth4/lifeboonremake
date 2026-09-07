@@ -1,7 +1,7 @@
 /** Склейка: собрать мир, посчитать поверхность, показать, повесить кнопки. */
 
 import type { Road } from './world/road.ts';
-import { DEMO_ROADS } from './demo.ts';
+import { DEMO_ROADS } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';

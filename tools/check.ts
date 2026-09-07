@@ -11,7 +11,7 @@
  */
 
 import type { Surface } from '../src/surface/index.ts';
-import { DEMO_ROADS } from '../src/demo.ts';
+import { DEMO_ROADS } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { TERRAINS } from '../src/world/terrain.ts';
 import { buildSurface } from '../src/surface/index.ts';

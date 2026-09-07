@@ -20,6 +20,8 @@ export interface Report {
   readonly downFacing: number;
   /** самый вытянутый треугольник: иглы дают рваное освещение */
   readonly worstAspect: number;
+  /** треугольники нулевой площади: не треугольники вовсе */
+  readonly flat: number;
   /** самый крутой участок дороги, доля */
   readonly grade: number;
   /** самый большой отрыв дороги от земли, метры */
@@ -46,6 +48,7 @@ export function inspect(world: World, surface: Surface): Report {
   const edges = new Map<string, number>();
   let downFacing = 0;
   let worstAspect = 0;
+  let flat = 0;
 
   for (let t = 0; t < I.length; t += 3) {
     const k = [key(I[t]), key(I[t + 1]), key(I[t + 2])];
@@ -59,7 +62,11 @@ export function inspect(world: World, surface: Surface): Report {
     const v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
     const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
     const len = Math.hypot(n[0], n[1], n[2]);
-    if (len < 1e-9) continue;
+    // площадь = len/2; квадратный микрометр — это уже не треугольник
+    if (len < 2e-6) {
+      flat++;
+      continue;
+    }
     // изнанкой вверх — только у земли: у бордюра вертикальные грани это норма
     if (n[1] / len < -0.2) downFacing++;
 
@@ -88,6 +95,7 @@ export function inspect(world: World, surface: Surface): Report {
     holes,
     downFacing,
     worstAspect,
+    flat,
     grade: world.grade,
     lift: world.lift,
   };
@@ -99,6 +107,7 @@ export function problems(r: Report): string[] {
   if (r.shared === 0) out.push('земля и дорога не имеют общих вершин — это две поверхности, а не одна');
   if (r.holes > 0) out.push(`${r.holes} незашитых рёбер — сквозь них видно небо`);
   if (r.downFacing > 0) out.push(`${r.downFacing} треугольников земли повёрнуты изнанкой вверх`);
+  if (r.flat > 0) out.push(`${r.flat} треугольников нулевой площади`);
   if (r.grade > MAX_GRADE + 0.001) out.push(`дорога круче предела: ${(r.grade * 100).toFixed(1)}%`);
   return out;
 }

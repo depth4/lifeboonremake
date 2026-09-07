@@ -20,6 +20,7 @@
  */
 
 import cdt2d from 'cdt2d';
+import { incircle, orient2d } from 'robust-predicates';
 import type { Point2 } from '../world/road.ts';
 import type { Region } from './clip.ts';
 
@@ -219,8 +220,25 @@ export function carvePlane(
     grid.add(p.x, p.z, p.x, p.z, clearance);
   }
 
+  // Триангуляция в два приёма. Библиотека умеет и сразу «красиво», но её
+  // красивый режим на десяти тысячах точек думает четыре секунды, а тупой —
+  // двадцать миллисекунд. Поэтому режем тупо, а качество наводим сами.
+  const raw = cdt2d(points, edges, { delaunay: false, exterior: true, interior: true });
+  const tri = new Int32Array(raw.length * 3);
+  for (let t = 0; t < raw.length; t++) {
+    const [a, b, c] = raw[t];
+    // все треугольники обходим в одну сторону: иначе «сосед через ребро»
+    // перестаёт быть однозначным понятием
+    const ccw = orient2d(points[a][0], points[a][1], points[b][0], points[b][1], points[c][0], points[c][1]) < 0;
+    tri[t * 3] = a;
+    tri[t * 3 + 1] = ccw ? b : c;
+    tri[t * 3 + 2] = ccw ? c : b;
+  }
+  makeDelaunay(points, tri, edges);
+
   const faces: Face[] = [];
-  for (const [a, b, c] of cdt2d(points, edges, { delaunay: true, exterior: true, interior: true })) {
+  for (let t = 0; t < tri.length; t += 3) {
+    const a = tri[t], b = tri[t + 1], c = tri[t + 2];
     faces.push({
       a, b, c,
       x: (points[a][0] + points[b][0] + points[c][0]) / 3,
@@ -228,4 +246,101 @@ export function carvePlane(
     });
   }
   return { points: points.map(([x, z]) => ({ x, z })), faces };
+}
+
+const nextEdge = (e: number): number => (e % 3 === 2 ? e - 2 : e + 1);
+const prevEdge = (e: number): number => (e % 3 === 0 ? e + 2 : e - 1);
+
+/**
+ * Наводит качество: пока найдётся ребро, у которого чужая вершина попадает
+ * внутрь описанной окружности соседа, — переворачиваем это ребро.
+ *
+ * Это классический перещёлк Лоусона. Он не двигает ни одной точки и не меняет
+ * границ: обязательные рёбра не трогаются вовсе, а переворот делается только
+ * если оба новых треугольника вышли лицом вверх. Поэтому испортить раскрой
+ * им нельзя — только улучшить форму треугольников.
+ */
+function makeDelaunay(points: number[][], tri: Int32Array, edges: number[][]): void {
+  const n = tri.length;
+  const twin = new Int32Array(n).fill(-1);
+  const seen = new Map<number, number>();
+  const V = points.length;
+  for (let e = 0; e < n; e++) {
+    const a = tri[e], b = tri[nextEdge(e)];
+    const back = seen.get(b * V + a);
+    if (back !== undefined) {
+      twin[e] = back;
+      twin[back] = e;
+      seen.delete(b * V + a);
+    } else {
+      seen.set(a * V + b, e);
+    }
+  }
+
+  const locked = new Set<number>();
+  for (const [a, b] of edges) locked.add(a < b ? a * V + b : b * V + a);
+  const isLocked = (a: number, b: number): boolean => locked.has(a < b ? a * V + b : b * V + a);
+
+  // «Уже в очереди» отмечается ТОЛЬКО при укладке в стопку. Если пометить
+  // всё сразу, то полуребро на краю мира (у которого соседа нет и в стопку
+  // оно не легло) навсегда считалось бы просмотренным — а после переворота
+  // сосед у него появляется, и проверить его уже никто не придёт.
+  const stack: number[] = [];
+  const queued = new Uint8Array(n);
+  for (let e = 0; e < n; e++) {
+    if (twin[e] < 0) continue;
+    stack.push(e);
+    queued[e] = 1;
+  }
+
+  let guard = n * 40;
+  while (stack.length > 0 && guard-- > 0) {
+    const e = stack.pop() as number;
+    queued[e] = 0;
+    const t = twin[e];
+    if (t < 0) continue;
+
+    const a = tri[e], b = tri[nextEdge(e)];
+    if (isLocked(a, b)) continue;
+    const p = tri[prevEdge(e)];
+    const q = tri[prevEdge(t)];
+
+    const pa = points[a], pb = points[b], pp = points[p], pq = points[q];
+    // Треугольник нулевой площади — не треугольник, и он всегда неправильный.
+    // Отдельно потому, что описанной окружности у него нет и обычная проверка
+    // о нём ничего сказать не может. Такие рождаются там, где три точки лежат
+    // ровно на одной прямой: например вдоль края мира.
+    const flat =
+      orient2d(pa[0], pa[1], pb[0], pb[1], pp[0], pp[1]) === 0 ||
+      orient2d(pb[0], pb[1], pa[0], pa[1], pq[0], pq[1]) === 0;
+    // чужая вершина внутри описанной окружности — ребро лежит неправильно
+    if (!flat && incircle(pa[0], pa[1], pb[0], pb[1], pp[0], pp[1], pq[0], pq[1]) <= 0) continue;
+    // после переворота получатся треугольники (q,b,p) и (p,a,q). Переворот
+    // делается, только если оба вышли обходом в ту же сторону, что и все
+    // остальные: вывернутый треугольник так становится невозможен
+    if (orient2d(pq[0], pq[1], pb[0], pb[1], pp[0], pp[1]) >= 0) continue;
+    if (orient2d(pp[0], pp[1], pa[0], pa[1], pq[0], pq[1]) >= 0) continue;
+
+    const en = nextEdge(e), ep = prevEdge(e);
+    const tn = nextEdge(t), tp = prevEdge(t);
+    const outsideEp = twin[ep], outsideTp = twin[tp];
+
+    tri[e] = q;
+    tri[t] = p;
+
+    const link = (x: number, y: number): void => {
+      twin[x] = y;
+      if (y >= 0) twin[y] = x;
+    };
+    link(e, outsideTp);
+    link(t, outsideEp);
+    link(ep, tp);
+
+    for (const side of [e, t, en, ep, tn, tp]) {
+      if (twin[side] >= 0 && queued[side] === 0) {
+        queued[side] = 1;
+        stack.push(side);
+      }
+    }
+ }
 }

@@ -58,6 +58,13 @@ export interface World {
   readonly terrain: Terrain;
   readonly grade: number;
   readonly lift: number;
+  /**
+   * Раскладка отрезков дорог по клеткам. Считается один раз вместе с миром,
+   * поэтому устареть не может: мира без своей раскладки не существует.
+   * Без неё каждый вопрос «какая дорога ближе» перебирал ВСЕ отрезки, и на
+   * большой сцене на это уходили секунды.
+   */
+  readonly near: (x: number, z: number) => RoadProximity | null;
 }
 
 function steepest(stations: readonly Station[], h: readonly number[]): number {
@@ -153,6 +160,7 @@ export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT
     terrain,
     grade: shapes.reduce((g, s) => Math.max(g, s.grade), 0),
     lift: shapes.reduce((l, s) => Math.max(l, s.lift), 0),
+    near: indexRoads(shapes),
   };
 }
 
@@ -166,33 +174,90 @@ export interface RoadProximity {
 
 /** Ближайшая дорога и её высота в этой точке. */
 export function nearestRoad(world: World, x: number, z: number): RoadProximity | null {
-  let best: RoadProximity | null = null;
-  let bestKey = Infinity;
+  return world.near(x, z);
+}
 
-  for (const shape of world.shapes) {
+/** Размер клетки раскладки, метры. */
+const CELL = 16;
+
+/**
+ * Строит раскладку отрезков по клеткам и возвращает вопрос «кто здесь ближе».
+ *
+ * Сравниваем не по голому расстоянию, а по «насколько вылезли за край дороги»:
+ * иначе широкая дорога рядом проигрывала бы узкой. Поиск расширяется кольцами
+ * клеток, пока найденное не станет заведомо лучшим — приблизительных ответов
+ * тут не бывает.
+ */
+function indexRoads(shapes: readonly RoadShape[]): (x: number, z: number) => RoadProximity | null {
+  interface Seg {
+    ax: number; az: number; dx: number; dz: number; lenSq: number;
+    h0: number; h1: number; shape: RoadShape;
+  }
+  const cells = new Map<string, Seg[]>();
+  let widest = 0;
+  for (const shape of shapes) {
+    widest = Math.max(widest, shape.outerHalf);
     const st = shape.stations;
     for (let i = 0; i + 1 < st.length; i++) {
-      const ax = st[i].x, az = st[i].z;
-      const dx = st[i + 1].x - ax, dz = st[i + 1].z - az;
-      const lenSq = dx * dx + dz * dz;
-      let t = lenSq > 0 ? ((x - ax) * dx + (z - az) * dz) / lenSq : 0;
-      t = Math.max(0, Math.min(1, t));
-      const distance = Math.hypot(x - (ax + dx * t), z - (az + dz * t));
-      // сравниваем по «насколько вылезли за край дороги», а не по голому
-      // расстоянию: иначе широкая дорога рядом проигрывала бы узкой
-      const key = distance - shape.outerHalf;
-      if (key >= bestKey) continue;
-      bestKey = key;
-      best = {
-        distance,
-        roadHeight: shape.height[i] + (shape.height[i + 1] - shape.height[i]) * t,
-        halfWidth: shape.halfWidth,
-        outerHalf: shape.outerHalf,
-        curb: shape.type.curb,
+      const seg: Seg = {
+        ax: st[i].x, az: st[i].z,
+        dx: st[i + 1].x - st[i].x, dz: st[i + 1].z - st[i].z,
+        lenSq: 0, h0: shape.height[i], h1: shape.height[i + 1], shape,
       };
+      seg.lenSq = seg.dx * seg.dx + seg.dz * seg.dz;
+      const i0 = Math.floor(Math.min(seg.ax, seg.ax + seg.dx) / CELL);
+      const i1 = Math.floor(Math.max(seg.ax, seg.ax + seg.dx) / CELL);
+      const j0 = Math.floor(Math.min(seg.az, seg.az + seg.dz) / CELL);
+      const j1 = Math.floor(Math.max(seg.az, seg.az + seg.dz) / CELL);
+      for (let ii = i0; ii <= i1; ii++) {
+        for (let jj = j0; jj <= j1; jj++) {
+          const key = `${ii},${jj}`;
+          const list = cells.get(key);
+          if (list) list.push(seg);
+          else cells.set(key, [seg]);
+        }
+      }
     }
   }
-  return best;
+
+  if (cells.size === 0) return () => null;
+
+  return (x, z) => {
+    const ci = Math.floor(x / CELL), cj = Math.floor(z / CELL);
+    let best: RoadProximity | null = null;
+    let bestKey = Infinity;
+    let bestDistance = Infinity;
+
+    for (let r = 0; r < 400; r++) {
+      for (let i = ci - r; i <= ci + r; i++) {
+        for (let j = cj - r; j <= cj + r; j++) {
+          if (r > 0 && Math.abs(i - ci) !== r && Math.abs(j - cj) !== r) continue;
+          const list = cells.get(`${i},${j}`);
+          if (!list) continue;
+          for (const seg of list) {
+            let t = seg.lenSq > 0 ? ((x - seg.ax) * seg.dx + (z - seg.az) * seg.dz) / seg.lenSq : 0;
+            t = t < 0 ? 0 : t > 1 ? 1 : t;
+            const distance = Math.hypot(x - (seg.ax + seg.dx * t), z - (seg.az + seg.dz * t));
+            const key = distance - seg.shape.outerHalf;
+            if (key >= bestKey) continue;
+            bestKey = key;
+            bestDistance = distance;
+            best = {
+              distance,
+              roadHeight: seg.h0 + (seg.h1 - seg.h0) * t,
+              halfWidth: seg.shape.halfWidth,
+              outerHalf: seg.shape.outerHalf,
+              curb: seg.shape.type.curb,
+            };
+          }
+        }
+      }
+      // отрезок из кольца дальше этого уже не может выиграть даже будучи
+      // самым широким: дальше искать нечего
+      if (best !== null && (r - 1) * CELL > bestDistance + widest) break;
+    }
+    return best;
+  };
 }
 
 /**

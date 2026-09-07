@@ -40,7 +40,9 @@ const CORNER_RADIUS = 6;
 /** Длиннее этого ребра границы не бывает: иначе край дороги врёт про высоту. */
 const MAX_EDGE = 4;
 /** Шаг сетки земли, метры. */
-const GRID_STEP = 3.5;
+const GRID_STEP = 4;
+/** Насколько точки сетки сбиты с ровных мест, доля шага. */
+const WOBBLE = 0.34;
 /** Ближе этого к границе внутренние точки не ставим: там рождаются иглы. */
 const CLEARANCE = 0.7;
 /** Насколько разметка не доходит до края асфальта. */
@@ -58,20 +60,24 @@ const lineOf = (shape: World['shapes'][number]): Point2[] =>
   shape.stations.map((st) => ({ x: st.x, z: st.z }));
 
 export function buildSurface(world: World): Surface {
+  // Мир — квадрат. Всё мощёное обрезается по нему, поэтому «край мира»
+  // ровно один: у земли и у дороги он не может оказаться разным.
+  const edge = box(WORLD_HALF);
+
   // --- 1. Области ---
-  const paved = closeCorners(
+  const paved = intersect(closeCorners(
     unionAll(world.shapes.map((s) => corridor(lineOf(s), s.halfWidth))),
     CORNER_RADIUS,
-  );
+  ), edge);
 
   // Тротуар выведен из асфальта: «всё, что не дальше своей ширины от асфальта».
   // Поэтому его ширина одинакова везде, включая скруглённый угол перекрёстка,
   // и он не может ни оторваться от дороги, ни налезть на соседнюю.
   const narrowest = world.shapes.reduce((w, s) => Math.min(w, s.type.sidewalk), Infinity);
-  const outer = world.shapes.length === 0 ? [] : union(
+  const outer = world.shapes.length === 0 ? [] : intersect(union(
     grow(paved, Number.isFinite(narrowest) ? narrowest : 0),
     unionAll(world.shapes.map((s) => grow(corridor(lineOf(s), s.halfWidth), s.type.sidewalk))),
-  );
+  ), edge);
 
   // Разметка: тонкие полосы вдоль границ полос, отступившие от края асфальта
   // и убранные с перекрёстков — там разметка идёт иначе, это отдельная тема.
@@ -94,7 +100,7 @@ export function buildSurface(world: World): Surface {
   const edgePaved = densify(paved, MAX_EDGE);
   const edgeOuter = densify(outer, MAX_EDGE);
   const edgeMark = densify(marking, MAX_EDGE);
-  const edgeBox = densify(box(WORLD_HALF), GRID_STEP);
+  const edgeBox = densify(edge, GRID_STEP);
 
   // --- 3. Точки внутри: без них поверхность натянулась бы между краями ---
   const interior: Point2[] = [];
@@ -111,15 +117,30 @@ export function buildSurface(world: World): Surface {
       }
     }
   }
+  // Сетка нарочно неровная. На идеально ровной сетке целый столбец точек лежит
+  // на одной прямой, и в раскрое заводятся треугольники нулевой площади: их
+  // потом нечем починить, потому что у них нет описанной окружности. Сбитая
+  // сетка делает точное совпадение трёх точек на прямой невозможным — и заодно
+  // трава перестаёт бликовать полосами.
   const steps = Math.round((WORLD_HALF * 2) / GRID_STEP);
+  const wobble = (i: number, j: number): number => {
+    const h = Math.sin(i * 127.1 + j * 311.7) * 43758.545;
+    return (h - Math.floor(h) - 0.5) * 2 * WOBBLE * GRID_STEP;
+  };
   for (let i = 1; i < steps; i++) {
     for (let j = 1; j < steps; j++) {
-      interior.push({ x: -WORLD_HALF + i * GRID_STEP, z: -WORLD_HALF + j * GRID_STEP });
+      interior.push({
+        x: -WORLD_HALF + i * GRID_STEP + wobble(i, j),
+        z: -WORLD_HALF + j * GRID_STEP + wobble(j + 1000, i),
+      });
     }
   }
 
   // --- 4. Один раскрой на всё ---
-  const plane = carvePlane([edgePaved, edgeOuter, edgeMark, edgeBox], interior, CLEARANCE);
+  // За краем мира точек не существует: тогда внешняя граница раскроя — ровно
+  // квадрат мира, и треугольников, торчащих наружу, взяться неоткуда.
+  const within = interior.filter((p) => Math.abs(p.x) < WORLD_HALF && Math.abs(p.z) < WORLD_HALF);
+  const plane = carvePlane([edgePaved, edgeOuter, edgeMark, edgeBox], within, CLEARANCE);
 
   // --- 5. Высоты ---
   // «Сколько метров наружу от тротуара» считается по ТОЙ ЖЕ границе, которая
