@@ -5,7 +5,7 @@ import { DEMO_ROADS } from './demo.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
-import { buildRoadRibbon, buildSurface } from './surface.ts';
+import { buildGhost, buildSurface } from './surface/index.ts';
 import { VIEWS, show } from './render.ts';
 import { createBuilder } from './build.ts';
 
@@ -35,7 +35,6 @@ function rebuild(): void {
   const started = performance.now();
   try {
     const next = buildWorld(roads, terrainName);
-    if (next.rejected !== null) throw new Error(next.rejected);
     const nextSurface = buildSurface(next);
     world = next;
     surface = nextSurface;
@@ -88,9 +87,7 @@ const builder = createBuilder({
     readout();
   },
   preview: (road) => {
-    if (!road) return viewer.setGhost(null);
-    const shape = buildWorld([road], terrainName).shapes[0];
-    viewer.setGhost(shape ? buildRoadRibbon(shape) : null);
+    viewer.setGhost(road ? buildGhost(world, road) : null);
   },
   snap: (point) => {
     const hit = snapPoint(world, point.x, point.z, SNAP_RADIUS);

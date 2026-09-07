@@ -11,7 +11,7 @@
 import type { Point2, Road } from '../src/world/road.ts';
 import { roadTypeForLanes } from '../src/world/road.ts';
 import { buildWorld } from '../src/world/world.ts';
-import { buildSurface } from '../src/surface.ts';
+import { buildSurface } from '../src/surface/index.ts';
 import { TERRAINS, WORLD_HALF } from '../src/world/terrain.ts';
 import { inspect, problems } from './inspect.ts';
 

@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import type { Material, Surface } from './surface.ts';
+import type { Material, Surface } from './surface/index.ts';
 import type { Point2 } from './world/road.ts';
 
 const COLORS: Record<Material, number> = {
@@ -16,7 +16,6 @@ const COLORS: Record<Material, number> = {
   sidewalk: 0xbbb6a9,
   curb: 0x807c72,
   marking: 0xf0ecdc,
-  median: 0x6f8a52,
 };
 
 interface View {

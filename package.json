@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "cdt2d": "^1.0.0",
+    "clipper-lib": "^6.4.2",
     "polygon-clipping": "^0.15.7",
     "three": "^0.185.1"
   },

@@ -10,18 +10,40 @@
  * до которых мы сами не додумались, есть `npm run fuzz`.
  */
 
+import type { Surface } from '../src/surface/index.ts';
 import { DEMO_ROADS } from '../src/demo.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { TERRAINS } from '../src/world/terrain.ts';
-import { buildSurface } from '../src/surface.ts';
+import { buildSurface } from '../src/surface/index.ts';
 import { inspect, problems } from './inspect.ts';
+
+/**
+ * Заведомая поломка: выкидываем бордюрные стенки. Тогда проезжая часть и
+ * тротуар перестают быть сшиты между собой, и вдоль всей дороги открывается
+ * щель. Если осмотр этого НЕ заметит — сломан осмотр, а не мир.
+ */
+function withoutCurb(surface: Surface): Surface {
+  const keep = surface.groups.filter((g) => g.material !== 'curb');
+  const indices: number[] = [];
+  const groups = keep.map((g) => {
+    const start = indices.length;
+    for (let i = g.start; i < g.start + g.count; i++) indices.push(surface.indices[i]);
+    return { material: g.material, start, count: g.count };
+  });
+  return {
+    positions: surface.positions,
+    indices: new Uint32Array(indices),
+    groups,
+    stats: { vertices: surface.stats.vertices, triangles: indices.length / 3 },
+  };
+}
 
 const broken = process.argv.includes('break');
 const failures: string[] = [];
 
 for (const name of Object.keys(TERRAINS)) {
   const world = buildWorld(DEMO_ROADS, name);
-  const surface = buildSurface(world, { detachRoad: broken });
+  const surface = broken ? withoutCurb(buildSurface(world)) : buildSurface(world);
   const r = inspect(world, surface);
 
   console.log(

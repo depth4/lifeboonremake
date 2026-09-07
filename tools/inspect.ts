@@ -4,7 +4,7 @@
  * постройками (`npm run fuzz`).
  */
 
-import type { Surface } from '../src/surface.ts';
+import type { Surface } from '../src/surface/index.ts';
 import type { World } from '../src/world/world.ts';
 import { MAX_GRADE } from '../src/world/world.ts';
 import { WORLD_HALF } from '../src/world/terrain.ts';
