@@ -1,7 +1,7 @@
 /** Склейка: собрать мир, посчитать поверхность, показать, повесить кнопки. */
 
 import type { Road } from './world/road.ts';
-import { DEMO_ROADS } from './scenes.ts';
+import { DEFAULT_SCENE, SCENES } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
@@ -9,13 +9,17 @@ import { buildGhost, buildSurface } from './surface/index.ts';
 import { VIEWS, show } from './render.ts';
 import { createBuilder } from './build.ts';
 
-const startView = new URLSearchParams(location.search).get('view') ?? 'road';
+const query = new URLSearchParams(location.search);
+const startView = query.get('view') ?? 'road';
+const startScene = query.get('scene') ?? DEFAULT_SCENE;
 
 /** На каком расстоянии инструмент начинает распознавать намерение, метры. */
 const SNAP_RADIUS = 14;
 
-const roads: Road[] = [...DEMO_ROADS];
-let terrainName = DEFAULT_TERRAIN;
+let sceneName = SCENES[startScene] ? startScene : DEFAULT_SCENE;
+const roads: Road[] = [...SCENES[sceneName]];
+let terrainName = query.get('terrain') ?? DEFAULT_TERRAIN;
+if (!TERRAINS[terrainName]) terrainName = DEFAULT_TERRAIN;
 
 let world = buildWorld(roads, terrainName);
 let surface = buildSurface(world);
@@ -132,6 +136,23 @@ if (tools) {
     tools.querySelectorAll<HTMLButtonElement>('button[data-tool]').forEach((b) => {
       if (b.dataset.tool !== 'undo') b.setAttribute('aria-pressed', String(b.dataset.tool === tool));
     });
+  });
+}
+
+// --- кнопки сцены ---
+const scenes = document.getElementById('scenes');
+if (scenes) {
+  scenes.innerHTML = Object.keys(SCENES)
+    .map((key) => `<button type="button" data-scene="${key}" aria-pressed="${key === sceneName}">${key}</button>`)
+    .join('');
+  scenes.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-scene]');
+    if (!button) return;
+    sceneName = button.dataset.scene ?? DEFAULT_SCENE;
+    roads.splice(0, roads.length, ...SCENES[sceneName]);
+    lastGood = [...roads];
+    rebuild();
+    scenes.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
   });
 }
 

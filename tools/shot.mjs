@@ -1,15 +1,30 @@
 /**
- * Снимок экрана из терминала. Никакого монитора не нужно.
- * Запуск: npm run shot [ракурс]   — ракурсы перечислены в src/render.ts
+ * Снимки экрана из терминала. Никакого монитора не нужно.
+ *
+ *   npm run shot                       — ракурс «вдоль», сцена по умолчанию
+ *   npm run shot -- close крест горы   — ракурс, сцена, рельеф
+ *   npm run shot -- all plan           — по снимку на каждую сцену
+ *
+ * Все снимки одного запуска делаются в одном браузере: так на дюжину сцен
+ * уходит несколько секунд, а не минута.
  */
 
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
+import { SCENES } from '../src/scenes.ts';
 
 const PORT = 5199;
-const view = process.argv[2] ?? 'road';
-const out = `shots/${view}.png`;
+const args = process.argv.slice(2);
+const all = args[0] === 'all';
+const view = (all ? args[1] : args[0]) ?? 'road';
+const terrain = (all ? args[2] : args[2]) ?? 'plateau';
+const scene = all ? null : args[1];
+
+const jobs = all
+  ? Object.keys(SCENES).map((name) => ({ scene: name, view, terrain, out: `shots/${name}-${view}.png` }))
+  : [{ scene, view, terrain, out: `shots/${scene ? `${scene}-` : ''}${view}.png` }];
+
 mkdirSync('shots', { recursive: true });
 
 /**
@@ -31,12 +46,19 @@ page.on('requestfailed', (r) => {
   if (!OPTIONAL.test(r.url())) problems.push('не загрузилось: ' + r.url());
 });
 
-try {
-  await page.goto(`http://localhost:${PORT}/?view=${view}`, { waitUntil: 'load' });
-  await page.waitForFunction(() => window.__ready === true, null, { timeout: 25000 });
-  await page.screenshot({ path: out });
-} catch (e) {
-  problems.push('страница не ожила: ' + e.message.split('\n')[0]);
+for (const job of jobs) {
+  const url = new URL(`http://localhost:${PORT}/`);
+  url.searchParams.set('view', job.view);
+  url.searchParams.set('terrain', job.terrain);
+  if (job.scene) url.searchParams.set('scene', job.scene);
+  try {
+    await page.goto(url.href, { waitUntil: 'load' });
+    await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });
+    await page.screenshot({ path: job.out });
+    console.log(`снимок: ${job.out}`);
+  } catch (e) {
+    problems.push(`${job.out}: страница не ожила — ${e.message.split('\n')[0]}`);
+  }
 }
 
 await browser.close();
@@ -44,8 +66,6 @@ await browser.close();
 if (problems.length > 0) {
   console.log('на странице проблемы:');
   for (const p of problems) console.log('  ✗ ' + p);
-} else {
-  console.log(`снимок: ${out}`);
 }
 
 // vite держит открытые сокеты и сам процесс не заканчивает — выходим принудительно

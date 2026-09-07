@@ -28,7 +28,7 @@ import { bands } from '../world/road.ts';
 import { WORLD_HALF } from '../world/terrain.ts';
 import { roadHeightAt, shelfHeight } from '../world/world.ts';
 import { box, corridor, densify, disc, grow, inside, intersect, subtract, union, unionAll } from './clip.ts';
-import { MeshBuilder, ROAD, SHELF, carvePlane } from './mesh.ts';
+import { CURB_FOOT, CURB_TOP, MeshBuilder, ROAD, SHELF, carvePlane } from './mesh.ts';
 import type { Material } from './mesh.ts';
 
 /**
@@ -190,10 +190,10 @@ export function buildSurface(world: World): Surface {
       if (Math.hypot(b.x - a.x, b.z - a.z) < 1e-6) continue;
       mesh.wall(
         'curb',
-        mesh.vertex(a.x, roadY(a.x, a.z), a.z, ROAD),
-        mesh.vertex(b.x, roadY(b.x, b.z), b.z, ROAD),
-        mesh.vertex(a.x, shelfY(a.x, a.z), a.z, SHELF),
-        mesh.vertex(b.x, shelfY(b.x, b.z), b.z, SHELF),
+        mesh.vertex(a.x, roadY(a.x, a.z), a.z, CURB_FOOT),
+        mesh.vertex(b.x, roadY(b.x, b.z), b.z, CURB_FOOT),
+        mesh.vertex(a.x, shelfY(a.x, a.z), a.z, CURB_TOP),
+        mesh.vertex(b.x, shelfY(b.x, b.z), b.z, CURB_TOP),
         { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 },
       );
     }

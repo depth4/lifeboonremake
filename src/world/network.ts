@@ -10,7 +10,7 @@
  */
 
 import type { Point2, Road, RoadType } from './road.ts';
-import { roadWidth, sampleCenterline } from './road.ts';
+import { sampleCenterline } from './road.ts';
 
 /** Ближе этого две точки считаем одной. */
 const SAME = 0.5;
@@ -46,7 +46,14 @@ export interface Network {
 
 const near = (a: Point2, b: Point2): boolean => Math.hypot(a.x - b.x, a.z - b.z) < SAME;
 
-/** Точка пересечения двух отрезков, если она есть строго внутри обоих. */
+/**
+ * Точка пересечения двух отрезков.
+ *
+ * Отрезок считается ПОЛУОТКРЫТЫМ: начало своё, конец принадлежит следующему.
+ * Тогда пересечение ровно в точке ломаной достаётся ровно одному отрезку —
+ * не теряется и не считается дважды. Раньше такие пересечения выбрасывались
+ * обоими соседями, и перекрёсток посреди прямого креста просто не возникал.
+ */
 function crossing(a1: Point2, a2: Point2, b1: Point2, b2: Point2): { t: number; u: number } | null {
   const ax = a2.x - a1.x, az = a2.z - a1.z;
   const bx = b2.x - b1.x, bz = b2.z - b1.z;
@@ -54,7 +61,7 @@ function crossing(a1: Point2, a2: Point2, b1: Point2, b2: Point2): { t: number; 
   if (Math.abs(den) < 1e-9) return null;
   const t = ((b1.x - a1.x) * bz - (b1.z - a1.z) * bx) / den;
   const u = ((b1.x - a1.x) * az - (b1.z - a1.z) * ax) / den;
-  if (t <= 1e-6 || t >= 1 - 1e-6 || u <= 1e-6 || u >= 1 - 1e-6) return null;
+  if (t < 0 || t >= 1 || u < 0 || u >= 1) return null;
   return { t, u };
 }
 
@@ -83,8 +90,8 @@ export function planarize(roads: readonly Road[]): Network {
           const dx = lb[j + 1].x - lb[j].x, dz = lb[j + 1].z - lb[j].z;
           const lenSq = dx * dx + dz * dz;
           if (lenSq < 1e-9) continue;
-          let u = ((tip.x - lb[j].x) * dx + (tip.z - lb[j].z) * dz) / lenSq;
-          if (u <= 1e-6 || u >= 1 - 1e-6) continue;
+          const u = ((tip.x - lb[j].x) * dx + (tip.z - lb[j].z) * dz) / lenSq;
+          if (u < 0 || u >= 1) continue;
           const px = lb[j].x + dx * u, pz = lb[j].z + dz * u;
           if (Math.hypot(tip.x - px, tip.z - pz) > TOUCH) continue;
           addCut(b, j, u);
@@ -166,16 +173,4 @@ export function planarize(roads: readonly Road[]): Network {
   });
 
   return { nodes, edges };
-}
-
-/**
- * Насколько подрезать коридор у узла, чтобы полотна не налезали друг на друга.
- * Берём самую широкую из сходящихся дорог с запасом.
- */
-export function trimRadius(network: Network, node: number): number {
-  let widest = 0;
-  for (const edge of network.edges) {
-    if (edge.from === node || edge.to === node) widest = Math.max(widest, roadWidth(edge.type) / 2);
-  }
-  return widest * 1.35 + 1;
 }

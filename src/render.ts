@@ -27,6 +27,7 @@ interface View {
 
 /** Ракурсы: и для кнопок на странице, и для снимков из терминала. */
 export const VIEWS: Record<string, View> = {
+  plan: { label: 'план', from: [0, 275, 0.2], at: [0, 0, 0], fog: 900 },
   over: { label: 'сверху', from: [-210, 155, -205], at: [0, -2, 0], fog: 900 },
   road: { label: 'вдоль', from: [-118, 52, -128], at: [15, 2, 8], fog: 480 },
   close: { label: 'вблизи', from: [-52, 14, -34], at: [-4, 4, 4], fog: 320 },
