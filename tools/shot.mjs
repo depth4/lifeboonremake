@@ -21,6 +21,11 @@ const view = (all ? args[1] : args[0]) ?? 'road';
 const terrain = (all ? args[2] : args[2]) ?? 'plateau';
 const scene = all ? null : args[1];
 
+// наводка: npm run shot -- наводка крест холмы from=x,y,z at=x,y,z
+const aim = Object.fromEntries(
+  args.filter((a) => a.includes('=')).map((a) => a.split('=')),
+);
+
 const jobs = all
   ? Object.keys(SCENES).map((name) => ({ scene: name, view, terrain, out: `shots/${name}-${view}.png` }))
   : [{ scene, view, terrain, out: `shots/${scene ? `${scene}-` : ''}${view}.png` }];
@@ -51,6 +56,7 @@ for (const job of jobs) {
   url.searchParams.set('view', job.view);
   url.searchParams.set('terrain', job.terrain);
   if (job.scene) url.searchParams.set('scene', job.scene);
+  for (const [k, v] of Object.entries(aim)) url.searchParams.set(k, v);
   try {
     await page.goto(url.href, { waitUntil: 'load' });
     await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });

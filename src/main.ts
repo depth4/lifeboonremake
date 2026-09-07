@@ -6,7 +6,7 @@ import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
 import { buildGhost, buildSurface } from './surface/index.ts';
-import { VIEWS, show } from './render.ts';
+import { VIEWS, show, viewFromQuery } from './render.ts';
 import { createBuilder } from './build.ts';
 
 const query = new URLSearchParams(location.search);
@@ -27,7 +27,7 @@ let rebuildMs = 0;
 let lastGood: Road[] = [...roads];
 let refusal = '';
 
-const viewer = show(surface, startView);
+const viewer = show(surface, startView, viewFromQuery(query));
 const canvas = document.querySelector('canvas');
 
 /**

@@ -1,5 +1,9 @@
 /**
  * Осмотр готового мира: цифры, по которым видно, сломан он или нет.
+ *
+ * Целость считается по МЕСТАМ рёбер, а не по номерам вершин. Две вершины
+ * в одной точке — это излом (бордюр, край выемки), а не щель; сшито или нет,
+ * видно по тому, сколько треугольников опирается на каждое ребро.
  * Без браузера. Используется и одиночной проверкой, и обстрелом случайными
  * постройками (`npm run fuzz`).
  */
@@ -12,8 +16,6 @@ import { WORLD_HALF } from '../src/world/terrain.ts';
 export interface Report {
   readonly vertices: number;
   readonly triangles: number;
-  /** сколько вершин делят земля и дорожное покрытие: ноль = две поверхности */
-  readonly shared: number;
   /** незашитые рёбра внутри мира — через них видно небо */
   readonly holes: number;
   /** треугольники, повёрнутые изнанкой вверх: сквозь них тоже видно небо */
@@ -34,13 +36,6 @@ const onBorder = (x: number, z: number): boolean =>
 export function inspect(world: World, surface: Surface): Report {
   const P = surface.positions;
   const I = surface.indices;
-
-  const road = new Set<number>();
-  const grass = new Set<number>();
-  for (const g of surface.groups) {
-    const target = g.material === 'grass' ? grass : road;
-    for (let i = g.start; i < g.start + g.count; i++) target.add(I[i]);
-  }
 
   const key = (v: number): string =>
     `${Math.round(P[v * 3] * 1000)},${Math.round(P[v * 3 + 1] * 1000)},${Math.round(P[v * 3 + 2] * 1000)}`;
@@ -91,7 +86,6 @@ export function inspect(world: World, surface: Surface): Report {
   return {
     vertices: surface.stats.vertices,
     triangles: surface.stats.triangles,
-    shared: [...road].filter((v) => grass.has(v)).length,
     holes,
     downFacing,
     worstAspect,
@@ -104,7 +98,6 @@ export function inspect(world: World, surface: Surface): Report {
 /** Что из осмотра считается поломкой. Пустой список — всё в порядке. */
 export function problems(r: Report): string[] {
   const out: string[] = [];
-  if (r.shared === 0) out.push('земля и дорога не имеют общих вершин — это две поверхности, а не одна');
   if (r.holes > 0) out.push(`${r.holes} незашитых рёбер — сквозь них видно небо`);
   if (r.downFacing > 0) out.push(`${r.downFacing} треугольников земли повёрнуты изнанкой вверх`);
   if (r.flat > 0) out.push(`${r.flat} треугольников нулевой площади`);

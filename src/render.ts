@@ -18,7 +18,7 @@ const COLORS: Record<Material, number> = {
   marking: 0xf0ecdc,
 };
 
-interface View {
+export interface View {
   readonly label: string;
   readonly from: [number, number, number];
   readonly at: [number, number, number];
@@ -43,7 +43,21 @@ export interface Viewer {
   pick(event: PointerEvent | MouseEvent): Point2 | null;
 }
 
-export function show(surface: Surface, startView: string): Viewer {
+/** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
+export function viewFromQuery(query: URLSearchParams): View | null {
+  const triple = (name: string): [number, number, number] | null => {
+    const raw = query.get(name);
+    if (!raw) return null;
+    const parts = raw.split(',').map(Number);
+    return parts.length === 3 && parts.every((n) => Number.isFinite(n)) ? [parts[0], parts[1], parts[2]] : null;
+  };
+  const from = triple('from');
+  const at = triple('at');
+  if (!from || !at) return null;
+  return { label: 'наводка', from, at, fog: Number(query.get('fog') ?? 400) };
+}
+
+export function show(surface: Surface, startView: string, custom: View | null = null): Viewer {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
@@ -121,7 +135,7 @@ export function show(surface: Surface, startView: string): Viewer {
     }
     flight = { from: camera.position.clone(), to, look: controls.target.clone(), at, fog: view.fog, t: 0 };
   };
-  apply(VIEWS[startView] ?? VIEWS.road, true);
+  apply(custom ?? VIEWS[startView] ?? VIEWS.road, true);
 
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
@@ -151,7 +165,7 @@ export function show(surface: Surface, startView: string): Viewer {
 
   return {
     setView(name) {
-      const view = VIEWS[name];
+      const view = name === 'наводка' && custom ? custom : VIEWS[name];
       if (view) apply(view, false);
     },
     setSurface(next) {

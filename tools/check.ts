@@ -49,7 +49,6 @@ for (const name of Object.keys(TERRAINS)) {
   console.log(
     `${name.padEnd(9)} вершин ${String(r.vertices).padStart(6)}` +
     `  треугольников ${String(r.triangles).padStart(6)}` +
-    `  общих ${String(r.shared).padStart(4)}` +
     `  дырок ${String(r.holes).padStart(4)}` +
     `  изнанкой вверх ${String(r.downFacing).padStart(4)}` +
     `  уклон ${(r.grade * 100).toFixed(1).padStart(5)}%` +

@@ -55,6 +55,7 @@ export const ROAD = 0;
 export const SHELF = 1;
 export const CURB_FOOT = 2;
 export const CURB_TOP = 3;
+export const GROUND = 4;
 
 const MATERIALS: Material[] = ['grass', 'asphalt', 'sidewalk', 'marking', 'curb'];
 

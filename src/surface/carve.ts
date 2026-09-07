@@ -28,7 +28,7 @@ import { bands } from '../world/road.ts';
 import { WORLD_HALF } from '../world/terrain.ts';
 import { roadHeightAt, shelfHeight } from '../world/world.ts';
 import { box, corridor, densify, disc, grow, inside, intersect, subtract, union, unionAll } from './clip.ts';
-import { CURB_FOOT, CURB_TOP, MeshBuilder, ROAD, SHELF, carvePlane } from './mesh.ts';
+import { CURB_FOOT, CURB_TOP, GROUND, MeshBuilder, ROAD, SHELF, carvePlane } from './mesh.ts';
 import type { Material } from './mesh.ts';
 
 /**
@@ -47,8 +47,15 @@ const WOBBLE = 0.34;
 const CLEARANCE = 0.7;
 /** Насколько разметка не доходит до края асфальта. */
 const MARKING_INSET = 0.5;
-/** На каких расстояниях наружу от тротуара ставим точки вдоль откоса. */
-const SLOPE_RINGS = [0.9, 2.5, 5, 9, 14, 20, 28, 38];
+/**
+ * Где ставить точки на откосе — долями пути до его края.
+ * Единица — сам край, где насыпь догнала нетронутую землю: там перелом,
+ * и без точки ровно на нём перелом размазался бы в пологую дугу.
+ * Числа больше единицы — уже нетронутая земля сразу за краем.
+ */
+const SLOPE_STOPS = [0.3, 0.62, 0.85, 1, 1.12, 1.4];
+/** Дальше этого откос не ищем: столько метров земли не бывает даже в горах. */
+const SLOPE_LIMIT = 90;
 
 /** Скругление внутренних углов: расширить контур наружу и сжать обратно. */
 function closeCorners(region: Region, radius: number): Region {
@@ -103,15 +110,22 @@ export function buildSurface(world: World): Surface {
   const edgeBox = densify(edge, GRID_STEP);
 
   // --- 3. Точки внутри: без них поверхность натянулась бы между краями ---
+  // «Сколько метров наружу от тротуара» считается по ТОЙ ЖЕ границе, которая
+  // тротуар и рисует. Поэтому полка и её край совпадают всегда.
+  const outward = outwardDistance(edgeOuter, inside(outer));
+  const shelfY = (x: number, z: number): number => shelfHeight(world, x, z, outward(x, z));
+  const roadY = (x: number, z: number): number => roadHeightAt(world, x, z);
+
   const interior: Point2[] = [];
   for (const shape of world.shapes) {
     for (const st of shape.stations) {
       for (const k of [-0.62, -0.2, 0.2, 0.62]) {
         interior.push({ x: st.x + st.nx * shape.halfWidth * k, z: st.z + st.nz * shape.halfWidth * k });
       }
-      for (const away of SLOPE_RINGS) {
-        for (const side of [1, -1]) {
-          const off = side * (shape.outerHalf + away);
+      for (const side of [1, -1]) {
+        const reach = slopeReach(world, st, side, shape.outerHalf, shelfY);
+        for (const stop of SLOPE_STOPS) {
+          const off = side * (shape.outerHalf + reach * stop);
           interior.push({ x: st.x + st.nx * off, z: st.z + st.nz * off });
         }
       }
@@ -142,27 +156,20 @@ export function buildSurface(world: World): Surface {
   const within = interior.filter((p) => Math.abs(p.x) < WORLD_HALF && Math.abs(p.z) < WORLD_HALF);
   const plane = carvePlane([edgePaved, edgeOuter, edgeMark, edgeBox], within, CLEARANCE);
 
-  // --- 5. Высоты ---
-  // «Сколько метров наружу от тротуара» считается по ТОЙ ЖЕ границе, которая
-  // тротуар и рисует. Поэтому полка и её край совпадают всегда.
-  const outward = outwardDistance(edgeOuter, inside(outer));
+  // --- 5. Из чего сделана поверхность в этом месте ---
   const inPaved = inside(paved);
   const inOuter = inside(outer);
   const inMark = inside(marking);
 
-  const roadY = (x: number, z: number): number => roadHeightAt(world, x, z);
-  const shelfY = (x: number, z: number): number => shelfHeight(world, x, z, outward(x, z));
-
   const mesh = new MeshBuilder();
-  const roadVertex = new Map<number, number>();
-  const shelfVertex = new Map<number, number>();
+  const cache = new Map<number, number>();
   const vertexAt = (i: number, level: number): number => {
-    const cache = level === ROAD ? roadVertex : shelfVertex;
-    const found = cache.get(i);
+    const key = i * 8 + level;
+    const found = cache.get(key);
     if (found !== undefined) return found;
     const p = plane.points[i];
     const made = mesh.vertex(p.x, level === ROAD ? roadY(p.x, p.z) : shelfY(p.x, p.z), p.z, level);
-    cache.set(i, made);
+    cache.set(key, made);
     return made;
   };
 
@@ -177,8 +184,11 @@ export function buildSurface(world: World): Surface {
       material = 'sidewalk';
       level = SHELF;
     } else {
+      // земля держит свой уровень вершин: тротуар — ровная полка, а земля
+      // сразу за ним уходит откосом. Общие вершины размазали бы этот перелом
+      // в пологий скат, и выемка перестала бы читаться выемкой.
       material = 'grass';
-      level = SHELF;
+      level = GROUND;
     }
     mesh.triUp(material, vertexAt(f.a, level), vertexAt(f.b, level), vertexAt(f.c, level));
   }
@@ -200,6 +210,34 @@ export function buildSurface(world: World): Surface {
   }
 
   return mesh.build();
+}
+
+/**
+ * Докуда тянется откос: сколько метров от края тротуара насыпь или выемка
+ * идёт, прежде чем догонит нетронутую землю. Ищем делением пополам —
+ * в этом месте у поверхности перелом, и его надо знать точно, а не примерно.
+ */
+function slopeReach(
+  world: World,
+  st: World['shapes'][number]['stations'][number],
+  side: number,
+  outerHalf: number,
+  shelfY: (x: number, z: number) => number,
+): number {
+  const touched = (away: number): boolean => {
+    const off = side * (outerHalf + away);
+    const x = st.x + st.nx * off, z = st.z + st.nz * off;
+    return Math.abs(shelfY(x, z) - world.terrain(x, z)) > 0.02;
+  };
+  if (!touched(0.2)) return 1.5;
+  let lo = 0.2, hi = SLOPE_LIMIT;
+  if (touched(hi)) return hi;
+  for (let i = 0; i < 12; i++) {
+    const mid = (lo + hi) / 2;
+    if (touched(mid)) lo = mid;
+    else hi = mid;
+  }
+  return hi;
 }
 
 /** Радиус, в котором перекрёсток считается перекрёстком. */
