@@ -156,13 +156,14 @@ h3 { font: 600 18px/1.3 var(--sans); margin: 34px 0 10px; letter-spacing: .01em;
 .asked p { font-size: 15px; margin: 10px 0 0; }
 
 .plate { margin: 0; }
-.plate img { display: block; width: 100%; height: auto; border: 1px solid var(--line); background: var(--sink); }
-.plate figcaption {
-  font: 500 12.5px/1.5 var(--mono);
-  padding: 9px 2px 0;
-  display: flex; gap: 14px; flex-wrap: wrap; align-items: baseline;
+.plate img {
+  display: block; width: 100%; height: auto;
+  aspect-ratio: 3 / 2; object-fit: cover; object-position: center center;
+  border: 1px solid var(--line); background: var(--sink);
 }
-.plate figcaption span { color: var(--muted); font-weight: 400; }
+.plate figcaption { font: 500 12.5px/1.55 var(--mono); padding: 9px 2px 0; }
+.plate figcaption b { display: block; }
+.plate figcaption span { display: block; color: var(--muted); font-weight: 400; margin-top: 3px; }
 .plate { position: relative; }
 .tag {
   position: absolute; top: 9px; left: 9px; z-index: 2;
