@@ -2,9 +2,14 @@
 import { SCENES } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
+import { layout } from './fuzz.ts';
 
+// либо имя сцены, либо `зерно 27` — постройка из обстрела
 const scene = process.argv[2] ?? 'бритва';
-const world = buildWorld(SCENES[scene], process.argv[3] ?? 'plateau');
+const seeded = scene === 'зерно' ? layout(Number(process.argv[3])) : null;
+const world = seeded
+  ? buildWorld(seeded.roads, seeded.terrain)
+  : buildWorld(SCENES[scene], process.argv[3] ?? 'plateau');
 const s = buildSurface(world);
 const P = s.positions, I = s.indices;
 const material = new Map<number, string>();

@@ -21,7 +21,11 @@ export interface Report {
   readonly holes: number;
   /** треугольники, повёрнутые изнанкой вверх: сквозь них тоже видно небо */
   readonly downFacing: number;
-  /** самый вытянутый треугольник: иглы дают рваное освещение */
+  /**
+   * Самый вытянутый треугольник ЗАМКНУТОЙ поверхности: иглы дают рваное
+   * освещение. Краску сюда не считаем — она лежит плашмя на асфальте и
+   * светится вместе с ним, какой бы формы ни была.
+   */
   readonly worstAspect: number;
   /** треугольники нулевой площади: не треугольники вовсе */
   readonly flat: number;
@@ -55,7 +59,8 @@ export function inspect(world: World, surface: Surface): Report {
   let flat = 0;
 
   for (let t = 0; t < I.length; t += 3) {
-    if (painted[t / 3] === 0) {
+    const paint = painted[t / 3] === 1;
+    if (!paint) {
       const k = [key(I[t]), key(I[t + 1]), key(I[t + 2])];
       for (let e = 0; e < 3; e++) {
         const pair = [k[e], k[(e + 1) % 3]].sort().join('|');
@@ -83,7 +88,7 @@ export function inspect(world: World, surface: Surface): Report {
     ];
     const longest = Math.max(...sides);
     const height = len / longest; // len/2 — площадь, высота = 2*площадь/основание
-    if (height > 1e-9) worstAspect = Math.max(worstAspect, longest / height);
+    if (!paint && height > 1e-9) worstAspect = Math.max(worstAspect, longest / height);
   }
 
   let holes = 0;

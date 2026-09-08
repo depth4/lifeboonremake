@@ -22,6 +22,8 @@ import { crossingBorders } from './edges.ts';
 const TRIES = Number(process.argv[2] ?? 200);
 /** Одно зерно подробно: `npm run fuzz -- 0 48`. */
 const ONLY = Number(process.argv[3] ?? 0);
+/** Обстрел идёт, только когда файл запустили. Постройки нужны и другим. */
+const RUNNING = process.argv[1]?.endsWith('fuzz.ts') ?? false;
 
 /** Свой генератор случайных чисел: одно и то же зерно даёт один и тот же мир. */
 function rng(seed: number): () => number {
@@ -32,7 +34,7 @@ function rng(seed: number): () => number {
   };
 }
 
-function layout(seed: number): { roads: Road[]; terrain: string } {
+export function layout(seed: number): { roads: Road[]; terrain: string } {
   const rand = rng(seed);
   const names = Object.keys(TERRAINS);
   const terrain = names[Math.floor(rand() * names.length)];
@@ -66,7 +68,7 @@ let worstAspectSeed = 0;
 let maxTriangles = 0;
 let slowest = 0;
 
-if (ONLY > 0) {
+if (RUNNING && ONLY > 0) {
   const { roads, terrain } = layout(ONLY);
   console.log(`зерно ${ONLY}, рельеф ${terrain}, дорог ${roads.length}`);
   for (const r of roads) {
@@ -85,7 +87,7 @@ if (ONLY > 0) {
   process.exit(0);
 }
 
-for (let seed = 1; seed <= TRIES; seed++) {
+for (let seed = 1; RUNNING && seed <= TRIES; seed++) {
   const { roads, terrain } = layout(seed);
   const started = performance.now();
 
@@ -115,6 +117,7 @@ for (let seed = 1; seed <= TRIES; seed++) {
 
 const crossing = broken.filter((b) => b.roads > 1).length;
 
+if (RUNNING) {
 console.log(`обстрел: ${TRIES} случайных построек`);
 console.log(`  сломалось            ${broken.length} (${((broken.length / TRIES) * 100).toFixed(0)}%)`);
 console.log(`    из них с несколькими дорогами  ${crossing}`);
@@ -136,3 +139,4 @@ if (kinds.size > 0) {
 }
 
 process.exit(broken.length > 0 ? 1 : 0);
+}
