@@ -9,6 +9,7 @@
  */
 
 import type { Surface } from '../src/surface/index.ts';
+import { SEALED } from '../src/surface/index.ts';
 import type { World } from '../src/world/world.ts';
 import { MAX_GRADE } from '../src/world/world.ts';
 import { WORLD_HALF } from '../src/world/terrain.ts';
@@ -37,6 +38,14 @@ export function inspect(world: World, surface: Surface): Report {
   const P = surface.positions;
   const I = surface.indices;
 
+  // Краска поверх асфальта в замкнутую поверхность не входит: её рёбра
+  // и не должны ни на что опираться.
+  const painted = new Uint8Array(I.length / 3);
+  for (const g of surface.groups) {
+    if (SEALED.includes(g.material)) continue;
+    for (let i = g.start; i < g.start + g.count; i += 3) painted[i / 3] = 1;
+  }
+
   const key = (v: number): string =>
     `${Math.round(P[v * 3] * 1000)},${Math.round(P[v * 3 + 1] * 1000)},${Math.round(P[v * 3 + 2] * 1000)}`;
 
@@ -46,10 +55,12 @@ export function inspect(world: World, surface: Surface): Report {
   let flat = 0;
 
   for (let t = 0; t < I.length; t += 3) {
-    const k = [key(I[t]), key(I[t + 1]), key(I[t + 2])];
-    for (let e = 0; e < 3; e++) {
-      const pair = [k[e], k[(e + 1) % 3]].sort().join('|');
-      edges.set(pair, (edges.get(pair) ?? 0) + 1);
+    if (painted[t / 3] === 0) {
+      const k = [key(I[t]), key(I[t + 1]), key(I[t + 2])];
+      for (let e = 0; e < 3; e++) {
+        const pair = [k[e], k[(e + 1) % 3]].sort().join('|');
+        edges.set(pair, (edges.get(pair) ?? 0) + 1);
+      }
     }
 
     const p = [I[t], I[t + 1], I[t + 2]].map((v) => [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]]);

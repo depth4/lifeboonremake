@@ -42,7 +42,6 @@ export function crossingBorders(world: World): { count: number; where: string[] 
   };
   collect(p.paved, 'асфальт');
   collect(p.outer, 'тротуар');
-  collect(p.marking, 'разметка');
 
   const CELL = 8;
   const cells = new Map<string, number[]>();

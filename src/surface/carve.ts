@@ -27,7 +27,7 @@ import type { Surface } from './mesh.ts';
 import { bands } from '../world/road.ts';
 import { WORLD_HALF } from '../world/terrain.ts';
 import { roadHeightAt, shelfHeight } from '../world/world.ts';
-import { box, corridor, densify, grow, inside, intersect, polygon, subtract, union, unionAll } from './clip.ts';
+import { box, corridor, densify, grow, inside, intersect, union, unionAll } from './clip.ts';
 import { CURB_FOOT, CURB_TOP, GROUND, MeshBuilder, ROAD, SHELF, carvePlane } from './mesh.ts';
 import type { Material } from './mesh.ts';
 
@@ -47,6 +47,8 @@ const WOBBLE = 0.34;
 const CLEARANCE = 0.7;
 /** Насколько разметка не доходит до края асфальта. */
 const MARKING_INSET = 0.5;
+/** На сколько краска лежит выше асфальта. */
+const PAINT_LIFT = 0.02;
 /** Пешеходный переход: длина полосок вдоль дороги и их ширина поперёк. */
 const CROSS_LENGTH = 3.4;
 const CROSS_STRIPE = 0.55;
@@ -80,7 +82,6 @@ const lineOf = (shape: World['shapes'][number]): Point2[] =>
 export interface Plan {
   readonly paved: Region;
   readonly outer: Region;
-  readonly marking: Region;
   readonly meeting: Region;
 }
 
@@ -104,43 +105,16 @@ export function plan(world: World): Plan {
   // Перекрёсток — это НЕ круг заданного радиуса. Это место, где коридоры
   // дорог накладываются друг на друга: его можно вычислить, а не назначить.
   const meeting = closeCorners(unionAll(overlaps(corridors)), CORNER_RADIUS);
-  const inMeeting = inside(meeting);
 
-  // Разметка: тонкие полосы вдоль границ полос, отступившие от края асфальта
-  // и обрывающиеся у перекрёстка — там начинается разметка другого рода.
-  const stripes: Region[] = [];
-  for (const shape of world.shapes) {
-    for (const band of bands(shape.type)) {
-      if (band.kind !== 'marking') continue;
-      const middle = (band.from + band.to) / 2;
-      const width = band.to - band.from;
-      const shifted = shape.stations.map((st) => ({ x: st.x + st.nx * middle, z: st.z + st.nz * middle }));
-      stripes.push(corridor(shifted, width / 2));
-    }
-  }
-  const laneLines = subtract(unionAll(stripes), meeting);
-
-  // Переходы и стоп-линии ставятся там, где дорога выходит из перекрёстка.
-  // Место находится ходьбой по станциям, а не подобранным числом.
-  const crossings: Region[] = [];
-  for (const shape of world.shapes) {
-    for (const atStart of [true, false]) {
-      const patch = crosswalk(shape, atStart, inMeeting);
-      if (patch !== null && patch.length > 0) crossings.push(patch);
-    }
-  }
-
-  const marking = intersect(union(laneLines, unionAll(crossings)), grow(paved, -MARKING_INSET));
-  return { paved, outer, marking, meeting };
+  return { paved, outer, meeting };
 }
 
 export function buildSurface(world: World): Surface {
-  const { paved, outer, marking } = plan(world);
+  const { paved, outer, meeting } = plan(world);
 
   // --- 2. Границы: короткими рёбрами, иначе край дороги врёт про высоту ---
   const edgePaved = densify(paved, MAX_EDGE);
   const edgeOuter = densify(outer, MAX_EDGE);
-  const edgeMark = densify(marking, MAX_EDGE);
   const edgeBox = densify(box(WORLD_HALF), GRID_STEP);
 
   // --- 3. Точки внутри: без них поверхность натянулась бы между краями ---
@@ -188,12 +162,11 @@ export function buildSurface(world: World): Surface {
   // За краем мира точек не существует: тогда внешняя граница раскроя — ровно
   // квадрат мира, и треугольников, торчащих наружу, взяться неоткуда.
   const within = interior.filter((p) => Math.abs(p.x) < WORLD_HALF && Math.abs(p.z) < WORLD_HALF);
-  const plane = carvePlane([edgePaved, edgeOuter, edgeMark, edgeBox], within, CLEARANCE);
+  const plane = carvePlane([edgePaved, edgeOuter, edgeBox], within, CLEARANCE);
 
   // --- 5. Из чего сделана поверхность в этом месте ---
   const inPaved = inside(paved);
   const inOuter = inside(outer);
-  const inMark = inside(marking);
 
   const mesh = new MeshBuilder();
   const cache = new Map<number, number>();
@@ -212,7 +185,7 @@ export function buildSurface(world: World): Surface {
     let material: Material;
     let level: number;
     if (inPaved(f.x, f.z)) {
-      material = inMark(f.x, f.z) ? 'marking' : 'asphalt';
+      material = 'asphalt';
       level = ROAD;
     } else if (inOuter(f.x, f.z)) {
       material = 'sidewalk';
@@ -243,7 +216,58 @@ export function buildSurface(world: World): Surface {
     }
   }
 
+  paint(mesh, world, inside(meeting), roadY);
   return mesh.build();
+}
+
+/**
+ * Разметка — КРАСКА, а не вырез в асфальте.
+ *
+ * Раньше каждая линия была отдельным многоугольником шириной 16 см, который
+ * участвовал в алгебре областей наравне с дорогой. Тонкие многоугольники,
+ * которые режут и объединяют десятки раз, вырождаются: за одну ночь этот
+ * класс ломался трижды — то самопересечением контура, то волоском в
+ * миллиметр между областями. Правило 8: третий раз одно и то же не чинят,
+ * чинят устройство.
+ *
+ * Теперь линии кладутся треугольниками ПОВЕРХ асфальта, на два сантиметра
+ * выше него и по тому же профилю дороги. Они не участвуют ни в одной булевой
+ * операции — вырождаться нечему. Обрыв у перекрёстка делается проверкой
+ * станции, а не вычитанием области.
+ *
+ * Цена: разметка перестала быть частью замкнутой поверхности. Она ею и не
+ * была по смыслу — это краска, лежащая сверху.
+ */
+function paint(
+  mesh: MeshBuilder,
+  world: World,
+  inMeeting: (x: number, z: number) => boolean,
+  roadY: (x: number, z: number) => number,
+): void {
+  const put = (corners: readonly Point2[]): void => {
+    const v = corners.map((p) => mesh.loneVertex(p.x, roadY(p.x, p.z) + PAINT_LIFT, p.z));
+    mesh.triUp('marking', v[0], v[1], v[2]);
+    mesh.triUp('marking', v[0], v[2], v[3]);
+  };
+
+  for (const shape of world.shapes) {
+    const st = shape.stations;
+
+    // Продольные линии рвутся там, где дорога входит в перекрёсток.
+    for (const band of bands(shape.type)) {
+      if (band.kind !== 'marking') continue;
+      const at = (i: number, off: number): Point2 => ({ x: st[i].x + st[i].nx * off, z: st[i].z + st[i].nz * off });
+      for (let i = 0; i + 1 < st.length; i++) {
+        if (inMeeting(st[i].x, st[i].z) || inMeeting(st[i + 1].x, st[i + 1].z)) continue;
+        put([at(i, band.from), at(i, band.to), at(i + 1, band.to), at(i + 1, band.from)]);
+      }
+    }
+
+    // Переходы и стоп-линии — у выхода дороги из перекрёстка.
+    for (const atStart of [true, false]) {
+      for (const ring of crosswalk(shape, atStart, inMeeting)) put(ring);
+    }
+  }
 }
 
 /**
@@ -314,22 +338,19 @@ function crosswalk(
   shape: World['shapes'][number],
   atStart: boolean,
   inMeeting: (x: number, z: number) => boolean,
-): Region | null {
+): Point2[][] {
   const st = shape.stations;
   const order = atStart ? st.map((_, i) => i) : st.map((_, i) => st.length - 1 - i);
-  if (!inMeeting(st[order[0]].x, st[order[0]].z)) return null;
+  if (!inMeeting(st[order[0]].x, st[order[0]].z)) return [];
 
   const found = order.find((i) => !inMeeting(st[i].x, st[i].z));
-  if (found === undefined) return null;
+  if (found === undefined) return [];
   const s = st[found];
   // наружу от перекрёстка
   const dir = atStart ? 1 : -1;
   const tx = s.nz * dir, tz = -s.nx * dir;
 
-  // Переход не доводим до самого края асфальта: иначе обрезка по краю режет
-  // полоску вдоль почти касательной линии, и между разметкой и асфальтом
-  // остаётся волосок в миллиметр толщиной.
-  const half = Math.max(1, shape.halfWidth - MARKING_INSET - 0.2);
+  const half = Math.max(1, shape.halfWidth - MARKING_INSET);
   const corner = (along: number, across: number): Point2 => ({
     x: s.x + tx * along + s.nx * across,
     z: s.z + tz * along + s.nz * across,
@@ -354,7 +375,7 @@ function crosswalk(
   const stopTo = atStart ? 0 : half;
   const stopAt = 0.4 + CROSS_LENGTH + STOP_GAP;
   rings.push(patch(stopAt, stopAt + STOP_WIDTH, stopFrom, stopTo));
-  return polygon(rings);
+  return rings;
 }
 
 /**

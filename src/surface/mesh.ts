@@ -56,6 +56,14 @@ export const SHELF = 1;
 export const CURB_FOOT = 2;
 export const CURB_TOP = 3;
 export const GROUND = 4;
+export const PAINT = 5;
+
+/**
+ * Из чего сложена ЗАМКНУТАЯ поверхность мира — та, сквозь которую не должно
+ * быть видно неба. Разметка в неё не входит: это краска, лежащая на асфальте
+ * сверху. Дырка в краске — не дырка в земле, и мерить их одной цифрой нельзя.
+ */
+export const SEALED: readonly Material[] = ['grass', 'asphalt', 'sidewalk', 'curb'];
 
 const MATERIALS: Material[] = ['grass', 'asphalt', 'sidewalk', 'marking', 'curb'];
 
@@ -73,6 +81,12 @@ export class MeshBuilder {
     const at = this.xyz.length / 3 - 1;
     this.index.set(key, at);
     return at;
+  }
+
+  /** Вершина без общего учёта: для краски, которая ни с чем не сшивается. */
+  loneVertex(x: number, y: number, z: number): number {
+    this.xyz.push(x, y, z);
+    return this.xyz.length / 3 - 1;
   }
 
   at(v: number): { x: number; y: number; z: number } {

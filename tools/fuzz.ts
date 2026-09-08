@@ -1,6 +1,9 @@
 /**
  * Обстрел случайными постройками.
  *
+ * Отказов больше не бывает: мир принимает любую постройку. Поэтому здесь
+ * только два исхода — целая или сломанная.
+ *
  * Смысл: не надеяться, что игрок не наткнётся на поломку, а самим построить
  * тысячу нелепых дорожных сетей и посмотреть, где мир рвётся. Глаз так не может,
  * а это считается за минуту и без браузера.
@@ -14,8 +17,11 @@ import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
 import { TERRAINS, WORLD_HALF } from '../src/world/terrain.ts';
 import { inspect, problems } from './inspect.ts';
+import { crossingBorders } from './edges.ts';
 
 const TRIES = Number(process.argv[2] ?? 200);
+/** Одно зерно подробно: `npm run fuzz -- 0 48`. */
+const ONLY = Number(process.argv[3] ?? 0);
 
 /** Свой генератор случайных чисел: одно и то же зерно даёт один и тот же мир. */
 function rng(seed: number): () => number {
@@ -55,32 +61,45 @@ interface Broken {
 }
 
 const broken: Broken[] = [];
-let rejected = 0;
 let worstAspect = 0;
 let worstAspectSeed = 0;
 let maxTriangles = 0;
 let slowest = 0;
+
+if (ONLY > 0) {
+  const { roads, terrain } = layout(ONLY);
+  console.log(`зерно ${ONLY}, рельеф ${terrain}, дорог ${roads.length}`);
+  for (const r of roads) {
+    console.log(`  ${r.type.name}: ` + r.centerline.map((p) => `(${p.x.toFixed(1)}, ${p.z.toFixed(1)})`).join(' '));
+  }
+  const world = buildWorld(roads, terrain);
+  let t = performance.now();
+  const surface = buildSurface(world);
+  const ms = performance.now() - t;
+  const report = inspect(world, surface);
+  const tangled = crossingBorders(world);
+  console.log(`  участков ${world.shapes.length}, узлов ${world.junctions.length}, треугольников ${report.triangles}, ${ms.toFixed(0)} мс`);
+  console.log(`  дырок ${report.holes}, изнанкой ${report.downFacing}, плоских ${report.flat}, игла ${report.worstAspect.toFixed(0)}`);
+  console.log(`  пересечений обязательных рёбер ${tangled.count}`);
+  for (const w of tangled.where) console.log(`    ${w}`);
+  process.exit(0);
+}
 
 for (let seed = 1; seed <= TRIES; seed++) {
   const { roads, terrain } = layout(seed);
   const started = performance.now();
 
   let report;
+  const extra: string[] = [];
   try {
     const world = buildWorld(roads, terrain);
-    if (world.rejected !== null || world.shapes.length === 0) {
-      rejected++;
-      continue;
-    }
+    if (world.shapes.length === 0) continue;
     const surface = buildSurface(world);
     report = inspect(world, surface);
+    const tangled = crossingBorders(world);
+    if (tangled.count > 0) extra.push(`${tangled.count} пересечений обязательных рёбер — ${tangled.where[0]}`);
   } catch (error) {
-    const text = String(error);
-    if (text.includes('накладываются')) {
-      rejected++;
-      continue;
-    }
-    broken.push({ seed, terrain, roads: roads.length, reasons: ['ПАДЕНИЕ: ' + text.split('\n')[0]] });
+    broken.push({ seed, terrain, roads: roads.length, reasons: ['ПАДЕНИЕ: ' + String(error).split('\n')[0]] });
     continue;
   }
   slowest = Math.max(slowest, performance.now() - started);
@@ -90,7 +109,7 @@ for (let seed = 1; seed <= TRIES; seed++) {
     worstAspectSeed = seed;
   }
 
-  const reasons = problems(report);
+  const reasons = [...problems(report), ...extra];
   if (reasons.length > 0) broken.push({ seed, terrain, roads: roads.length, reasons });
 }
 
@@ -98,7 +117,6 @@ const crossing = broken.filter((b) => b.roads > 1).length;
 
 console.log(`обстрел: ${TRIES} случайных построек`);
 console.log(`  сломалось            ${broken.length} (${((broken.length / TRIES) * 100).toFixed(0)}%)`);
-console.log(`  не построилось       ${rejected} (мир отказался их принять)`);
 console.log(`    из них с несколькими дорогами  ${crossing}`);
 console.log(`    из них с одной дорогой         ${broken.length - crossing}`);
 console.log(`  худшая вытянутость треугольника  ${worstAspect.toFixed(0)} : 1   (зерно ${worstAspectSeed})`);

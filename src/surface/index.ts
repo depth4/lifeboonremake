@@ -10,6 +10,7 @@ import { buildSurface as carve } from './carve.ts';
 import { buildSurface as ribbon } from './ribbon.ts';
 
 export type { Material, Surface, SurfaceGroup } from './mesh.ts';
+export { SEALED } from './mesh.ts';
 export { buildGhost } from './ghost.ts';
 export { pokeThrough } from './ribbon.ts';
 
