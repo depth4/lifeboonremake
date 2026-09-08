@@ -11,19 +11,24 @@
 import { SCENES } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { TERRAINS } from '../src/world/terrain.ts';
-import { buildSurface } from '../src/surface/index.ts';
+import { DEFAULT_VARIANT, VARIANTS, buildSurface, pokeThrough } from '../src/surface/index.ts';
 import { inspect, problems } from './inspect.ts';
 
-const wanted = process.argv.slice(2).filter((a) => !a.startsWith('-'));
+const args = process.argv.slice(2);
+const variant = args.find((a) => VARIANTS[a.toUpperCase()] !== undefined)?.toUpperCase() ?? DEFAULT_VARIANT;
+const wanted = args.filter((a) => SCENES[a] !== undefined);
 const names = wanted.length > 0 ? wanted : Object.keys(SCENES);
 const terrains = Object.keys(TERRAINS);
 
-const head = ['сцена', 'рельеф', 'дорог', 'узлов', 'треуг.', 'дырок', 'изнанка', 'плоских', 'игла', 'уклон', 'отрыв', 'мс'];
-console.log(head.map((h, i) => h.padEnd([11, 9, 6, 6, 8, 6, 8, 8, 6, 7, 7, 6][i])).join(''));
-console.log('─'.repeat(80));
+console.log(`вариант ${VARIANTS[variant].label}\n`);
+
+const head = ['сцена', 'рельеф', 'дорог', 'узлов', 'треуг.', 'дырок', 'изнанка', 'плоских', 'игла', 'торчит', 'уклон', 'мс'];
+console.log(head.map((h, i) => h.padEnd([11, 9, 6, 6, 8, 7, 8, 8, 6, 8, 7, 6][i])).join(''));
+console.log('─'.repeat(87));
 
 const failures: string[] = [];
 let worstTime = 0;
+let worstPoke = 0;
 
 for (const name of names) {
   const roads = SCENES[name];
@@ -36,22 +41,24 @@ for (const name of names) {
     let line: string;
     try {
       const world = buildWorld(roads, terrain);
-      const surface = buildSurface(world);
+      const surface = buildSurface(world, variant);
       const ms = performance.now() - started;
       worstTime = Math.max(worstTime, ms);
       const r = inspect(world, surface);
+      const poke = variant === 'B' ? pokeThrough(world) : { worst: 0, share: 0 };
+      worstPoke = Math.max(worstPoke, poke.worst);
       line = [
         name.padEnd(11),
         TERRAINS[terrain].label.padEnd(9),
         String(world.shapes.length).padEnd(6),
         String(world.junctions.length).padEnd(6),
         String(r.triangles).padEnd(8),
-        String(r.holes).padEnd(6),
+        String(r.holes).padEnd(7),
         String(r.downFacing).padEnd(8),
         String(r.flat).padEnd(8),
         r.worstAspect.toFixed(0).padEnd(6),
+        (poke.worst > 0 ? `${poke.worst.toFixed(2)}м` : '—').padEnd(8),
         `${(r.grade * 100).toFixed(1)}%`.padEnd(7),
-        `${r.lift.toFixed(1)}м`.padEnd(7),
         ms.toFixed(0).padEnd(6),
       ].join('');
       for (const p of problems(r)) failures.push(`${name}/${terrain}: ${p}`);
@@ -63,8 +70,9 @@ for (const name of names) {
   }
 }
 
-console.log('─'.repeat(80));
+console.log('─'.repeat(87));
 console.log(`самая долгая сборка: ${worstTime.toFixed(0)} мс`);
+if (worstPoke > 0) console.log(`земля торчит сквозь асфальт: до ${worstPoke.toFixed(2)} м`);
 if (failures.length > 0) {
   console.log(`\nПОЛОМОК: ${failures.length}`);
   for (const f of failures) console.log('  ✗ ' + f);

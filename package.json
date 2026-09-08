@@ -9,7 +9,8 @@
     "check": "node --experimental-strip-types tools/check.ts",
     "page": "node tools/page.mjs",
     "fuzz": "node --experimental-strip-types tools/fuzz.ts",
-    "scenes": "node --experimental-strip-types tools/scenes.ts"
+    "scenes": "node --experimental-strip-types tools/scenes.ts",
+    "play": "node tools/play.mjs"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",

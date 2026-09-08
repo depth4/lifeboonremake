@@ -26,9 +26,11 @@ const aim = Object.fromEntries(
   args.filter((a) => a.includes('=')).map((a) => a.split('=')),
 );
 
+const suffix = aim.variant ? `-${aim.variant}` : '';
+
 const jobs = all
-  ? Object.keys(SCENES).map((name) => ({ scene: name, view, terrain, out: `shots/${name}-${view}.png` }))
-  : [{ scene, view, terrain, out: `shots/${scene ? `${scene}-` : ''}${view}.png` }];
+  ? Object.keys(SCENES).map((name) => ({ scene: name, view, terrain, out: `shots/${name}-${view}${suffix}.png` }))
+  : [{ scene, view, terrain, out: `shots/${scene ? `${scene}-` : ''}${view}${suffix}.png` }];
 
 mkdirSync('shots', { recursive: true });
 

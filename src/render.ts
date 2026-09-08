@@ -41,6 +41,8 @@ export interface Viewer {
   setBuilding(on: boolean): void;
   /** Куда на земле указывает курсор. null — мимо земли. */
   pick(event: PointerEvent | MouseEvent): Point2 | null;
+  /** Обратное: где место мира оказывается на экране. */
+  project(x: number, z: number): { x: number; y: number };
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -190,6 +192,17 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       if (!on) {
         ghost.visible = false;
       }
+    },
+    project(x, z) {
+      const hit = new THREE.Raycaster();
+      hit.set(new THREE.Vector3(x, 400, z), new THREE.Vector3(0, -1, 0));
+      const ground = hit.intersectObject(scene.children[0] as THREE.Object3D, false)[0];
+      const point = new THREE.Vector3(x, ground ? ground.point.y : 0, z).project(camera);
+      const rect = renderer.domElement.getBoundingClientRect();
+      return {
+        x: rect.left + ((point.x + 1) / 2) * rect.width,
+        y: rect.top + ((1 - point.y) / 2) * rect.height,
+      };
     },
     pick(event) {
       const rect = renderer.domElement.getBoundingClientRect();

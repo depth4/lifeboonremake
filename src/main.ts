@@ -5,7 +5,7 @@ import { DEFAULT_SCENE, SCENES } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
-import { buildGhost, buildSurface } from './surface/index.ts';
+import { DEFAULT_VARIANT, VARIANTS, buildGhost, buildSurface } from './surface/index.ts';
 import { VIEWS, show, viewFromQuery } from './render.ts';
 import { createBuilder } from './build.ts';
 
@@ -21,8 +21,11 @@ const roads: Road[] = [...SCENES[sceneName]];
 let terrainName = query.get('terrain') ?? DEFAULT_TERRAIN;
 if (!TERRAINS[terrainName]) terrainName = DEFAULT_TERRAIN;
 
+let variant = query.get('variant')?.toUpperCase() ?? DEFAULT_VARIANT;
+if (!VARIANTS[variant]) variant = DEFAULT_VARIANT;
+
 let world = buildWorld(roads, terrainName);
-let surface = buildSurface(world);
+let surface = buildSurface(world, variant);
 let rebuildMs = 0;
 let lastGood: Road[] = [...roads];
 let refusal = '';
@@ -39,7 +42,7 @@ function rebuild(): void {
   const started = performance.now();
   try {
     const next = buildWorld(roads, terrainName);
-    const nextSurface = buildSurface(next);
+    const nextSurface = buildSurface(next, variant);
     world = next;
     surface = nextSurface;
     lastGood = [...roads];
@@ -48,7 +51,7 @@ function rebuild(): void {
     refusal = String(error instanceof Error ? error.message : error).replace(/ \(.*\)$/, '');
     roads.splice(0, roads.length, ...lastGood);
     world = buildWorld(roads, terrainName);
-    surface = buildSurface(world);
+    surface = buildSurface(world, variant);
   }
   rebuildMs = performance.now() - started;
   viewer.setSurface(surface);
@@ -76,6 +79,7 @@ function readout(): void {
       ['отрыв от земли', `${world.lift.toFixed(1)} м${world.lift > 6 ? ' — нужен мост' : ''}`],
       ['перекрёстков', String(world.junctions.length)],
       ['пересборка', `${rebuildMs.toFixed(0)} мс`],
+      ['вариант', VARIANTS[variant].label],
     ];
     facts.innerHTML = rows.map(([k, v]) => `<div>${k} <b>${v}</b></div>`).join('');
   }
@@ -139,6 +143,22 @@ if (tools) {
   });
 }
 
+// --- кнопки варианта ---
+const variants = document.getElementById('variants');
+if (variants) {
+  variants.innerHTML = Object.entries(VARIANTS)
+    .map(([key, v]) => `<button type="button" data-variant="${key}" aria-pressed="${key === variant}" title="${v.label}">${key}</button>`)
+    .join('');
+  variants.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-variant]');
+    if (!button) return;
+    variant = button.dataset.variant ?? DEFAULT_VARIANT;
+    lastGood = [...roads];
+    rebuild();
+    variants.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
+  });
+}
+
 // --- кнопки сцены ---
 const scenes = document.getElementById('scenes');
 if (scenes) {
@@ -194,6 +214,11 @@ function hint(): void {
 
 readout();
 hint();
+
+// Где место (x, z) оказывается на экране — нужно проверке кликами:
+// она должна попадать мышью в места мира, а не в пиксели наугад.
+(window as unknown as { __project?: (x: number, z: number) => { x: number; y: number } }).__project =
+  (x, z) => viewer.project(x, z);
 
 requestAnimationFrame(() => requestAnimationFrame(() => {
   (window as unknown as { __ready?: boolean }).__ready = true;
