@@ -67,14 +67,23 @@ export const SEALED: readonly Material[] = ['grass', 'asphalt', 'sidewalk', 'cur
 
 const MATERIALS: Material[] = ['grass', 'asphalt', 'sidewalk', 'marking', 'curb'];
 
+/**
+ * Ключ места на плоскости с точностью до миллиметра, одним числом.
+ * Строку тут собирать нельзя: вершин десятки тысяч, и склейка строк съедает
+ * больше времени, чем вся триангуляция.
+ */
+const SPAN = 4_000_000;
+const placeKey = (x: number, z: number, level: number): number =>
+  ((Math.round(x * 1000) + 2_000_000) * SPAN + (Math.round(z * 1000) + 2_000_000)) * 8 + level;
+
 export class MeshBuilder {
   private readonly xyz: number[] = [];
   private readonly byMaterial: Record<Material, number[]> =
     { grass: [], asphalt: [], sidewalk: [], marking: [], curb: [] };
-  private readonly index = new Map<string, number>();
+  private readonly index = new Map<number, number>();
 
   vertex(x: number, y: number, z: number, level: number): number {
-    const key = `${Math.round(x * 1000)},${Math.round(z * 1000)},${level}`;
+    const key = placeKey(x, z, level);
     const found = this.index.get(key);
     if (found !== undefined) return found;
     this.xyz.push(x, y, z);
@@ -129,7 +138,10 @@ export class MeshBuilder {
       const list = this.byMaterial[material];
       if (list.length === 0) continue;
       groups.push({ material, start: indices.length, count: list.length });
-      indices.push(...list);
+      // по одному, а не россыпью: `push(...list)` кладёт КАЖДЫЙ элемент
+      // отдельным доводом вызова и на сотне тысяч треугольников переполняет
+      // стек. Мир вырастет — а это сломается молча и не там, где искать.
+      for (const i of list) indices.push(i);
     }
     return {
       positions: new Float32Array(this.xyz),
@@ -214,14 +226,13 @@ export function carvePlane(
 ): Plane {
   const points: number[][] = [];
   const edges: number[][] = [];
-  const seen = new Map<string, number>();
+  const seen = new Map<number, number>();
   const put = (p: Point2): number => {
-    const x = p.x, z = p.z;
-    const key = `${Math.round(x * 1000)},${Math.round(z * 1000)}`;
+    const key = placeKey(p.x, p.z, 0);
     const found = seen.get(key);
     if (found !== undefined) return found;
     const at = points.length;
-    points.push([x, z]);
+    points.push([p.x, p.z]);
     seen.set(key, at);
     return at;
   };
