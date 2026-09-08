@@ -2,8 +2,13 @@
 import { SCENES } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
+import { layout } from './fuzz.ts';
 
-const world = buildWorld(SCENES[process.argv[2] ?? 'крест'], process.argv[3] ?? 'hills');
+const name = process.argv[2] ?? 'крест';
+const seeded = name === 'зерно' ? layout(Number(process.argv[3])) : null;
+const world = seeded
+  ? buildWorld(seeded.roads, seeded.terrain)
+  : buildWorld(SCENES[name], process.argv[3] ?? 'hills');
 const s = buildSurface(world);
 const P = s.positions, I = s.indices;
 const worst = new Map<string, { slope: number; at: string }>();
@@ -16,6 +21,8 @@ for (const g of s.groups) {
     const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
     const len = Math.hypot(n[0], n[1], n[2]);
     if (len < 1e-9) continue;
+    const rise = Math.max(p[0][1], p[1][1], p[2][1]) - Math.min(p[0][1], p[1][1], p[2][1]);
+    if (rise < 0.05) continue;
     const slope = Math.hypot(n[0], n[2]) / Math.abs(n[1] || 1e-9);
     const seen = worst.get(g.material);
     if (!seen || slope > seen.slope) {

@@ -81,7 +81,7 @@ if (RUNNING && ONLY > 0) {
   const report = inspect(world, surface);
   const tangled = crossingBorders(world);
   console.log(`  участков ${world.shapes.length}, узлов ${world.junctions.length}, треугольников ${report.triangles}, ${ms.toFixed(0)} мс`);
-  console.log(`  дырок ${report.holes}, изнанкой ${report.downFacing}, плоских ${report.flat}, игла ${report.worstAspect.toFixed(0)}`);
+  console.log(`  дырок ${report.holes}, изнанкой ${report.downFacing}, плоских ${report.flat}, игла ${report.worstAspect.toFixed(0)}, полотно ${(report.paved * 100).toFixed(0)}%`);
   console.log(`  пересечений обязательных рёбер ${tangled.count}`);
   for (const w of tangled.where) console.log(`    ${w}`);
   process.exit(0);

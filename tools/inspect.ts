@@ -97,11 +97,6 @@ export function inspect(world: World, surface: Surface): Report {
     // у которого все три вершины по высоте в пределах пяти сантиметров,
     // ступенькой быть не может, какой бы крутой ни выходила его плоскость:
     // у торца дороги такие крошки дают 20% на пустом месте.
-    if (paving[t / 3] === 1) {
-      const rise = Math.max(p[0][1], p[1][1], p[2][1]) - Math.min(p[0][1], p[1][1], p[2][1]);
-      if (rise > 0.05) paved = Math.max(paved, Math.hypot(n[0], n[2]) / Math.max(1e-9, Math.abs(n[1])));
-    }
-
     const sides = [
       Math.hypot(u[0], u[1], u[2]),
       Math.hypot(v[0], v[1], v[2]),
@@ -110,6 +105,16 @@ export function inspect(world: World, surface: Surface): Report {
     const longest = Math.max(...sides);
     const height = len / longest; // len/2 — площадь, высота = 2*площадь/основание
     if (!paint && height > 1e-9) worstAspect = Math.max(worstAspect, longest / height);
+    if (paving[t / 3] === 1) {
+      const rise = Math.max(p[0][1], p[1][1], p[2][1]) - Math.min(p[0][1], p[1][1], p[2][1]);
+      // У треугольника тоньше пяти сантиметров направление «вверх» посчитано
+      // из почти совпадающих точек и ничего не значит: у края мира такая
+      // крошка давала 2318% на ровном месте. Настоящая ступенька видна
+      // и на нормальных треугольниках рядом.
+      const thin = height < 0.05;
+      if (rise > 0.05 && !thin) paved = Math.max(paved, Math.hypot(n[0], n[2]) / Math.max(1e-9, Math.abs(n[1])));
+    }
+
   }
 
   let holes = 0;
