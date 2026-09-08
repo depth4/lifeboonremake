@@ -30,6 +30,9 @@ let rebuildMs = 0;
 let lastGood: Road[] = [...roads];
 let refusal = '';
 
+// ?bare=1 — убрать всю обвязку: нужно, когда снимок идёт в сравнение
+if (query.get('bare') === '1') document.querySelector('.layer')?.remove();
+
 const viewer = show(surface, startView, viewFromQuery(query));
 const canvas = document.querySelector('canvas');
 

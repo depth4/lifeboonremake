@@ -10,7 +10,9 @@
     "page": "node tools/page.mjs",
     "fuzz": "node --experimental-strip-types tools/fuzz.ts",
     "scenes": "node --experimental-strip-types tools/scenes.ts",
-    "play": "node tools/play.mjs"
+    "play": "node tools/play.mjs",
+    "section": "node --experimental-strip-types tools/section.ts",
+    "where": "node --experimental-strip-types tools/where.ts"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",
