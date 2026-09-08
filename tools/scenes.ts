@@ -13,6 +13,7 @@ import { buildWorld } from '../src/world/world.ts';
 import { TERRAINS } from '../src/world/terrain.ts';
 import { DEFAULT_VARIANT, VARIANTS, buildSurface, pokeThrough } from '../src/surface/index.ts';
 import { inspect, problems } from './inspect.ts';
+import { crossingBorders } from './edges.ts';
 
 const args = process.argv.slice(2);
 const variant = args.find((a) => VARIANTS[a.toUpperCase()] !== undefined)?.toUpperCase() ?? DEFAULT_VARIANT;
@@ -47,6 +48,15 @@ for (const name of names) {
       const r = inspect(world, surface);
       const poke = variant === 'B' ? pokeThrough(world) : { worst: 0, share: 0 };
       worstPoke = Math.max(worstPoke, poke.worst);
+      // Обязательные рёбра, которые пересекаются, триангуляция выполнить
+      // не может — и выдаёт налезающие треугольники. Ловим это ДО того,
+      // как оно превратится в дырку, иначе искать причину придётся с конца.
+      if (variant === 'A') {
+        const tangled = crossingBorders(world);
+        if (tangled.count > 0) {
+          failures.push(`${name}/${terrain}: ${tangled.count} пересечений обязательных рёбер — ${tangled.where[0]}`);
+        }
+      }
       line = [
         name.padEnd(11),
         TERRAINS[terrain].label.padEnd(9),

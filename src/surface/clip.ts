@@ -15,8 +15,16 @@ import type { Point2 } from '../world/road.ts';
 
 const { Clipper, ClipperOffset, ClipType, EndType, JoinType, PolyFillType, PolyType } = ClipperLib;
 
-/** Миллиметры на метр. */
-const S = 1000;
+/**
+ * Единиц на метр. Сто — то есть сантиметр.
+ *
+ * Библиотека считает в целых числах, поэтому все точки любой области лежат
+ * на сетке в сантиметр ПО ПОСТРОЕНИЮ. Мельче сантиметра мы всё равно ничего
+ * не строим, зато «границы двух областей разошлись на миллиметр» становится
+ * невыразимым — а из таких расхождений между областями рождались волоски
+ * длиной в метры и толщиной в миллиметр.
+ */
+const S = 100;
 /** Насколько мелко дробятся скруглённые стыки. */
 const ROUND_PRECISION = 0.02 * S;
 /**
@@ -37,8 +45,18 @@ export type Region = Point2[][];
 const toPath = (ring: readonly Point2[]): ClipperLib.Path =>
   ring.map((p) => ({ X: Math.round(p.x * S), Y: Math.round(p.z * S) }));
 
+/**
+ * Приборка на выходе. Область НЕ ВЫХОДИТ отсюда неприбранной, поэтому
+ * вырожденных контуров снаружи этого файла просто не существует.
+ *
+ * Порядок важен. Сначала убираем слишком короткие рёбра, потом ОБЯЗАТЕЛЬНО
+ * распутываем самопересечения: на тонких фигурах уборка коротких рёбер сама
+ * способна перекрестить контур, а перекрещенный контур триангулятор выполнить
+ * не может — он выдаёт налезающие друг на друга треугольники, и выглядит это
+ * потом как дырка в земле. Последним выбрасываем крошки.
+ */
 const fromPaths = (paths: ClipperLib.Paths): Region =>
-  Clipper.CleanPolygons(paths, CLEAN * S)
+  Clipper.SimplifyPolygons(Clipper.CleanPolygons(paths, CLEAN * S), PolyFillType.pftNonZero)
     .filter((path) => path.length >= 3 && Math.abs(Clipper.Area(path)) > CRUMB * S * S)
     .map((path) => path.map((p) => ({ x: p.X / S, z: p.Y / S })));
 
@@ -166,7 +184,25 @@ export function area(region: Region): number {
   return region.reduce((sum, ring) => sum + Clipper.Area(toPath(ring)) / (S * S), 0);
 }
 
+/**
+ * Область из готовых колец.
+ *
+ * Обход приводится к одному направлению. Иначе объединение двух колец,
+ * обойдённых в разные стороны, вычитает их пересечение вместо того, чтобы
+ * сложить: на пересечении получается дырка. Направление обхода — не свойство
+ * фигуры, а случайность того, как её собрали, и снаружи его знать не должны.
+ */
+export function polygon(rings: readonly (readonly Point2[])[]): Region {
+  const paths = rings
+    .filter((ring) => ring.length >= 3)
+    .map((ring) => {
+      const path = toPath(ring);
+      return Clipper.Orientation(path) ? path : path.slice().reverse();
+    });
+  return fromPaths(paths);
+}
+
 /** Прямоугольник — обычно это край мира. */
-export const box = (half: number): Region => [[
+export const box = (half: number): Region => polygon([[
   { x: -half, z: -half }, { x: half, z: -half }, { x: half, z: half }, { x: -half, z: half },
-]];
+]]);

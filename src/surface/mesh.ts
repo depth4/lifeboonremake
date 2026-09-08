@@ -202,11 +202,12 @@ export function carvePlane(
   const edges: number[][] = [];
   const seen = new Map<string, number>();
   const put = (p: Point2): number => {
-    const key = `${Math.round(p.x * 1000)},${Math.round(p.z * 1000)}`;
+    const x = p.x, z = p.z;
+    const key = `${Math.round(x * 1000)},${Math.round(z * 1000)}`;
     const found = seen.get(key);
     if (found !== undefined) return found;
     const at = points.length;
-    points.push([p.x, p.z]);
+    points.push([x, z]);
     seen.set(key, at);
     return at;
   };

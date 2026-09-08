@@ -69,9 +69,12 @@ export function roadTypeForLanes(perSide: number): RoadType {
     ? [{ kind: 'median', width: 2.0, direction: 0, rise: CURB }]
     : [mark];
 
+  // Движение правостороннее: при взгляде сверху ось x идёт вправо, ось z вниз,
+  // поэтому едущие «по линии» полосы лежат в ПОЛОЖИТЕЛЬНЫХ смещениях —
+  // справа по ходу. Отсюда же считается, на каких полосах стоп-линия.
   return {
     name: n === 1 ? 'улица, 2 полосы' : `дорога, ${n * 2} полос`,
-    lanes: [...side(1), ...middle, ...side(-1)],
+    lanes: [...side(-1), ...middle, ...side(1)],
     sidewalk: n >= 3 ? 3.2 : 2.4,
     curb: CURB,
   };
