@@ -178,6 +178,26 @@ if (tools) {
   });
 }
 
+// --- кнопка «сетка»: показать, из чего мир сделан на самом деле ---
+const wireBox = document.getElementById('wire');
+if (wireBox) {
+  wireBox.innerHTML =
+    '<button type="button" data-wire="off">скрыть</button>' +
+    '<button type="button" data-wire="on">показать</button>';
+  const paint = (): void => {
+    wireBox.querySelectorAll<HTMLButtonElement>('button[data-wire]').forEach((b) => {
+      b.setAttribute('aria-pressed', String((b.dataset.wire === 'on') === viewer.wire()));
+    });
+  };
+  paint();
+  wireBox.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-wire]');
+    if (!button) return;
+    viewer.setWire(button.dataset.wire === 'on');
+    paint();
+  });
+}
+
 // --- кнопки варианта ---
 const variants = document.getElementById('variants');
 if (variants) {

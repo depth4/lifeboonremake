@@ -94,6 +94,9 @@ export interface Viewer {
   pick(event: PointerEvent | MouseEvent): Point2 | null;
   /** Обратное: где место мира оказывается на экране. */
   project(x: number, z: number): { x: number; y: number };
+  /** Показать рёбра треугольников: видно, из чего на самом деле сделан мир. */
+  setWire(on: boolean): void;
+  wire(): boolean;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -109,6 +112,9 @@ export function viewFromQuery(query: URLSearchParams): View | null {
   if (!from || !at) return null;
   return { label: 'наводка', from, at, fog: Number(query.get('fog') ?? 400) };
 }
+
+/** Показывать ли рёбра треугольников сразу: ?wire=1. Дальше — кнопкой. */
+const START_WIRE = new URLSearchParams(location.search).get('wire') === '1';
 
 export function show(surface: Surface, startView: string, custom: View | null = null): Viewer {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -127,6 +133,17 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   ground.castShadow = true;
   ground.receiveShadow = true;
   scene.add(ground);
+
+  // Сетка рёбер поверх поверхности: та же геометрия, просто видно швы
+  const wire = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0x14181a, transparent: true, opacity: 0.55 }),
+  );
+  wire.visible = START_WIRE;
+  scene.add(wire);
+  let wireOn = START_WIRE;
+
+  let lastGeometry: THREE.BufferGeometry | null = null;
 
   const applySurface = (next: Surface): void => {
     ground.geometry.dispose();
@@ -154,6 +171,10 @@ export function show(surface: Surface, startView: string, custom: View | null = 
     });
     ground.geometry = geometry;
     ground.material = materials;
+
+    wire.geometry.dispose();
+    wire.geometry = wireOn ? new THREE.WireframeGeometry(geometry) : new THREE.BufferGeometry();
+    lastGeometry = geometry;
   };
   applySurface(surface);
 
@@ -255,6 +276,15 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       if (!on) {
         ghost.visible = false;
       }
+    },
+    setWire(on) {
+      wireOn = on;
+      wire.visible = on;
+      wire.geometry.dispose();
+      wire.geometry = on && lastGeometry ? new THREE.WireframeGeometry(lastGeometry) : new THREE.BufferGeometry();
+    },
+    wire() {
+      return wireOn;
     },
     project(x, z) {
       const hit = new THREE.Raycaster();
