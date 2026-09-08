@@ -15,9 +15,10 @@
 
 import { build } from 'vite';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 
 const OUT = 'build/мир.html';
+const PAGES = 'build/pages/index.html';
 const DIST = 'build/dist';
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
@@ -74,6 +75,13 @@ const body = html.match(/<body>([\s\S]*?)<\/body>/i)?.[1] ?? html;
 const page = `${head.trim()}\n${body.trim()}\n`;
 
 writeFileSync(OUT, page);
+
+// Тот же файл, но целым документом — для обычного сайта, где никто его
+// ни во что не оборачивает.
+mkdirSync('build/pages', { recursive: true });
+writeFileSync(PAGES, html);
+
 rmSync(DIST, { recursive: true, force: true });
 console.log(`мир одним файлом: ${OUT}, ${(page.length / 1024 / 1024).toFixed(2)} МБ`);
+console.log(`он же для сайта:  ${PAGES}`);
 console.log(`отметка: ${stamp}`);

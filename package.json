@@ -14,7 +14,8 @@
     "section": "node --experimental-strip-types tools/section.ts",
     "where": "node --experimental-strip-types tools/where.ts",
     "report": "node --experimental-strip-types tools/report.ts",
-    "site": "node tools/site.mjs"
+    "site": "node tools/site.mjs",
+    "deploy": "node tools/deploy.mjs"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",

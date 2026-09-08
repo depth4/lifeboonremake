@@ -8,7 +8,7 @@
  * Запуск: npm run page
  */
 
-import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
 const SHOTS = 'shots/для-страницы';
@@ -412,4 +412,16 @@ footer { margin-top: 70px; border-top: 1px solid var(--line); padding-top: 18px;
 `;
 
 writeFileSync(OUT, html);
+
+// Тот же отчёт целым документом — для обычного сайта.
+mkdirSync('build/pages', { recursive: true });
+writeFileSync('build/pages/report.html', `<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
+<body style="margin:0">
+${html}
+</body>
+</html>
+`);
+
 console.log(`страница: ${OUT}, ${(html.length / 1024 / 1024).toFixed(2)} МБ, картинок ${Object.keys(pics).length}`);
