@@ -21,6 +21,8 @@ interface Row {
   downFacing: number;
   flat: number;
   aspect: number;
+  paved: number;
+  grade: number;
   poke: number;
   tangled: number;
   ms: number;
@@ -49,6 +51,8 @@ for (const variant of Object.keys(VARIANTS)) {
         downFacing: r.downFacing,
         flat: r.flat,
         aspect: Math.round(r.worstAspect),
+        paved: r.paved,
+        grade: r.grade,
         poke,
         tangled,
         ms: Math.round(ms),
@@ -61,6 +65,8 @@ for (const variant of Object.keys(VARIANTS)) {
         downFacing: Math.max(row.downFacing, next.downFacing),
         flat: Math.max(row.flat, next.flat),
         aspect: Math.max(row.aspect, next.aspect),
+        paved: Math.max(row.paved, next.paved),
+        grade: Math.max(row.grade, next.grade),
         poke: Math.max(row.poke, next.poke),
         tangled: Math.max(row.tangled, next.tangled),
         ms: Math.max(row.ms, next.ms),

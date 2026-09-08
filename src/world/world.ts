@@ -11,7 +11,7 @@
 
 import type { Point2, Road, RoadType, Station } from './road.ts';
 import type { Terrain } from './terrain.ts';
-import { roadWidth, stationsFromLine } from './road.ts';
+import { limitCurvature, resample, roadWidth, stationsFromLine } from './road.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './terrain.ts';
 import { planarize } from './network.ts';
 
@@ -205,7 +205,17 @@ function solveHeights(
 export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT_TERRAIN): World {
   const terrain = (TERRAINS[terrainName] ?? TERRAINS[DEFAULT_TERRAIN]).height;
   const net = planarize(roads);
-  const lines = net.edges.map((edge) => stationsFromLine(edge.line));
+  // Предел поворота. У настоящей городской улицы минимальный радиус 15–25 м;
+  // у нас это три полуширины полотна — 18 метров для дороги шириной 12.
+  // Круче дорога завернуть не может: внутренний край полотна начинает
+  // заворачиваться сам на себя, поверхность встаёт пандусом, и на ней
+  // появляется ступенька. Измерено: до 166% при пределе уклона 8%.
+  const lines = net.edges.map((edge) => {
+    const outerHalf = roadWidth(edge.type) / 2 + edge.type.sidewalk;
+    // ровный шаг — до предела поворота: иначе радиус из трёх соседних точек
+    // ничего не значит и предел не срабатывает
+    return stationsFromLine(limitCurvature(resample(edge.line, STATION_STEP), outerHalf * 3));
+  });
 
   // Все точки полотна в один список: дальше они связываются между собой
   // независимо от того, какой дороге принадлежат.
@@ -334,6 +344,9 @@ export function nearestRoad(world: World, x: number, z: number): RoadProximity |
 
 /** Размер клетки раскладки, метры. */
 const CELL = 16;
+
+/** Через сколько метров стоят станции вдоль дороги. */
+const STATION_STEP = 2;
 
 /**
  * Строит раскладку отрезков по клеткам и возвращает вопрос «какая тут высота».

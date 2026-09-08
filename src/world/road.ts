@@ -43,6 +43,9 @@ export interface RoadType {
   readonly curb: number;
 }
 
+/** Сколько проходов разгибания поворотов. */
+const CURVE_PASSES = 400;
+
 const MARK = 0.16;
 const CURB = 0.15;
 
@@ -118,10 +121,133 @@ export interface Station {
   readonly s: number;
 }
 
-function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+/**
+ * Плавная кривая через опорные точки — ЦЕНТРОСТРЕМИТЕЛЬНАЯ.
+ *
+ * Обычная кривая Catmull-Rom при неровно расставленных точках вылетает
+ * за них петлёй: на зигзаге из четырёх кликов она заворачивается сама на себя.
+ * Петлю потом нельзя разогнуть ничем — суммарный поворот у кривой сохраняется,
+ * и радиус остаётся крошечным, сколько ни сглаживай. Измерено: 1.3 метра
+ * при пределе 32.
+ *
+ * У центростремительного варианта (шаг узла — корень из расстояния) доказано,
+ * что петель и изломов не бывает вовсе. Поэтому «дорога завернулась сама
+ * на себя» перестало быть выразимым, а не стало ловиться.
+ */
+function centripetal(p0: Point2, p1: Point2, p2: Point2, p3: Point2, t: number): Point2 {
+  const knot = (prev: number, a: Point2, b: Point2): number =>
+    prev + Math.sqrt(Math.hypot(b.x - a.x, b.z - a.z)) || prev + 1e-6;
+  const t0 = 0;
+  const t1 = knot(t0, p0, p1);
+  const t2 = knot(t1, p1, p2);
+  const t3 = knot(t2, p2, p3);
+  if (t1 - t0 < 1e-9 || t2 - t1 < 1e-9 || t3 - t2 < 1e-9) {
+    return { x: p1.x + (p2.x - p1.x) * t, z: p1.z + (p2.z - p1.z) * t };
+  }
+  const at = t1 + (t2 - t1) * t;
+  const mix = (a: Point2, b: Point2, ta: number, tb: number): Point2 => {
+    const k = (tb - at) / (tb - ta);
+    return { x: a.x * k + b.x * (1 - k), z: a.z * k + b.z * (1 - k) };
+  };
+  const a1 = mix(p0, p1, t0, t1);
+  const a2 = mix(p1, p2, t1, t2);
+  const a3 = mix(p2, p3, t2, t3);
+  const b1 = mix(a1, a2, t0, t2);
+  const b2 = mix(a2, a3, t1, t3);
+  return mix(b1, b2, t1, t2);
+}
+
+/**
+ * Раскладывает ломаную заново — через равные промежутки по длине.
+ *
+ * Без этого точки ложатся как попало: там, где кривая почти стоит на месте,
+ * они сбиваются в кучу по десять сантиметров, а на разгоне разъезжаются на
+ * четыре метра. От неровного шага ломается всё, что считает по соседним
+ * точкам: радиус поворота из трёх точек в десяти сантиметрах друг от друга
+ * не значит ничего, и предел поворота на такой ломаной не работал вовсе.
+ */
+export function resample(line: readonly Point2[], spacing: number): Point2[] {
+  if (line.length < 2 || spacing <= 0) return line.map((p) => ({ x: p.x, z: p.z }));
+  let total = 0;
+  for (let i = 1; i < line.length; i++) total += Math.hypot(line[i].x - line[i - 1].x, line[i].z - line[i - 1].z);
+  if (total < 1e-6) return [{ x: line[0].x, z: line[0].z }];
+
+  const steps = Math.max(1, Math.round(total / spacing));
+  const step = total / steps;
+  const out: Point2[] = [{ x: line[0].x, z: line[0].z }];
+  let at = 0;
+  let walked = 0;
+  for (let k = 1; k < steps; k++) {
+    const want = k * step;
+    while (at + 1 < line.length - 1) {
+      const d = Math.hypot(line[at + 1].x - line[at].x, line[at + 1].z - line[at].z);
+      if (walked + d >= want) break;
+      walked += d;
+      at++;
+    }
+    const d = Math.hypot(line[at + 1].x - line[at].x, line[at + 1].z - line[at].z);
+    const t = d > 1e-9 ? (want - walked) / d : 0;
+    out.push({
+      x: line[at].x + (line[at + 1].x - line[at].x) * t,
+      z: line[at].z + (line[at + 1].z - line[at].z) * t,
+    });
+  }
+  out.push({ x: line[line.length - 1].x, z: line[line.length - 1].z });
+  return out;
+}
+
+/**
+ * Разгибает повороты круче допустимого.
+ *
+ * У дороги есть предел не только по подъёму, но и по повороту: она не может
+ * завернуть вокруг круга уже, чем сама. Иначе внутренний край полотна
+ * заворачивается сам на себя, поверхность встаёт пандусом, и на ней появляется
+ * ступенька — измерено, до 166% при пределе 8%.
+ *
+ * Круче предела точка подтягивается к середине между соседями — ровно
+ * настолько, насколько не хватает. Концы не двигаются: они держат узлы сети.
+ *
+ * Это не сглаживание «на всякий случай»: пока поворот в пределах, линия
+ * остаётся точно такой, какой её нарисовали.
+ */
+export function limitCurvature(line: readonly Point2[], minRadius: number): Point2[] {
+  let p = line.map((q) => ({ x: q.x, z: q.z }));
+  if (p.length < 3 || minRadius <= 0) return p;
+
+  // шаг, с которым точки стояли изначально: разгибая угол, мы их сбиваем
+  // в кучу на внутренней стороне, и радиус из трёх соседних точек снова
+  // перестаёт что-либо значить. Поэтому по ходу дела раскладываем заново.
+  let total = 0;
+  for (let i = 1; i < p.length; i++) total += Math.hypot(p[i].x - p[i - 1].x, p[i].z - p[i - 1].z);
+  const step = total / (p.length - 1);
+
+  // Правится на месте, а не через копию: так поправка добегает по цепочке
+  // за один проход, а не по одной точке за проход. Виток спирали из полусотни
+  // точек копией разгибался бы тысячу проходов.
+  for (let pass = 0; pass < CURVE_PASSES; pass++) {
+    let worst = 0;
+    for (let dir = 0; dir < 2; dir++) {
+      for (let k = 1; k + 1 < p.length; k++) {
+        const i = dir === 0 ? k : p.length - 1 - k;
+        const ax = p[i].x - p[i - 1].x, az = p[i].z - p[i - 1].z;
+        const bx = p[i + 1].x - p[i].x, bz = p[i + 1].z - p[i].z;
+        const la = Math.hypot(ax, az), lb = Math.hypot(bx, bz);
+        if (la < 1e-6 || lb < 1e-6) continue;
+        const turn = Math.abs(Math.atan2(ax * bz - az * bx, ax * bx + az * bz));
+        if (turn < 1e-9) continue;
+        const radius = (la + lb) / 2 / turn;
+        if (radius >= minRadius) continue;
+        // насколько не хватает — настолько и тянем
+        const pull = Math.min(0.55, 0.55 * (1 - radius / minRadius));
+        p[i].x += ((p[i - 1].x + p[i + 1].x) / 2 - p[i].x) * pull;
+        p[i].z += ((p[i - 1].z + p[i + 1].z) / 2 - p[i].z) * pull;
+        worst = Math.max(worst, 1 - radius / minRadius);
+      }
+    }
+    if (worst < 0.02) break;
+    if (pass % 8 === 7 && step > 1e-6) p = resample(p, step);
+  }
+  return p;
 }
 
 /** Превращает готовую ломаную в станции: с поперечным направлением и метражом. */
@@ -154,11 +280,9 @@ export function sampleCenterline(road: Road, spacing: number): Station[] {
     const p0 = ext[i - 1], p1 = ext[i], p2 = ext[i + 1], p3 = ext[i + 2];
     const chord = Math.hypot(p2.x - p1.x, p2.z - p1.z);
     const steps = Math.max(2, Math.ceil(chord / spacing));
-    for (let k = 0; k < steps; k++) {
-      const t = k / steps;
-      raw.push({ x: catmullRom(p0.x, p1.x, p2.x, p3.x, t), z: catmullRom(p0.z, p1.z, p2.z, p3.z, t) });
-    }
+    for (let k = 0; k < steps; k++) raw.push(centripetal(p0, p1, p2, p3, k / steps));
   }
   raw.push(cp[cp.length - 1]);
-  return stationsFromLine(raw);
+  // кривая опрашивается часто и неровно, а наружу отдаётся ровный шаг
+  return stationsFromLine(resample(raw, spacing));
 }

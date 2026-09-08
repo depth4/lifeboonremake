@@ -50,6 +50,7 @@ const rows = A.map((a, i) => {
     <td class="n">${a.roads}</td><td class="n">${a.junctions}</td>
     <td class="n">${a.triangles.toLocaleString('ru-RU')}</td>
     <td class="n ${a.holes === 0 ? 'ok' : 'bad'}">${a.holes}</td>
+    <td class="n">${(a.paved * 100).toFixed(0)}%</td>
     <td class="n">${a.aspect}</td>
     <td class="n">${a.ms}</td>
     <td class="n ${b.holes === 0 ? 'ok' : 'bad'}">${b.holes.toLocaleString('ru-RU')}</td>
@@ -297,18 +298,18 @@ footer { margin-top: 70px; border-top: 1px solid var(--line); padding-top: 18px;
         <tr>
           <th scope="col">сцена</th>
           <th scope="col">дорог</th><th scope="col">узлов</th>
-          <th scope="col">треуг.</th><th scope="col">дырок</th><th scope="col">игла</th><th scope="col">мс</th>
+          <th scope="col">треуг.</th><th scope="col">дырок</th><th scope="col">полотно</th><th scope="col">игла</th><th scope="col">мс</th>
           <th scope="col" class="grp">дырок Б</th><th scope="col">торчит Б</th><th scope="col">мс Б</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
   </div>
-  <p style="margin-top:18px"><b>Дырка</b> — ребро, на которое опирается не два треугольника, а один: сквозь него видно небо. <b>Игла</b> — во сколько раз самый вытянутый треугольник длиннее своей толщины; у&nbsp;варианта А это почти всегда сам бордюр. <b>Торчит</b> — на сколько метров земля вылезает поверх асфальта.</p>
+  <p style="margin-top:18px"><b>Дырка</b> — ребро, на которое опирается не два треугольника, а один: сквозь него видно небо. <b>Полотно</b> — самая крутая ступенька на асфальте или тротуаре; предельный продольный уклон дороги 8%, так что 8% здесь означает «ступенек нет вовсе». <b>Игла</b> — во сколько раз самый вытянутый треугольник длиннее своей толщины; у&nbsp;варианта А это почти всегда сам бордюр. <b>Торчит</b> — на сколько метров земля вылезает поверх асфальта.</p>
 
   <h3>Итог одной строкой</h3>
   <div class="runs">
-    <div><code>вариант А</code><span>${sum(A, 'holes')} дырок на всех сценах, ${max(A, 'downFacing')} треугольников изнанкой вверх, ${max(A, 'flat')} нулевой площади, ${max(A, 'tangled')} пересечений границ. Сборка ${min(A, 'ms')}–${max(A, 'ms')} мс.</span></div>
+    <div><code>вариант А</code><span>${sum(A, 'holes')} дырок на всех сценах, ${max(A, 'downFacing')} треугольников изнанкой вверх, ${max(A, 'flat')} нулевой площади, ${max(A, 'tangled')} пересечений границ. Уклон вдоль дороги ровно ${(max(A, 'grade') * 100).toFixed(1)}% при пределе 8%. Сборка ${min(A, 'ms')}–${max(A, 'ms')} мс.</span></div>
     <div><code>вариант Б</code><span>${min(B, 'holes').toLocaleString('ru-RU')}–${max(B, 'holes').toLocaleString('ru-RU')} дырок на каждой сцене, земля торчит сквозь асфальт до ${max(B, 'poke').toFixed(2)} м. Сборка ${min(B, 'ms')}–${max(B, 'ms')} мс.</span></div>
   </div>
 </section>
