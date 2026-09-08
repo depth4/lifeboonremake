@@ -31,7 +31,39 @@ let lastGood: Road[] = [...roads];
 let refusal = '';
 
 // ?bare=1 — убрать всю обвязку: нужно, когда снимок идёт в сравнение
-if (query.get('bare') === '1') document.querySelector('.layer')?.remove();
+if (query.get('bare') === '1') {
+  document.querySelector('.layer')?.remove();
+  document.getElementById('news')?.remove();
+}
+
+/**
+ * Отметка сборки. Ставится при сборке страницы, а не пишется руками:
+ * иначе однажды она соврёт. Нужна ровно для одного вопроса — «я открыл
+ * свежую версию или старую из памяти браузера?»
+ */
+const stamp = (import.meta.env.VITE_BUILD as string | undefined) ?? '';
+const changes = ((import.meta.env.VITE_CHANGES as string | undefined) ?? '')
+  .split('\n')
+  .map((line) => line.trim())
+  .filter((line) => line.length > 0);
+
+const buildLine = document.getElementById('build');
+if (buildLine && stamp !== '') {
+  buildLine.textContent = stamp;
+  buildLine.classList.add('fresh');
+}
+
+const news = document.getElementById('news');
+const newsList = document.getElementById('news-list');
+if (news && newsList && changes.length > 0 && query.get('bare') !== '1') {
+  newsList.innerHTML = changes.map((line) => `<li>${line}</li>`).join('');
+  const when = document.getElementById('news-when');
+  if (when) when.textContent = `что нового · ${stamp}`;
+  news.classList.add('open');
+  document.getElementById('news-close')?.addEventListener('click', () => news.classList.remove('open'));
+  // отметку сборки можно нажать, чтобы список вернулся
+  buildLine?.addEventListener('click', () => news.classList.toggle('open'));
+}
 
 const viewer = show(surface, startView, viewFromQuery(query));
 const canvas = document.querySelector('canvas');

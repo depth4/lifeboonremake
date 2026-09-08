@@ -13,7 +13,8 @@
     "play": "node tools/play.mjs",
     "section": "node --experimental-strip-types tools/section.ts",
     "where": "node --experimental-strip-types tools/where.ts",
-    "report": "node --experimental-strip-types tools/report.ts"
+    "report": "node --experimental-strip-types tools/report.ts",
+    "site": "node tools/site.mjs"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Перекрёстки на зелёном плато</title>
+    <title>Песочница дорог</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -62,6 +62,49 @@
         line-height: 1.5;
       }
       .mark span { display: block; color: var(--muted); letter-spacing: 0.08em; font-weight: 500; }
+      .mark span.fresh { color: #a9e0b0; }
+
+      /* Что нового в этой сборке: чтобы было видно, ту ли версию открыли */
+      .news {
+        align-self: end;
+        justify-self: start;
+        max-width: min(400px, 42vw);
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 3px;
+        backdrop-filter: blur(8px);
+        padding: 12px 14px;
+        pointer-events: auto;
+        display: none;
+        z-index: 5;
+      }
+      .news.open { display: block; }
+      .mark span { cursor: pointer; }
+      .news h2 {
+        margin: 0 0 8px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .news ol { margin: 0; padding-left: 1.1em; font-size: 12.5px; line-height: 1.55; color: var(--text); }
+      .news li { margin-bottom: 5px; }
+      .news li:last-child { margin-bottom: 0; }
+      .news button {
+        margin-top: 10px;
+        appearance: none;
+        border: 1px dashed var(--edge);
+        background: transparent;
+        color: var(--muted);
+        font: 600 11px/1 var(--sans);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        padding: 7px 10px;
+        border-radius: 2px;
+        cursor: pointer;
+      }
+      .news button:hover { color: var(--text); }
 
       .views {
         display: flex;
@@ -171,7 +214,7 @@
   <body>
     <div class="layer">
       <div class="top">
-        <div class="mark">lifeboonremake<span>шаг 5</span></div>
+        <div class="mark">lifeboonremake<span id="build">сборка не отмечена</span></div>
         <div class="group"><span class="tag">ракурс</span>
           <div class="views" id="views" role="group" aria-label="Ракурс"></div>
         </div>
@@ -188,7 +231,11 @@
           <div class="views" id="scenes" role="group" aria-label="Сцена"></div>
         </div>
       </div>
-      <div></div>
+      <div class="news" id="news">
+        <h2 id="news-when">что нового</h2>
+        <ol id="news-list"></ol>
+        <button type="button" id="news-close">скрыть</button>
+      </div>
       <div class="bottom">
         <div class="readout">
           <h1 id="road-name">—</h1>
