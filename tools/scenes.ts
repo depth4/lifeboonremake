@@ -23,8 +23,8 @@ const terrains = Object.keys(TERRAINS);
 
 console.log(`вариант ${VARIANTS[variant].label}\n`);
 
-const head = ['сцена', 'рельеф', 'дорог', 'узлов', 'треуг.', 'дырок', 'изнанка', 'плоских', 'игла', 'торчит', 'уклон', 'мс'];
-console.log(head.map((h, i) => h.padEnd([11, 9, 6, 6, 8, 7, 8, 8, 6, 8, 7, 6][i])).join(''));
+const head = ['сцена', 'рельеф', 'дорог', 'узлов', 'треуг.', 'дырок', 'изнанка', 'плоских', 'игла', 'полотно', 'торчит', 'мс'];
+console.log(head.map((h, i) => h.padEnd([11, 9, 6, 6, 8, 7, 8, 8, 6, 8, 8, 6][i])).join(''));
 console.log('─'.repeat(87));
 
 const failures: string[] = [];
@@ -67,8 +67,8 @@ for (const name of names) {
         String(r.downFacing).padEnd(8),
         String(r.flat).padEnd(8),
         r.worstAspect.toFixed(0).padEnd(6),
+        `${(r.paved * 100).toFixed(0)}%`.padEnd(8),
         (poke.worst > 0 ? `${poke.worst.toFixed(2)}м` : '—').padEnd(8),
-        `${(r.grade * 100).toFixed(1)}%`.padEnd(7),
         ms.toFixed(0).padEnd(6),
       ].join('');
       for (const p of problems(r)) failures.push(`${name}/${terrain}: ${p}`);

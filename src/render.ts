@@ -18,6 +18,57 @@ const COLORS: Record<Material, number> = {
   marking: 0xf0ecdc,
 };
 
+/** Земля на крутом откосе — не трава, а обнажённый грунт. */
+const SOIL = 0x7a6a4e;
+/** Насколько цвет гуляет от места к месту, доля. */
+const VARIATION: Record<Material, number> = {
+  grass: 0.3, asphalt: 0.1, sidewalk: 0.11, curb: 0.05, marking: 0,
+};
+
+/**
+ * Пятнистость: одно и то же место всегда даёт одно и то же число.
+ * Не случайность, а функция от координат — иначе мир мерцал бы при пересборке.
+ */
+function blotch(x: number, z: number): number {
+  const wave = (fx: number, fz: number, p: number): number =>
+    Math.sin(x * fx + Math.cos(z * fz + p) * 2.3) * Math.cos(z * fz * 1.31 - Math.sin(x * fx * 0.7) * 1.7);
+  return (wave(0.083, 0.071, 0) * 0.6 + wave(0.31, 0.27, 1.9) * 0.28 + wave(1.05, 0.93, 4.1) * 0.12);
+}
+
+/**
+ * Цвет каждой вершины: порода + пятнистость места + крутизна склона.
+ *
+ * Считается ЗДЕСЬ, а не в мире: мир знает, что где лежит, а как оно выглядит —
+ * дело показа. Уберите этот файл — мир останется целым.
+ */
+function shade(surface: Surface, normals: Float32Array): Float32Array {
+  const colors = new Float32Array(surface.positions.length);
+  const P = surface.positions;
+  const I = surface.indices;
+  const soil = new THREE.Color(SOIL);
+  const tone = new THREE.Color();
+
+  for (const group of surface.groups) {
+    const base = new THREE.Color(COLORS[group.material]);
+    const swing = VARIATION[group.material];
+    for (let k = group.start; k < group.start + group.count; k++) {
+      const v = I[k];
+      if (colors[v * 3] !== 0 || colors[v * 3 + 1] !== 0 || colors[v * 3 + 2] !== 0) continue;
+      tone.copy(base);
+      if (group.material === 'grass') {
+        // чем круче склон, тем меньше на нём держится трава
+        const steep = Math.min(1, Math.max(0, (1 - normals[v * 3 + 1]) * 2.6));
+        tone.lerp(soil, steep * 0.72);
+      }
+      const spot = 1 + blotch(P[v * 3], P[v * 3 + 2]) * swing;
+      colors[v * 3] = tone.r * spot;
+      colors[v * 3 + 1] = tone.g * spot;
+      colors[v * 3 + 2] = tone.b * spot;
+    }
+  }
+  return colors;
+}
+
 export interface View {
   readonly label: string;
   readonly from: [number, number, number];
@@ -84,11 +135,23 @@ export function show(surface: Surface, startView: string, custom: View | null = 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(next.positions, 3));
     geometry.setIndex(new THREE.BufferAttribute(next.indices, 1));
+    geometry.computeVertexNormals();
+    const normals = geometry.getAttribute('normal').array as Float32Array;
+    geometry.setAttribute('color', new THREE.BufferAttribute(shade(next, normals), 3));
+
     const materials = next.groups.map((group, i) => {
       geometry.addGroup(group.start, group.count, i);
-      return new THREE.MeshStandardMaterial({ color: COLORS[group.material], roughness: 0.95, metalness: 0 });
+      return new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: group.material === 'marking' ? 0.7 : 0.96,
+        metalness: 0,
+        // краска лежит на асфальте: пусть всегда ложится поверх него, а не
+        // спорит с ним за пиксель
+        polygonOffset: group.material === 'marking',
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      });
     });
-    geometry.computeVertexNormals();
     ground.geometry = geometry;
     ground.material = materials;
   };

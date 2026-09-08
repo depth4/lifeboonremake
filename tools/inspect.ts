@@ -29,6 +29,13 @@ export interface Report {
   readonly worstAspect: number;
   /** треугольники нулевой площади: не треугольники вовсе */
   readonly flat: number;
+  /**
+   * Самый крутой треугольник ПОЛОТНА — асфальта и тротуара, доля.
+   * Вдоль дороги уклон ограничен, а поперёк никто его не ограничивал: на
+   * перекрёстке высоты двух дорог сходились обрывом, и картинка это скрывала.
+   * Здесь это видно числом.
+   */
+  readonly paved: number;
   /** самый крутой участок дороги, доля */
   readonly grade: number;
   /** самый большой отрыв дороги от земли, метры */
@@ -45,9 +52,14 @@ export function inspect(world: World, surface: Surface): Report {
   // Краска поверх асфальта в замкнутую поверхность не входит: её рёбра
   // и не должны ни на что опираться.
   const painted = new Uint8Array(I.length / 3);
+  const paving = new Uint8Array(I.length / 3);
   for (const g of surface.groups) {
-    if (SEALED.includes(g.material)) continue;
-    for (let i = g.start; i < g.start + g.count; i += 3) painted[i / 3] = 1;
+    if (!SEALED.includes(g.material)) {
+      for (let i = g.start; i < g.start + g.count; i += 3) painted[i / 3] = 1;
+    }
+    if (g.material === 'asphalt' || g.material === 'sidewalk') {
+      for (let i = g.start; i < g.start + g.count; i += 3) paving[i / 3] = 1;
+    }
   }
 
   const key = (v: number): string =>
@@ -57,6 +69,7 @@ export function inspect(world: World, surface: Surface): Report {
   let downFacing = 0;
   let worstAspect = 0;
   let flat = 0;
+  let paved = 0;
 
   for (let t = 0; t < I.length; t += 3) {
     const paint = painted[t / 3] === 1;
@@ -80,6 +93,14 @@ export function inspect(world: World, surface: Surface): Report {
     }
     // изнанкой вверх — только у земли: у бордюра вертикальные грани это норма
     if (n[1] / len < -0.2) downFacing++;
+    // Ступенькой считаем только то, обо что можно споткнуться. Треугольник,
+    // у которого все три вершины по высоте в пределах пяти сантиметров,
+    // ступенькой быть не может, какой бы крутой ни выходила его плоскость:
+    // у торца дороги такие крошки дают 20% на пустом месте.
+    if (paving[t / 3] === 1) {
+      const rise = Math.max(p[0][1], p[1][1], p[2][1]) - Math.min(p[0][1], p[1][1], p[2][1]);
+      if (rise > 0.05) paved = Math.max(paved, Math.hypot(n[0], n[2]) / Math.max(1e-9, Math.abs(n[1])));
+    }
 
     const sides = [
       Math.hypot(u[0], u[1], u[2]),
@@ -106,6 +127,7 @@ export function inspect(world: World, surface: Surface): Report {
     downFacing,
     worstAspect,
     flat,
+    paved,
     grade: world.grade,
     lift: world.lift,
   };
@@ -117,6 +139,9 @@ export function problems(r: Report): string[] {
   if (r.holes > 0) out.push(`${r.holes} незашитых рёбер — сквозь них видно небо`);
   if (r.downFacing > 0) out.push(`${r.downFacing} треугольников земли повёрнуты изнанкой вверх`);
   if (r.flat > 0) out.push(`${r.flat} треугольников нулевой площади`);
+  // вчетверо круче предельного продольного уклона — это уже не дорога,
+  // а ступенька: машина в неё въедет
+  if (r.paved > MAX_GRADE * 4) out.push(`полотно круче ${(r.paved * 100).toFixed(0)}% — это ступенька, а не дорога`);
   if (r.grade > MAX_GRADE + 0.001) out.push(`дорога круче предела: ${(r.grade * 100).toFixed(1)}%`);
   return out;
 }

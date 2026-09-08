@@ -29,8 +29,9 @@ export const MAX_GRADE = 0.08;
 const CUT_SLOPE = 1.5;
 const FILL_SLOPE = 2.0;
 
-const LIMIT_PASSES = 8;
-const SMOOTH_PASSES = 25;
+/** Сколько раз послабление проходит по поперечным связям высот. */
+const RELAX_PASSES = 400;
+const SMOOTH_PASSES = 12;
 
 export interface RoadShape {
   readonly type: RoadType;
@@ -44,11 +45,13 @@ export interface RoadShape {
   readonly lift: number;
 }
 
-/** Узел: место, где сходятся дороги. Форму площадки мир не знает — это дело сборщика. */
+/**
+ * Узел: место, где сходятся дороги. Ни формы площадки, ни своей высоты у него
+ * нет — высота в любой точке спрашивается у полотна, и другого ответа не бывает.
+ */
 export interface Junction {
   readonly x: number;
   readonly z: number;
-  readonly height: number;
   readonly degree: number;
 }
 
@@ -76,69 +79,221 @@ function steepest(stations: readonly Station[], h: readonly number[]): number {
   return worst;
 }
 
-/** Прижимает профиль к допустимому уклону. Концы закреплены на высотах узлов. */
-function limitGrade(stations: readonly Station[], h: number[], ends: [number, number]): void {
-  for (let pass = 0; pass < LIMIT_PASSES; pass++) {
-    h[0] = ends[0];
-    for (let i = 1; i < h.length; i++) {
-      const d = (stations[i].s - stations[i - 1].s) * MAX_GRADE;
-      h[i] = Math.min(h[i - 1] + d, Math.max(h[i - 1] - d, h[i]));
-    }
-    h[h.length - 1] = ends[1];
-    for (let i = h.length - 2; i >= 0; i--) {
-      const d = (stations[i + 1].s - stations[i].s) * MAX_GRADE;
-      h[i] = Math.min(h[i + 1] + d, Math.max(h[i + 1] - d, h[i]));
-    }
-    h[0] = ends[0];
-  }
+/**
+ * Связь между двумя точками полотна: их высоты не могут разойтись сильнее,
+ * чем на `allowed` метров.
+ */
+interface Link {
+  readonly a: number;
+  readonly b: number;
+  readonly allowed: number;
 }
 
-/** Сглаживание переломов. Уклон от него только уменьшается, предел остаётся цел. */
-function smooth(h: number[]): void {
-  for (let pass = 0; pass < SMOOTH_PASSES; pass++) {
-    const prev = h.slice();
-    for (let i = 1; i < h.length - 1; i++) h[i] = (prev[i - 1] + 2 * prev[i] + prev[i + 1]) / 4;
-  }
+/** Цепочка точек вдоль одной дороги: по ней предел уклона выполняется точно. */
+interface Chain {
+  readonly from: number;
+  readonly count: number;
+  readonly steps: readonly number[];
 }
 
-function profile(stations: readonly Station[], terrain: Terrain, ends: [number, number]): number[] {
-  const h = stations.map((st) => terrain(st.x, st.z));
-  limitGrade(stations, h, ends);
-  smooth(h);
-  h[0] = ends[0];
-  h[h.length - 1] = ends[1];
-  limitGrade(stations, h, ends);
+/**
+ * Высоты всего полотна разом.
+ *
+ * ОДНО правило вместо двух. Раньше предельный уклон держали только ВДОЛЬ
+ * каждой дороги, а поперёк — никто. Две дороги, идущие рядом под малым углом,
+ * могли разойтись по высоте на три метра при пяти метрах между ними: полотно
+ * вставало ступенькой в 60%, и никакая проверка этого не видела.
+ *
+ * Теперь правило звучит так: **любые две точки полотна, отстоящие друг от
+ * друга на d метров, различаются по высоте не больше чем на d × предельный
+ * уклон** — вдоль дороги, поперёк, между разными дорогами, всё равно.
+ * «Полотно встало стеной» перестало быть выразимым.
+ *
+ * Решается послаблением: пока какая-то связь нарушена, обе её точки
+ * подтягиваются навстречу. Точки, сошедшиеся в узле сети, — одна и та же
+ * точка, у них связь с нулевым запасом.
+ */
+function solveHeights(
+  places: readonly Point2[],
+  chains: readonly Chain[],
+  links: readonly Link[],
+  terrain: Terrain,
+): number[] {
+  const wanted = places.map((p) => terrain(p.x, p.z));
+
+  /**
+   * Сколько получится, если ТОЛЬКО срезать: каждая точка опускается до
+   * самой низкой, до которой можно дойти по связям, плюс разрешённый подъём.
+   * Величина только убывает, поэтому счёт заведомо сходится.
+   */
+  const shave = (sign: number): number[] => {
+    const h = wanted.map((v) => v * sign);
+    const sweepChains = (): boolean => {
+      let moved = false;
+      for (const chain of chains) {
+        for (let i = 1; i < chain.count; i++) {
+          const a = chain.from + i - 1, b = chain.from + i;
+          const limit = h[a] + chain.steps[i - 1] * MAX_GRADE;
+          if (h[b] > limit) { h[b] = limit; moved = true; }
+        }
+        for (let i = chain.count - 2; i >= 0; i--) {
+          const a = chain.from + i + 1, b = chain.from + i;
+          const limit = h[a] + chain.steps[i] * MAX_GRADE;
+          if (h[b] > limit) { h[b] = limit; moved = true; }
+        }
+      }
+      return moved;
+    };
+
+    for (let pass = 0; pass < RELAX_PASSES; pass++) {
+      let moved = sweepChains();
+      for (const link of links) {
+        if (h[link.b] > h[link.a] + link.allowed) { h[link.b] = h[link.a] + link.allowed; moved = true; }
+        if (h[link.a] > h[link.b] + link.allowed) { h[link.a] = h[link.b] + link.allowed; moved = true; }
+      }
+      if (!moved) break;
+    }
+    // последним словом всегда предел ВДОЛЬ дороги: он — обещание, которое
+    // видно игроку, а поперечные связи только помогают его выполнить
+    while (sweepChains());
+    return h.map((v) => v * sign);
+  };
+
+  // Срезать (сверху) и засыпать (снизу) — не два действия, а одно правило,
+  // применённое в две стороны. Полотно ложится ровно между ними, поэтому
+  // земляных работ поровну, а предел уклона выполняется по построению:
+  // среднее двух функций с ограниченным наклоном тоже имеет его ограниченным.
+  const cut = shave(1);
+  const fill = shave(-1);
+  const h = cut.map((v, i) => (v + fill[i]) / 2);
+
+  // Сглаживание переломов — и сразу же принуждение к пределу. Сглаживание
+  // не трогает концы цепочки, а соседа с краю двигает: на коротком последнем
+  // отрезке в полметра это давало уклон в 26% при пределе восемь. Предел
+  // должен быть последним словом всегда, иначе он не предел.
+  for (const chain of chains) {
+    for (let pass = 0; pass < SMOOTH_PASSES; pass++) {
+      const prev = h.slice(chain.from, chain.from + chain.count);
+      for (let i = 1; i < chain.count - 1; i++) {
+        h[chain.from + i] = (prev[i - 1] + 2 * prev[i] + prev[i + 1]) / 4;
+      }
+    }
+  }
+  for (let pass = 0; pass < RELAX_PASSES; pass++) {
+    let moved = false;
+    for (const chain of chains) {
+      for (let i = 1; i < chain.count; i++) {
+        const a = chain.from + i - 1, b = chain.from + i;
+        const d = chain.steps[i - 1] * MAX_GRADE;
+        const was = h[b];
+        h[b] = Math.min(h[a] + d, Math.max(h[a] - d, h[b]));
+        if (h[b] !== was) moved = true;
+      }
+      for (let i = chain.count - 2; i >= 0; i--) {
+        const a = chain.from + i + 1, b = chain.from + i;
+        const d = chain.steps[i] * MAX_GRADE;
+        const was = h[b];
+        h[b] = Math.min(h[a] + d, Math.max(h[a] - d, h[b]));
+        if (h[b] !== was) moved = true;
+      }
+    }
+    if (!moved) break;
+  }
   return h;
 }
 
 export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT_TERRAIN): World {
   const terrain = (TERRAINS[terrainName] ?? TERRAINS[DEFAULT_TERRAIN]).height;
   const net = planarize(roads);
-  const nodeHeight = net.nodes.map((n) => terrain(n.x, n.z));
+  const lines = net.edges.map((edge) => stationsFromLine(edge.line));
 
-  // Высоты узлов тоже обязаны укладываться в предельный уклон: между двумя
-  // близкими узлами с разной высотой земли дорога встала бы стеной.
-  for (let pass = 0; pass < 40; pass++) {
-    let moved = false;
-    for (const edge of net.edges) {
-      let length = 0;
-      for (let i = 1; i < edge.line.length; i++) {
-        length += Math.hypot(edge.line[i].x - edge.line[i - 1].x, edge.line[i].z - edge.line[i - 1].z);
-      }
-      const allowed = length * MAX_GRADE;
-      const diff = nodeHeight[edge.to] - nodeHeight[edge.from];
-      if (Math.abs(diff) <= allowed) continue;
-      const pull = ((Math.abs(diff) - allowed) / 2) * Math.sign(diff);
-      nodeHeight[edge.from] += pull;
-      nodeHeight[edge.to] -= pull;
-      moved = true;
+  // Все точки полотна в один список: дальше они связываются между собой
+  // независимо от того, какой дороге принадлежат.
+  const places: Point2[] = [];
+  const first: number[] = [];
+  const widths: number[] = [];
+  net.edges.forEach((edge, e) => {
+    first.push(places.length);
+    const half = roadWidth(edge.type) / 2 + edge.type.sidewalk;
+    for (const st of lines[e]) {
+      places.push({ x: st.x, z: st.z });
+      widths.push(half);
     }
-    if (!moved) break;
+  });
+
+  const links: Link[] = [];
+  const chains: Chain[] = lines.map((st, e) => ({
+    from: first[e],
+    count: st.length,
+    steps: st.slice(1).map((s, i) => s.s - st[i].s),
+  }));
+  // концы, сошедшиеся в одном узле, — одна и та же точка
+  const atNode = new Map<number, number[]>();
+  net.edges.forEach((edge, e) => {
+    for (const [node, at] of [[edge.from, first[e]], [edge.to, first[e] + lines[e].length - 1]] as const) {
+      const list = atNode.get(node);
+      if (list) list.push(at);
+      else atNode.set(node, [at]);
+    }
+  });
+  for (const list of atNode.values()) {
+    for (let i = 1; i < list.length; i++) links.push({ a: list[0], b: list[i], allowed: 0 });
+  }
+  // поперёк: точки разных дорог, оказавшиеся рядом. Клетки — чтобы не
+  // перебирать миллион пар на большой сцене.
+  const CROSS = places.reduce((w, _, i) => Math.max(w, widths[i]), 0) * 2 + 4;
+  if (CROSS > 0 && places.length > 1) {
+    const cells = new Map<number, number[]>();
+    const key = (x: number, z: number): number =>
+      (Math.floor(x / CROSS) + 4096) * 8192 + Math.floor(z / CROSS) + 4096;
+    places.forEach((p, i) => {
+      const k = key(p.x, p.z);
+      const list = cells.get(k);
+      if (list) list.push(i);
+      else cells.set(k, [i]);
+    });
+    const roadOf = new Int32Array(places.length);
+    const along = new Float64Array(places.length);
+    lines.forEach((st, e) => {
+      for (let i = 0; i < st.length; i++) {
+        roadOf[first[e] + i] = e;
+        along[first[e] + i] = st[i].s;
+      }
+    });
+
+    places.forEach((p, i) => {
+      const ci = Math.floor(p.x / CROSS), cj = Math.floor(p.z / CROSS);
+      for (let di = -1; di <= 1; di++) {
+        for (let dj = -1; dj <= 1; dj++) {
+          const list = cells.get((ci + di + 4096) * 8192 + cj + dj + 4096);
+          if (!list) continue;
+          for (const j of list) {
+            if (j <= i) continue;
+            const d = Math.hypot(places[j].x - p.x, places[j].z - p.z);
+            if (d > CROSS) continue;
+            // Точки ОДНОЙ дороги связываем, только если она свернулась к себе:
+            // у соседних станций путь вдоль дороги равен расстоянию по прямой,
+            // и связывать их второй раз незачем. У серпантина же соседние
+            // по земле точки разделены сотней метров дороги — и вот их высоты
+            // обязаны сходиться, иначе полотно встанет ступенькой.
+            if (roadOf[j] === roadOf[i] && Math.abs(along[j] - along[i]) < d * 2) continue;
+            // Считаем не расстояние между осями, а ЗАЗОР между краями полотна:
+            // предел уклона — свойство поверхности, а не осевых линий. У двух
+            // дорог, чьи полотна сомкнулись, зазор ноль, и высоты обязаны
+            // совпасть — иначе на их стыке встанет ступенька.
+            const gap = Math.max(0, d - widths[i] - widths[j]);
+            links.push({ a: i, b: j, allowed: gap * MAX_GRADE });
+          }
+        }
+      }
+    });
   }
 
-  const shapes: RoadShape[] = net.edges.map((edge) => {
-    const stations = stationsFromLine(edge.line);
-    const height = profile(stations, terrain, [nodeHeight[edge.from], nodeHeight[edge.to]]);
+  const solved = solveHeights(places, chains, links, terrain);
+
+  const shapes: RoadShape[] = net.edges.map((edge, e) => {
+    const stations = lines[e];
+    const height = solved.slice(first[e], first[e] + stations.length);
     return {
       type: edge.type,
       stations,
@@ -151,7 +306,7 @@ export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT
   });
 
   const junctions: Junction[] = net.nodes
-    .map((node, i) => ({ x: node.x, z: node.z, height: nodeHeight[i], degree: node.degree }))
+    .map((node) => ({ x: node.x, z: node.z, degree: node.degree }))
     .filter((j) => j.degree > 1);
 
   return {
@@ -181,34 +336,42 @@ export function nearestRoad(world: World, x: number, z: number): RoadProximity |
 const CELL = 16;
 
 /**
- * Строит раскладку отрезков по клеткам и возвращает вопрос «кто здесь ближе».
+ * Строит раскладку отрезков по клеткам и возвращает вопрос «какая тут высота».
  *
- * Сравниваем не по голому расстоянию, а по «насколько вылезли за край дороги»:
- * иначе широкая дорога рядом проигрывала бы узкой. Поиск расширяется кольцами
- * клеток и останавливается, когда следующее кольцо заведомо не может выиграть
- * даже самой широкой дорогой. Приблизительных ответов тут не бывает.
+ * ГЛАВНОЕ. Высота полотна — не «профиль ближайшей дороги». «Ближайшая» скачком
+ * меняется на равном удалении от двух дорог, и на перекрёстке из-за этого
+ * появлялся ОБРЫВ: измерено 1.1 м на тротуаре и 0.9 м на асфальте в десяти
+ * метрах от узла, где профили двух дорог успели разойтись. Картинка это
+ * скрывала, а машина бы в него въехала.
  *
- * Клетки лежат сплошным массивом, а не словарём по строковому ключу: этот
- * вопрос задаётся десятки тысяч раз за сборку, и склейка строк для ключа
- * съедала больше времени, чем вся триангуляция.
+ * Поэтому высота — взвешенная смесь профилей всех дорог, которые сюда
+ * дотягиваются. Вес равен единице на своей проезжей части и плавно сходит на
+ * ноль на расстоянии `reach` от её края. Смесь непрерывных величин непрерывна,
+ * значит обрыв стал невыразим, а не пойман.
+ *
+ * `reach` не подобран: это ширина самой широкой дороги в сети. Дальше своей
+ * ширины дорога соседке уже не мешает.
+ *
+ * Клетки лежат сплошным массивом, а не словарём по строковому ключу: вопрос
+ * задаётся десятки тысяч раз за сборку.
  */
 function indexRoads(shapes: readonly RoadShape[]): (x: number, z: number) => RoadProximity | null {
   interface Seg {
     ax: number; az: number; dx: number; dz: number; lenSq: number;
-    h0: number; h1: number; shape: RoadShape;
+    h0: number; h1: number; shape: RoadShape; which: number;
   }
   const segments: { seg: Seg; i0: number; i1: number; j0: number; j1: number }[] = [];
   let widest = 0;
   let minI = Infinity, maxI = -Infinity, minJ = Infinity, maxJ = -Infinity;
 
-  for (const shape of shapes) {
+  shapes.forEach((shape, which) => {
     widest = Math.max(widest, shape.outerHalf);
     const st = shape.stations;
     for (let i = 0; i + 1 < st.length; i++) {
       const seg: Seg = {
         ax: st[i].x, az: st[i].z,
         dx: st[i + 1].x - st[i].x, dz: st[i + 1].z - st[i].z,
-        lenSq: 0, h0: shape.height[i], h1: shape.height[i + 1], shape,
+        lenSq: 0, h0: shape.height[i], h1: shape.height[i + 1], shape, which,
       };
       seg.lenSq = seg.dx * seg.dx + seg.dz * seg.dz;
       const i0 = Math.floor(Math.min(seg.ax, seg.ax + seg.dx) / CELL);
@@ -219,7 +382,7 @@ function indexRoads(shapes: readonly RoadShape[]): (x: number, z: number) => Roa
       minI = Math.min(minI, i0); maxI = Math.max(maxI, i1);
       minJ = Math.min(minJ, j0); maxJ = Math.max(maxJ, j1);
     }
-  }
+  });
   if (segments.length === 0) return () => null;
 
   const cols = maxI - minI + 1;
@@ -236,12 +399,19 @@ function indexRoads(shapes: readonly RoadShape[]): (x: number, z: number) => Roa
     }
   }
 
+  const reach = Math.max(1, widest);
+  // черновики переиспользуются между вопросами: их десятки тысяч
+  const nearOf = new Float64Array(shapes.length).fill(Infinity);
+  const heightOf = new Float64Array(shapes.length);
+  const touched: number[] = [];
+
   return (x, z) => {
     const ci = Math.floor(x / CELL), cj = Math.floor(z / CELL);
-    let best: RoadProximity | null = null;
+    let best: RoadShape | null = null;
     let bestKey = Infinity;
+    let bestDistance = Infinity;
+    touched.length = 0;
 
-    // сколько колец придётся обойти в худшем случае — считаем, а не гадаем
     const limit = Math.max(cols, rows) + Math.abs(ci - minI) + Math.abs(cj - minJ) + 2;
     for (let r = 0; r <= limit; r++) {
       const iFrom = Math.max(ci - r, minI), iTo = Math.min(ci + r, maxI);
@@ -258,24 +428,45 @@ function indexRoads(shapes: readonly RoadShape[]): (x: number, z: number) => Roa
             t = t < 0 ? 0 : t > 1 ? 1 : t;
             const ex = x - (seg.ax + seg.dx * t), ez = z - (seg.az + seg.dz * t);
             const distance = Math.sqrt(ex * ex + ez * ez);
+            if (nearOf[seg.which] === Infinity) touched.push(seg.which);
+            if (distance < nearOf[seg.which]) {
+              nearOf[seg.which] = distance;
+              heightOf[seg.which] = seg.h0 + (seg.h1 - seg.h0) * t;
+            }
             const key = distance - seg.shape.outerHalf;
             if (key >= bestKey) continue;
             bestKey = key;
-            best = {
-              distance,
-              roadHeight: seg.h0 + (seg.h1 - seg.h0) * t,
-              halfWidth: seg.shape.halfWidth,
-              outerHalf: seg.shape.outerHalf,
-              curb: seg.shape.type.curb,
-            };
+            bestDistance = distance;
+            best = seg.shape;
           }
         }
       }
-      // отрезок из следующего кольца лежит не ближе (r-1)*CELL, и даже самая
-      // широкая дорога не сделает его лучше найденного — искать больше нечего
-      if (best !== null && (r - 1) * CELL - widest > bestKey) break;
+      // дальше следующего кольца не может лежать ни выигравшая дорога,
+      // ни та, что ещё вносит вклад в смесь
+      if (best !== null && (r - 1) * CELL - widest - reach > bestKey) break;
     }
-    return best;
+    if (best === null) return null;
+
+    let sum = 0;
+    let weight = 0;
+    for (const which of touched) {
+      const outside = Math.max(0, nearOf[which] - shapes[which].outerHalf);
+      const w = outside >= reach ? 0 : (1 - outside / reach) ** 2;
+      nearOf[which] = Infinity;
+      if (w === 0) continue;
+      sum += w * heightOf[which];
+      weight += w;
+    }
+
+    return {
+      distance: bestDistance,
+      // если ни одна дорога сюда не дотягивается — берём ближайшую: там уже
+      // всё равно, потому что земля давно вернулась к нетронутой
+      roadHeight: weight > 0 ? sum / weight : heightOf[shapes.indexOf(best)],
+      halfWidth: best.halfWidth,
+      outerHalf: best.outerHalf,
+      curb: best.type.curb,
+    };
   };
 }
 
