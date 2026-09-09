@@ -8,7 +8,7 @@
 
 import { SCENES } from '../src/scenes.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
-import { along, buildNetwork, moveTraffic, placeTraffic, poseOf, touching, watch } from '../src/city/traffic.ts';
+import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, touching, watch } from '../src/city/traffic.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
 import { walkLight } from '../src/city/signals.ts';
 
@@ -220,6 +220,77 @@ function playerScene(blind: boolean): { held: number; hit: number; closest: numb
   return { held, hit, closest, approached };
 }
 
+/**
+ * УДАР. Машина игрока въезжает в стоящую чужую. Проверяются законы,
+ * а не ощущения: импульс вдоль нормали удара обязан сохраниться, энергия —
+ * не вырасти, кузова — разойтись.
+ *
+ * «Насквозь» — заведомо сломанный вариант: удар не считается вовсе.
+ * Он обязан провалить проверку, иначе она ничего не проверяет.
+ */
+function crashScene(through: boolean): {
+  before: number; after: number; keep: number; energy: number;
+  apart: number; knocked: boolean; back: boolean; hisSpeed: number;
+} {
+  // в сцене ровно одна чужая машина: удар — это про двоих, третий тут лишний
+  const cars = placeTraffic(world, net, 1, 7);
+  let road = 0, lo = 0, hi = 0;
+  world.shapes.forEach((_, si) => {
+    const marks = [0, ...net.nodes[si].map((n) => n.s), net.length[si]].sort((a, b) => a - b);
+    for (let i = 0; i + 1 < marks.length; i++)
+      if (marks[i + 1] - marks[i] > hi - lo) { road = si; lo = marks[i]; hi = marks[i + 1]; }
+  });
+  const at = lo + (hi - lo) * 0.75;
+  const lane = world.shapes[road].halfWidth * 0.5;
+  const spot = along(world, road, at);
+  // жертву ставим руками и держим на месте
+  const target = cars[0];
+  target.shape = road; target.dir = 1; target.s = at; target.across = lane;
+  target.speed = 0; target.park = null; target.route = null; target.cruise = 0;
+
+  const MASS = 1556.3, SPIN = MASS * 1.265 * 1.245;
+  const yaw = Math.atan2(spot.fz, spot.fx);
+  const me = {
+    x: spot.x - spot.fz * lane - Math.cos(yaw) * 20, z: spot.z + spot.fx * lane - Math.sin(yaw) * 20,
+    yaw, vx: Math.cos(yaw) * 12, vz: Math.sin(yaw) * 12, yawRate: 0, mass: MASS, inertia: SPIN,
+  };
+  const along1 = (vx: number, vz: number, nx: number, nz: number): number => vx * nx + vz * nz;
+
+  let before = 0, after = 0, energy = 0, keep = 0, apart = 0, knocked = false, back = false;
+  let hisSpeed = 0, hit = -1;
+  for (let t = 0; t < 12; t += DT) {
+    if (hit < 0) {
+      const v0 = { vx: Math.cos(target.yaw) * target.speed, vz: Math.sin(target.yaw) * target.speed };
+      const e0 = 0.5 * MASS * (me.vx ** 2 + me.vz ** 2) + 0.5 * 1500 * (v0.vx ** 2 + v0.vz ** 2);
+      const blow = through ? null : bump(world, net, cars, me);
+      if (blow !== null) {
+        hit = t;
+        // импульс сохраняется ВДОЛЬ НОРМАЛИ УДАРА, а не вдоль курса игрока
+        const { nx, nz } = blow;
+        before = MASS * along1(me.vx, me.vz, nx, nz) + 1500 * along1(v0.vx, v0.vz, nx, nz);
+        me.vx += blow.dvx; me.vz += blow.dvz; me.yawRate += blow.dSpin;
+        me.x += blow.pushX; me.z += blow.pushZ;
+        const k = target.knocked;
+        after = MASS * along1(me.vx, me.vz, nx, nz) + (k ? 1500 * along1(k.vx, k.vz, nx, nz) : 0);
+        energy = (0.5 * MASS * (me.vx ** 2 + me.vz ** 2)
+          + (k ? 0.5 * 1500 * (k.vx ** 2 + k.vz ** 2) : 0)) / e0;
+        keep = Math.abs(after - before) / Math.max(1e-6, Math.abs(before));
+        knocked = k !== null;
+        hisSpeed = k ? Math.hypot(k.vx, k.vz) : 0;
+      }
+    }
+    me.x += me.vx * DT; me.z += me.vz * DT; me.yaw += me.yawRate * DT;
+    moveTraffic(world, net, cars, DT, t, { player: { x: me.x, z: me.z, speed: Math.hypot(me.vx, me.vz), yaw: me.yaw } });
+    // расходятся ли — смотрим ровно секунду после удара, дальше игрок просто уезжает
+    if (hit >= 0 && t < hit + 1) apart = Math.max(apart, touching(me, poseOf(world, net, target)));
+    if (hit >= 0 && target.knocked === null) back = true;
+  }
+  return { before, after, keep, energy, apart, knocked, back, hisSpeed };
+}
+
+const crash = crashScene(false);
+const through = crashScene(true);
+
 const sees = playerScene(false);
 const blind = playerScene(true);
 
@@ -256,6 +327,14 @@ const checks: [string, boolean, string][] = [
     `подъехал на ${sees.approached.toFixed(1)} м, ближе всего ${(sees.closest * 100).toFixed(0)}% от касания`],
   ['вслепую — обязан задеть', blind.hit > 0,
     blind.hit > 0 ? `задел ${(blind.hit / 60).toFixed(1)} с, проверка ловит` : 'НЕ ЗАДЕЛ — проверка ничего не проверяет'],
+  ['удар случился, а не проезд насквозь', crash.knocked, crash.knocked ? 'чужую сбило с полосы' : 'проехал сквозь'],
+  ['импульс удара сохранился', crash.knocked && crash.keep < 0.01,
+    `${crash.before.toFixed(0)} → ${crash.after.toFixed(0)} кг·м/с, разошлось на ${(crash.keep * 100).toFixed(2)}%`],
+  ['удар не добавил энергии', crash.energy <= 1.001, `${(crash.energy * 100).toFixed(0)}% от той, что была`],
+  ['кузова разошлись, а не слиплись', crash.apart > 1, `разъехались до ${(crash.apart * 100).toFixed(0)}% от касания`],
+  ['сбитая вернулась в поток', crash.back, crash.back ? 'постояла и поехала' : 'осталась лежать'],
+  ['насквозь — обязан провалиться', !through.knocked,
+    through.knocked ? 'СБИЛО и без удара — проверка ничего не проверяет' : 'без удара проехал насквозь, проверка ловит'],
 ];
 console.log('');
 line('карманов у бордюра', `${net.bays.length}`);

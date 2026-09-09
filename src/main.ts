@@ -13,7 +13,7 @@ import { SETUPS, VIPER } from './car/passport.ts';
 import { P_ZERO } from './car/tyre.ts';
 import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.ts';
 import { createDriver } from './car/controls.ts';
-import { type Mover, type Network, along, buildNetwork, moveTraffic, placeTraffic, poseOf } from './city/traffic.ts';
+import { type Mover, type Network, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf } from './city/traffic.ts';
 import { lightFor } from './city/signals.ts';
 import { type Walker, moveWalkers, placeWalkers, walkerPose } from './city/walkers.ts';
 
@@ -328,9 +328,18 @@ function spawnCar(): Car {
   const st = shape?.stations ?? [];
   if (st.length < 2) return createCar(VIPER, 0, 0, 0);
   const i = Math.min(Math.floor(st.length * 0.32), st.length - 2);
-  const yaw = Math.atan2(st[i + 1].z - st[i].z, st[i + 1].x - st[i].x);
+  const dx = st[i + 1].x - st[i].x, dz = st[i + 1].z - st[i].z;
+  const len = Math.hypot(dx, dz) || 1;
+  const fx = dx / len, fz = dz / len;
+  /**
+   * Машина появляется В СВОЕЙ ПОЛОСЕ, а не на осевой. Раньше она вставала
+   * верхом на разделительной — единственная в городе, кто не соблюдал
+   * правостороннее движение. Смещение то же, что у чужих машин: право
+   * по ходу — это (−fz, fx).
+   */
+  const lane = shape.halfWidth * 0.5;
   spinAngle.fill(0);
-  return createCar(VIPER, st[i].x, st[i].z, yaw);
+  return createCar(VIPER, st[i].x - fz * lane, st[i].z + fx * lane, Math.atan2(fz, fx));
 }
 
 function seat(on: boolean): void {
@@ -430,6 +439,18 @@ let bank = 0;
 let simTime = 0;
 
 let lastControls = { steer: 0, throttle: 0, brake: 0, handbrake: false, assist: true };
+/** Сколько раз стукнулись и как сильно в последний раз: для приборки и проверок. */
+let crashes = 0;
+let lastCrash = 0;
+/**
+ * Когда физика впервые увидела газ и когда впервые набрала сотню — по её
+ * собственным часам. Проверка снаружи опрашивает страницу редко и неровно,
+ * и меряя разгон своими опросами, она мажет на десятую секунды в обе
+ * стороны. Пусть страница засекает сама: это точно и не зависит от того,
+ * успел ли браузер отдать ответ.
+ */
+let gasFrom: number | null = null;
+let hundredAt: number | null = null;
 
 viewer.onFrame((dt) => {
   if (traffic.length > 0) {
@@ -482,6 +503,24 @@ viewer.onFrame((dt) => {
     simTime += PHYSICS_STEP;
   }
   car.wheels.forEach((w, i) => { spinAngle[i] += w.spin * dt; });
+  if (gasFrom === null && controls.throttle > 0.05) gasFrom = simTime;
+  if (gasFrom !== null && hundredAt === null && Math.abs(speed) >= 27.78) hundredAt = simTime;
+
+  /**
+   * УДАР о чужую машину. Считает город: у него кузова всех, кто на дороге,
+   * и одна общая мера касания. Машине возвращается только толчок — как ей
+   * от него ехать, знает она сама.
+   */
+  const blow = traffic.length === 0 ? null : bump(world, network, traffic, {
+    x: car.x, z: car.z, yaw: car.yaw, vx: car.vx, vz: car.vz,
+    yawRate: car.yawRate, mass: VIPER.mass, inertia: VIPER.yawInertia,
+  });
+  if (blow !== null) {
+    car.vx += blow.dvx; car.vz += blow.dvz; car.yawRate += blow.dSpin;
+    car.x += blow.pushX; car.z += blow.pushZ;
+    crashes++;
+    lastCrash = blow.force;
+  }
 
   viewer.setCar({
     x: car.x, y: car.bodyY, z: car.z,
@@ -546,9 +585,19 @@ viewer.onFrame((dt) => {
  * секундомером снаружи бессмысленно.
  */
 /** Сколько чужих машин сейчас едет — нужно проверке. */
-(window as unknown as { __traffic?: () => unknown }).__traffic = () => traffic.map((m) => ({
-  shape: m.shape, s: Number(m.s.toFixed(2)), speed: Number(m.speed.toFixed(2)),
-}));
+(window as unknown as { __traffic?: () => unknown }).__traffic = () => traffic.map((m) => {
+  const pose = poseOf(world, network, m);
+  return {
+    shape: m.shape, s: Number(m.s.toFixed(2)), speed: Number(m.speed.toFixed(2)),
+    x: Number(pose.x.toFixed(2)), z: Number(pose.z.toFixed(2)),
+    knocked: m.knocked !== null,
+  };
+});
+
+/** Сколько раз машина игрока стукнулась о чужую и как сильно в последний раз. */
+(window as unknown as { __crash?: () => unknown }).__crash = () => ({
+  count: crashes, force: Number(lastCrash.toFixed(2)),
+});
 
 (window as unknown as { __car?: () => unknown }).__car = () => (car === null ? null : {
   x: car.x, z: car.z, yaw: car.yaw, speed: forwardSpeed(car),
@@ -562,4 +611,5 @@ viewer.onFrame((dt) => {
   throttle: Number(lastControls.throttle.toFixed(3)),
   gearShown: car.gear,
   lost: car.wheels.some((w) => w.y < -100),
+  gasFrom, hundredAt,
 });

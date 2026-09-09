@@ -88,6 +88,17 @@ export interface Mover {
   route: Route | null;
   /** Сколько секунд стоим и уступаем. Против вечного взаимного «после вас». */
   wait: number;
+  /**
+   * Сбитая машина. Пока это есть, она НЕ участник движения, а тело: катится,
+   * тормозит о дорогу и стоит. Полосой её больше не ведёт ничто — правила
+   * к телу неприменимы, и это не особый случай в правилах, а другое
+   * состояние: «сбит» и «едет по полосе» одновременно невыразимы.
+   *
+   * Пока она катится, её место на полосе (shape, s, across) не хранится,
+   * а КАЖДЫЙ ШАГ вычисляется из настоящего положения тела. Иначе у неё
+   * было бы два положения сразу, и они разошлись бы.
+   */
+  knocked: Knocked | null;
   /** Что сейчас держит: для приборки и проверок. */
   reason: string;
   /**
@@ -96,6 +107,16 @@ export interface Mover {
    * то нет. Теперь выбор поворота зависит только от машины и её пути.
    */
   seed: number;
+}
+
+/** Сбитое тело: где оно, куда летит и сколько уже стоит. */
+export interface Knocked {
+  x: number; z: number; yaw: number;
+  vx: number; vz: number;
+  /** Вращение вокруг вертикали, рад/с. */
+  spin: number;
+  /** Сколько секунд стоит почти неподвижно: через это водитель приходит в себя. */
+  still: number;
 }
 
 /**
@@ -275,6 +296,7 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
       across: dir * world.shapes[shape].halfWidth * 0.5,
       park: null,
       route: null,
+      knocked: null,
       cruise: CRUISE * (0.6 + next() * 0.4),
       yaw: Math.atan2(spot.fz * dir, spot.fx * dir),
       colour: COLOURS[Math.floor(next() * COLOURS.length) % COLOURS.length],
@@ -395,19 +417,36 @@ export interface Box { readonly x: number; readonly z: number; readonly yaw: num
  * из четырёх осей.
  */
 export function touching(a: Box, b: Box): number {
+  return contact(a, b).apart;
+}
+
+/**
+ * Полное касание: насколько далеко до него, по какой оси кузова разошлись
+ * бы легче всего и на сколько они перекрылись. Ось наименьшего перекрытия —
+ * это и есть нормаль удара: по ней их и растаскивать, по ней и толкать.
+ */
+export function contact(a: Box, b: Box): { apart: number; nx: number; nz: number; depth: number } {
   const af = { x: Math.cos(a.yaw), z: Math.sin(a.yaw) };
   const bf = { x: Math.cos(b.yaw), z: Math.sin(b.yaw) };
   const dx = b.x - a.x, dz = b.z - a.z;
   // прямоугольники НЕ пересекаются, если развела хоть одна ось, — значит
   // «далеко от касания» это самая РАЗВОДЯЩАЯ ось, а не самая тесная
-  let apart = 0;
+  let apart = 0, nx = 1, nz = 0, depth = 0;
   for (const u of [af, { x: -af.z, z: af.x }, bf, { x: -bf.z, z: bf.x }]) {
     const reach = (f: { x: number; z: number }): number =>
       Math.abs(u.x * f.x + u.z * f.z) * HALF + Math.abs(-u.x * f.z + u.z * f.x) * WIDE;
-    const k = Math.abs(dx * u.x + dz * u.z) / (reach(af) + reach(bf));
-    if (k > apart) apart = k;
+    const span = reach(af) + reach(bf);
+    const gap = dx * u.x + dz * u.z;
+    const k = Math.abs(gap) / span;
+    if (k > apart) {
+      apart = k;
+      depth = span - Math.abs(gap);
+      // нормаль смотрит ОТ a К b: по ней b выталкивают наружу
+      const sign = gap >= 0 ? 1 : -1;
+      nx = u.x * sign; nz = u.z * sign;
+    }
   }
-  return apart;
+  return { apart, nx, nz, depth };
 }
 
 /**
@@ -450,6 +489,7 @@ function nearest(a: Path, b: Path): { at: number; foe: number; gap: number } {
 
 /** Куда машина смотрит и где стоит: правостороннее движение. */
 export function poseOf(world: World, net: Network, m: Mover): { x: number; z: number; yaw: number } {
+  if (m.knocked !== null) return { x: m.knocked.x, z: m.knocked.z, yaw: m.knocked.yaw };
   if (m.route !== null) {
     const at = inside(world, net, m);
     if (at > 0) return alongPath(crossPath(world, net, m.shape, m.dir, m.route), at);
@@ -549,6 +589,140 @@ export function watch(world: World, net: Network, m: Mover, time: number): {
   return { junction: ahead.end.junction, stopGap: ahead.stopGap, centreGap: ahead.centreGap, light };
 }
 
+/** Масса чужой машины, кг: обычный седан. */
+const CAR_MASS = 1500;
+/** Её момент инерции вокруг вертикали, кг·м². */
+const CAR_SPIN = CAR_MASS * 1.2 * 1.2;
+/**
+ * Упругость удара кузова о кузов. Почти вся энергия уходит в мятое железо,
+ * поэтому машины не отскакивают друг от друга, как бильярдные шары.
+ */
+const BOUNCE = 0.12;
+/** С каким замедлением скользит сбитая машина: колёса поперёк, м/с². */
+const SLIDE = 0.8 * G;
+
+/**
+ * Шаг сбитой машины: она просто катится и тормозит о дорогу. Место на полосе
+ * при этом ВЫЧИСЛЯЕТСЯ из положения тела, а не хранится — иначе у неё было бы
+ * два положения сразу. Остановилась и постояла — водитель пришёл в себя,
+ * и она снова участник движения.
+ */
+function rollKnocked(world: World, net: Network, m: Mover, dt: number): void {
+  const k = m.knocked as Knocked;
+  const v = Math.hypot(k.vx, k.vz);
+  if (v > 1e-6) {
+    const drop = Math.min(v, SLIDE * dt) / v;
+    k.vx -= k.vx * drop; k.vz -= k.vz * drop;
+  }
+  k.spin -= k.spin * Math.min(1, dt / 0.35);
+  k.x += k.vx * dt; k.z += k.vz * dt; k.yaw += k.spin * dt;
+
+  const at = locate(world, k.x, k.z);
+  if (at !== null) {
+    m.shape = at.shape;
+    m.s = Math.max(0, Math.min(net.length[at.shape], at.s));
+    m.across = at.across;
+  }
+  m.yaw = k.yaw;
+  m.speed = Math.hypot(k.vx, k.vz);
+  m.reason = 'сбит';
+
+  k.still = m.speed < 0.4 ? k.still + dt : 0;
+  if (k.still > 1.5) {
+    // пришёл в себя: снова едет по своей полосе, в ту сторону, куда смотрит
+    const lane = along(world, m.shape, m.s);
+    m.dir = Math.cos(k.yaw) * lane.fx + Math.sin(k.yaw) * lane.fz >= 0 ? 1 : -1;
+    m.across = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+    m.route = null;
+    m.park = null;
+    m.speed = 0;
+    m.knocked = null;
+  }
+}
+
+/** Кто во что въехал: что от удара досталось машине игрока. */
+export interface Hit {
+  /** Прибавка к её скорости, м/с. */
+  dvx: number; dvz: number;
+  /** Прибавка к скорости вращения, рад/с. */
+  dSpin: number;
+  /** На сколько её выталкивает из перекрытия, м. */
+  pushX: number; pushZ: number;
+  /** Нормаль удара: вдоль неё летит импульс, по ней же он и сохраняется. */
+  nx: number; nz: number;
+  /** Сила удара: с какой скоростью кузова сходились, м/с. */
+  force: number;
+}
+
+/**
+ * УДАР машины игрока о чужую. Одно правило сохранения импульса, никаких
+ * «если сзади — то», «если вбок — то»: направление берётся из той самой
+ * оси, по которой кузова перекрылись меньше всего.
+ *
+ * Чужая машина от удара перестаёт быть участником движения и становится
+ * телом. Машине игрока удар возвращается наружу: считать её движение —
+ * дело машины, а не города.
+ */
+export function bump(
+  world: World, net: Network, movers: Mover[],
+  you: {
+    x: number; z: number; yaw: number; vx: number; vz: number;
+    yawRate: number; mass: number; inertia: number;
+  },
+): Hit | null {
+  let worst: Hit | null = null;
+  for (const m of movers) {
+    const pose = poseOf(world, net, m);
+    const hit = contact(you, pose);
+    if (hit.apart >= 1) continue;
+
+    // скорость чужой машины: по полосе или уже как тела
+    const his = m.knocked !== null
+      ? { vx: m.knocked.vx, vz: m.knocked.vz, spin: m.knocked.spin }
+      : { vx: Math.cos(pose.yaw) * m.speed, vz: Math.sin(pose.yaw) * m.speed, spin: 0 };
+
+    // точка касания — между серединами; плечи от неё до каждой середины
+    const cx = (you.x + pose.x) / 2, cz = (you.z + pose.z) / 2;
+    const rax = cx - you.x, raz = cz - you.z;
+    const rbx = cx - pose.x, rbz = cz - pose.z;
+    const n = { x: hit.nx, z: hit.nz };
+    const vax = you.vx - you.yawRate * raz, vaz = you.vz + you.yawRate * rax;
+    const vbx = his.vx - his.spin * rbz, vbz = his.vz + his.spin * rbx;
+    const closing = (vax - vbx) * n.x + (vaz - vbz) * n.z;
+    if (closing <= 0) continue;                       // уже расходятся
+
+    const crossA = rax * n.z - raz * n.x;
+    const crossB = rbx * n.z - rbz * n.x;
+    const denom = 1 / you.mass + 1 / CAR_MASS
+      + (crossA * crossA) / you.inertia + (crossB * crossB) / CAR_SPIN;
+    const j = ((1 + BOUNCE) * closing) / denom;
+
+    if (m.knocked === null) {
+      m.knocked = { x: pose.x, z: pose.z, yaw: pose.yaw, vx: his.vx, vz: his.vz, spin: 0, still: 0 };
+      m.route = null;
+      if (m.park !== null) { net.bays[m.park.bay].taken = -1; m.park = null; }
+    }
+    const k = m.knocked;
+    k.vx += (j * n.x) / CAR_MASS;
+    k.vz += (j * n.z) / CAR_MASS;
+    k.spin += (j * crossB) / CAR_SPIN;
+    // растащить: перекрытие делится обратно пропорционально массам
+    const share = (1 / CAR_MASS) / (1 / you.mass + 1 / CAR_MASS);
+    k.x += n.x * hit.depth * share;
+    k.z += n.z * hit.depth * share;
+
+    const mine: Hit = {
+      dvx: (-j * n.x) / you.mass, dvz: (-j * n.z) / you.mass,
+      dSpin: (-j * crossA) / you.inertia,
+      pushX: -n.x * hit.depth * (1 - share), pushZ: -n.z * hit.depth * (1 - share),
+      nx: n.x, nz: n.z,
+      force: closing,
+    };
+    if (worst === null || mine.force > worst.force) worst = mine;
+  }
+  return worst;
+}
+
 /** Пешеход, которого машина обязана пропустить. Знать о нём больше не нужно. */
 export interface OnCrossing { shape: number; s: number }
 
@@ -606,7 +780,7 @@ export function moveTraffic(
    * пересекающихся разводятся во времени. Это и есть раздел 13 ПДД.
    */
   movers.forEach((m, i) => {
-    if (m.route !== null) return;
+    if (m.route !== null || m.knocked !== null) return;
     const t = targets[i];
     if (t === null || t.centreGap < 0 || t.centreGap > 45) return;
     const exits = net.atJunction[t.end.junction].filter((l) => l.shape !== m.shape);
@@ -626,6 +800,8 @@ export function moveTraffic(
   const entered = movers.map((m) => m.route === null ? -Infinity : inside(world, net, m));
 
   movers.forEach((m, index) => {
+    // сбитая машина правилам не подчиняется: она уже не участник, а тело
+    if (m.knocked !== null) { rollKnocked(world, net, m, dt); return; }
     const total = net.length[m.shape];
     const holds: Hold[] = [];
 
@@ -642,10 +818,15 @@ export function moveTraffic(
     // мешает только тот, кто примерно на моей линии движения
     if (headway) {
       for (const other of movers) {
-        if (other === m || other.shape !== m.shape || other.dir !== m.dir) continue;
-        if (Math.abs(other.across - m.across) > 2.2) continue;
+        if (other === m || other.shape !== m.shape) continue;
+        // сбитая стоит поперёк и смотрит куда попало: она препятствие,
+        // а не лидер, и «в какую сторону она едет» смысла не имеет
+        const stray = other.knocked !== null;
+        if (!stray && other.dir !== m.dir) continue;
+        if (Math.abs(other.across - m.across) > (stray ? 3.4 : 2.2)) continue;
         const gap = (other.s - m.s) * m.dir - LENGTH;
-        if (gap > 0 && gap < 60) holds.push({ gap, speed: other.speed, why: 'машина впереди' });
+        if (gap > 0 && gap < 60)
+          holds.push({ gap, speed: stray ? 0 : other.speed, why: stray ? 'сбитая машина' : 'машина впереди' });
       }
     }
 
@@ -724,9 +905,12 @@ export function moveTraffic(
        */
       const bodies: { x: number; z: number; yaw: number; speed: number; why: string }[] = [];
       for (let k = 0; k < movers.length; k++) {
-        if (movers[k] === m || entered[k] <= 0) continue;
-        if (movers[k].route?.junction !== r.junction) continue;
-        bodies.push({ ...poses[k], speed: movers[k].speed, why: 'машина в перекрёстке' });
+        const o = movers[k];
+        if (o === m) continue;
+        // сбитая машина — препятствие всегда и везде, она уже не по правилам
+        const stray = o.knocked !== null;
+        if (!stray && (entered[k] <= 0 || o.route?.junction !== r.junction)) continue;
+        bodies.push({ ...poses[k], speed: stray ? 0 : o.speed, why: stray ? 'сбитая машина' : 'машина в перекрёстке' });
       }
       // машина игрока: куда он поедет, город не знает — значит он такое же тело
       if (you !== null) bodies.push({ x: you.x, z: you.z, yaw: you.yaw, speed: you.speed, why: 'игрок' });

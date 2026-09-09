@@ -149,6 +149,12 @@ await shot('ride-2-разгон');
 await page.keyboard.up('w');
 await page.keyboard.down('s');
 const stopped = await until('полная остановка', 'стоп');
+/**
+ * Отметки разгона снимаем ЗДЕСЬ, а не в миг пересечения сотни: снимок там
+ * делается по порогу 99 км/ч, а страница ставит отметку на 100, и она
+ * иногда ещё не поставлена. К полной остановке она поставлена наверняка.
+ */
+const timing = await page.evaluate(() => window.__car());
 await page.keyboard.up('s');
 await shot('ride-3-встали');
 await page.waitForTimeout(500);
@@ -207,6 +213,69 @@ await page.click('button[data-view="node"]');
 await page.waitForTimeout(6000);
 await shot('ride-9-перекрёсток');
 
+/**
+ * 6б. УДАР. Ставим машину обратно на дорогу и едем по своей полосе, пока
+ * не догоним кого-нибудь. Город тормозит перед игроком, но НЕ убегает от
+ * него: догнать стоящего в очереди — вопрос десятка секунд.
+ */
+await page.click('button[data-drive="park"]');
+await page.click('button[data-drive="seat"]');
+await page.waitForTimeout(400);
+await page.mouse.click(800, 500);             // взять руль
+
+/**
+ * Удар НЕ ждём, а устраиваем. Ехать вперёд и надеяться кого-нибудь догнать —
+ * это лотерея: город тормозит перед игроком, а на пустой полосе догонять
+ * некого, и проверка то проходит, то нет.
+ *
+ * Зато сзади очередь собирается сама: город видит машину игрока и встаёт
+ * за ней. Ждём, пока кто-нибудь встанет в десяти метрах позади, и сдаём
+ * назад. Это повторяемо и проверяет ровно то, что нужно: удар посчитан
+ * на живой странице, а не только в терминале.
+ */
+const behind = async () => {
+  const now = await page.evaluate(() => ({ car: window.__car(), traffic: window.__traffic() }));
+  if (now.car === null) return null;
+  const bx = Math.cos(now.car.yaw), bz = Math.sin(now.car.yaw);
+  let best = null;
+  for (const m of now.traffic) {
+    const dx = m.x - now.car.x, dz = m.z - now.car.z;
+    const along = dx * bx + dz * bz, across = -dx * bz + dz * bx;
+    if (along > -1 || along < -16 || Math.abs(across) > 3) continue;
+    if (best === null || along > best) best = along;
+  }
+  return best;
+};
+let queued = null;
+for (let tick = 0; tick < 60 && queued === null; tick++) {
+  await page.waitForTimeout(400);
+  queued = await behind();
+}
+let crash = { count: 0, force: 0 };
+let beforeCrash = await page.evaluate(() => window.__car());
+// тормоз в пол на месте включает задний ход, дальше он же — газ назад
+await page.keyboard.down('s');
+for (let tick = 0; tick < 45 && crash.count === 0; tick++) {
+  await page.waitForTimeout(200);
+  const now = await page.evaluate(() => ({
+    crash: window.__crash(), car: window.__car(), traffic: window.__traffic(),
+  }));
+  if (now.crash.count === 0 && Math.abs(now.car.speed) > Math.abs(beforeCrash.speed)) beforeCrash = now.car;
+  crash = now.crash;
+  if (crash.count > 0) crash.knocked = now.traffic.filter((m) => m.knocked).length;
+}
+await page.keyboard.up('s');
+await page.waitForTimeout(800);
+const afterCrash = await page.evaluate(() => window.__car());
+// снимок делаем НЕ ВЫХОДЯ из машины: камера за рулём стоит там, где удар,
+// а любой из готовых ракурсов смотрит в заранее назначенное место, и оно
+// к месту удара отношения не имеет
+await shot('ride-10-удар');
+// пока руль в руках, мышь захвачена и все щелчки уходят в холст: выходим
+// из машины — это отпускает захват, — и только потом трогаем кнопки
+await page.keyboard.press('Enter');
+await page.waitForTimeout(400);
+
 // 7. ВИД ИЗ САЛОНА, уже среди трафика и светофоров. Машину сначала ставим
 // обратно на дорогу: к концу поездки она стоит в поле, и оттуда не видно города
 await page.click('button[data-drive="park"]');
@@ -233,10 +302,19 @@ row('набрали сотню', hundred);
 row('встали от тормоза', stopped);
 row('повернули', turned);
 
+/**
+ * Разгон меряет САМА страница: снаружи опрос приходит редко и неровно,
+ * и замер плавал на десятую секунды в обе стороны — то проходил, то нет.
+ */
+const selfTimed = timing.hundredAt === null || timing.gasFrom === null
+  ? NaN : timing.hundredAt - timing.gasFrom;
+
 const checks = [
   ['руль прям, пока мышь не трогали', Math.abs(grabbed.command) < 0.02, `${(grabbed.command * 100).toFixed(1)}% хода`],
-  ['разогналась до 100 км/ч', hundred.speed * 3.6 >= 99, `за ${(hundred.sim - start.sim).toFixed(2)} с физики`],
-  ['браузер считает ту же машину', Math.abs(hundred.sim - start.sim - REFERENCE) < 0.25, `${(hundred.sim - start.sim).toFixed(2)} с в браузере против ${REFERENCE.toFixed(2)} в терминале`],
+  ['разогналась до 100 км/ч', hundred.speed * 3.6 >= 99, `за ${selfTimed.toFixed(2)} с физики`],
+  ['браузер считает ту же машину', Math.abs(selfTimed - REFERENCE) < 0.25,
+    Number.isNaN(selfTimed) ? 'страница не засекла разгон'
+      : `${selfTimed.toFixed(2)} с по часам самой физики против ${REFERENCE.toFixed(2)} в терминале`],
   ['повернула по рулю', Math.abs(turned.yaw - start.yaw) > 0.7, `${((turned.yaw - start.yaw) * 180 / Math.PI).toFixed(0)}°`],
   ['встала от тормоза', Math.abs(stopped.speed) * 3.6 < 1.5, `${(stopped.speed * 3.6).toFixed(1)} км/ч`],
   ['ни разу не потеряла опору', !start.lost && !hundred.lost && !turned.lost && !stopped.lost, 'колёса на поверхности'],
@@ -245,6 +323,15 @@ const checks = [
   ['чужие машины поехали',
     trafficAfter.length > 0 && trafficAfter.some((c, i) => Math.abs(c.s - trafficBefore[i].s) > 3 || c.shape !== trafficBefore[i].shape),
     `${trafficAfter.length} штук, самая быстрая ${(Math.max(...trafficAfter.map((c) => c.speed)) * 3.6).toFixed(0)} км/ч`],
+  ['за машиной игрока собралась очередь', queued !== null,
+    queued === null ? 'никто не встал сзади за 24 с' : `ближайший в ${(-queued).toFixed(1)} м позади`],
+  ['въехал в чужую машину', crash.count > 0,
+    crash.count > 0
+      ? `${crash.count} удар(ов), последний на ${crash.force.toFixed(1)} м/с, сбито ${crash.knocked ?? 0}`
+      : 'сдавал назад 9 с и никого не задел'],
+  ['удар отнял у машины скорость', crash.count === 0
+    || Math.abs(afterCrash.speed) < Math.abs(beforeCrash.speed),
+    `${(Math.abs(beforeCrash.speed) * 3.6).toFixed(0)} → ${(Math.abs(afterCrash.speed) * 3.6).toFixed(0)} км/ч`],
   ['помощь держит колёса в пределе сцепления',
     Math.abs(withHelp.steer) < Math.abs(noHelp.steer) * 0.6,
     `${(Math.abs(withHelp.steer) * 180 / Math.PI).toFixed(1)}° с помощью против ${(Math.abs(noHelp.steer) * 180 / Math.PI).toFixed(1)}° без неё, упор ${(noHelp.lock * 180 / Math.PI).toFixed(1)}°`],
