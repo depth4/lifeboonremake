@@ -28,9 +28,15 @@ export interface Controls {
 }
 
 export interface Wheel {
-  /** Где колесо стоит в машине: вперёд от центра масс и влево, м. */
+  /**
+   * Где колесо стоит в машине: вперёд от центра масс и ВПРАВО, м.
+   *
+   * Право, а не влево: в осях мира право по ходу — это cross(вперёд, вверх)
+   * = (−sin ψ, cos ψ). Раньше эта ось называлась «влево», и от одного
+   * неверного названия наизнанку оказались руль и сторона движения трафика.
+   */
   readonly ahead: number;
-  readonly left: number;
+  readonly right: number;
   readonly radius: number;
   readonly inertia: number;
   readonly driven: boolean;
@@ -93,8 +99,8 @@ const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > 
 
 export function createCar(p: Passport, x: number, z: number, yaw: number): Car {
   const a = frontArm(p), b = rearArm(p);
-  const wheel = (ahead: number, left: number, front: boolean): Wheel => ({
-    ahead, left,
+  const wheel = (ahead: number, right: number, front: boolean): Wheel => ({
+    ahead, right,
     radius: front ? p.wheelFront.radius : p.wheelRear.radius,
     inertia: front ? p.wheelFront.inertia : p.wheelRear.inertia,
     driven: !front,
@@ -104,11 +110,12 @@ export function createCar(p: Passport, x: number, z: number, yaw: number): Car {
   });
   return {
     x, z, yaw, vx: 0, vz: 0, yawRate: 0, steer: 0,
+    // порядок: переднее левое, переднее правое, заднее левое, заднее правое
     wheels: [
-      wheel(a, p.trackFront / 2, true),
       wheel(a, -p.trackFront / 2, true),
-      wheel(-b, p.trackRear / 2, false),
+      wheel(a, p.trackFront / 2, true),
       wheel(-b, -p.trackRear / 2, false),
+      wheel(-b, p.trackRear / 2, false),
     ],
     gear: 0, reverse: false, rpm: p.idleRpm, shiftLeft: 0, stopHold: 0,
     heave: 0, heaveRate: 0, pitchRate: 0, rollRate: 0, placed: false,
@@ -263,8 +270,8 @@ export function step(
     const w = car.wheels[i];
     const front = i < 2;
     w.steer = front ? car.steer : 0;
-    w.x = car.x + w.ahead * cos - w.left * sin;
-    w.z = car.z + w.ahead * sin + w.left * cos;
+    w.x = car.x + w.ahead * cos - w.right * sin;
+    w.z = car.z + w.ahead * sin + w.right * cos;
 
     const spot = sample(w.x, w.z);
     w.material = spot.material;
@@ -272,7 +279,7 @@ export function step(
     nx += spot.nx / 4; ny += spot.ny / 4; nz += spot.nz / 4;
 
     // где крепление подвески: кузов наклонён, значит углы на разной высоте
-    const attach = car.heave + w.ahead * car.pitch - w.left * car.roll;
+    const attach = car.heave + w.ahead * car.pitch - w.right * car.roll;
     // колесо стоит на земле, но не выше, чем позволяет вытянутая подвеска
     const centre = Math.max(spot.height + w.radius, attach - w.rest);
     w.travel = w.rest - (attach - centre);
@@ -280,7 +287,7 @@ export function step(
     w.y = centre - w.radius;
 
     // скорость сжатия: движется и кузов, и дорога под колесом
-    const attachRate = car.heaveRate + w.ahead * car.pitchRate - w.left * car.rollRate;
+    const attachRate = car.heaveRate + w.ahead * car.pitchRate - w.right * car.rollRate;
     const roadRate = clamp((spot.height - w.groundPrev) / dt, -12, 12);
     w.groundPrev = spot.height;
     const squeezeRate = w.down ? roadRate - attachRate : 0;
@@ -318,7 +325,7 @@ export function step(
     const front = i < 2;
 
     // скорость точки на твёрдом теле: вращение добавляет своё
-    const pointLong = u - car.yawRate * w.left;
+    const pointLong = u - car.yawRate * w.right;
     const pointLat = v + car.yawRate * w.ahead;
     const cs = Math.cos(w.steer), sn = Math.sin(w.steer);
     const alongWheel = pointLong * cs + pointLat * sn;
@@ -337,10 +344,10 @@ export function step(
     const fLat = force.x * sn + force.y * cs;
     forceLong += fLong;
     forceLat += fLat;
-    moment += w.ahead * fLat - w.left * fLong;
+    moment += w.ahead * fLat - w.right * fLong;
 
     // раскрутка колеса
-    const share = w.driven ? axleTorque / 2 + (w.left > 0 ? -lock : lock) : 0;
+    const share = w.driven ? axleTorque / 2 + (i === 2 ? -lock : lock) : 0;
     const brakeMax = (front ? p.brakeFront : p.brakeRear) * braking
       + (!front && controls.handbrake ? p.brakeRear * 1.4 : 0);
     const inertia = w.inertia + (w.driven ? (p.engineInertia * ratio * ratio) / 2 : 0);
@@ -387,7 +394,7 @@ export function step(
     const w = car.wheels[i];
     lift += suspension[i];
     pitchMoment += w.ahead * suspension[i];
-    rollMoment -= w.left * suspension[i];
+    rollMoment -= w.right * suspension[i];
   }
   const pitchInertia = p.mass * (0.3 * p.length) ** 2;
   const rollInertia = p.mass * (0.28 * p.width) ** 2;

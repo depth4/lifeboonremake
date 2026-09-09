@@ -8,7 +8,7 @@
 
 import { SCENES } from '../src/scenes.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
-import { buildNetwork, moveTraffic, placeTraffic, poseOf } from '../src/car/traffic.ts';
+import { along, buildNetwork, moveTraffic, placeTraffic, poseOf } from '../src/car/traffic.ts';
 
 const scene = process.argv[2] ?? 'решётка';
 const broken = process.argv[3] === 'сломать';
@@ -50,6 +50,24 @@ movers.forEach((m, i) => {
   if (m.speed < 0.5) stuck++;
 });
 
+/**
+ * Правостороннее движение. Машина должна стоять СПРАВА от осевой линии,
+ * если смотреть по её ходу. Право по ходу — это cross(вперёд, вверх),
+ * а признак «справа» — знак векторного произведения направления движения
+ * на вектор от осевой к машине.
+ */
+let wrongSide = 0;
+let sideSample = 0;
+for (const m of movers) {
+  const axis = along(world, m.shape, m.s);
+  const pose = poseOf(world, m);
+  const fx = Math.cos(pose.yaw), fz = Math.sin(pose.yaw);
+  const dx = pose.x - axis.x, dz = pose.z - axis.z;
+  const side = fx * dz - fz * dx; // > 0 — справа по ходу
+  sideSample = side;
+  if (side <= 0.2) wrongSide++;
+}
+
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(38, '.')} ${value}`);
 console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : ''}\n`);
 line('дорог в сети / узлов', `${world.shapes.length} / ${world.junctions.length}`);
@@ -65,6 +83,7 @@ const checks: [string, boolean, string][] = [
   ['все едут, никто не встал намертво', stuck === 0, `${stuck} стоят`],
   ['держат дистанцию друг от друга', closest > 4.5, `${closest === Infinity ? '—' : closest.toFixed(1)} м`],
   ['кто-то свернул на перекрёстке', world.junctions.length === 0 || turns > 0, `${turns} поворотов`],
+  ['едут по ПРАВОЙ стороне', wrongSide === 0, `${wrongSide} не по той стороне, смещение ${sideSample.toFixed(2)} м`],
 ];
 console.log('');
 let bad = 0;

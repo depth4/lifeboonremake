@@ -77,7 +77,7 @@ export function buildNetwork(world: World): Network {
 }
 
 /** Где дорога в этом месте и куда она смотрит. */
-function along(world: World, shape: number, s: number): { x: number; z: number; fx: number; fz: number } {
+export function along(world: World, shape: number, s: number): { x: number; z: number; fx: number; fz: number } {
   const st = world.shapes[shape].stations;
   const total = st.at(-1)?.s ?? 0;
   const t = Math.max(0, Math.min(total, s));
@@ -131,8 +131,9 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
 export function poseOf(world: World, m: Mover): { x: number; z: number; yaw: number } {
   const spot = along(world, m.shape, m.s);
   const fx = spot.fx * m.dir, fz = spot.fz * m.dir;
-  // право по ходу движения
-  const rx = fz, rz = -fx;
+  // Право по ходу — это cross(вперёд, вверх) = (−fz, fx). Знак здесь стоял
+  // наоборот, и весь трафик ездил по левой стороне.
+  const rx = -fz, rz = fx;
   const lane = world.shapes[m.shape].halfWidth * 0.5;
   return { x: spot.x + rx * lane, z: spot.z + rz * lane, yaw: Math.atan2(fz, fx) };
 }

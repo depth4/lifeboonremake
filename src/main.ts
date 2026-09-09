@@ -469,9 +469,9 @@ viewer.onFrame((dt) => {
   if (sens) sens.textContent = driver.held() ? `руль ${driver.travel} px` : 'щёлкни — возьму руль';
   // руль показывает две вещи: куда просит игрок и где колёса на самом деле
   const wheelMark = el('d-wheel');
-  if (wheelMark) wheelMark.setAttribute('transform', `rotate(${-driver.command * 240})`);
+  if (wheelMark) wheelMark.setAttribute('transform', `rotate(${driver.command * 240})`);
   const realMark = el('d-real');
-  if (realMark) realMark.setAttribute('transform', `rotate(${(-car.steer / VIPER.steerLock) * 240})`);
+  if (realMark) realMark.setAttribute('transform', `rotate(${(car.steer / VIPER.steerLock) * 240})`);
   const hand = el('d-hand');
   if (hand) hand.style.left = `${50 + driver.command * 50}%`;
   const grips = el('d-grips');

@@ -77,7 +77,8 @@ export function createDriver(surface: HTMLElement): Driver {
   const move = (e: MouseEvent): void => {
     if (document.pointerLockElement !== surface) return;
     if (ignoreNext) { ignoreNext = false; return; }
-    wheel = clamp(wheel - e.movementX / driver.travel, -1, 1);
+    // вправо мышью — вправо колёсами: положительный руль это поворот направо
+    wheel = clamp(wheel + e.movementX / driver.travel, -1, 1);
   };
   // взял руль — руль прямой: иначе «прямо» зависело бы от того, где был курсор
   const locked = (): void => {
@@ -118,14 +119,14 @@ export function createDriver(surface: HTMLElement): Driver {
       let steer: number;
       if (gamepad) {
         const raw = gamepad.axes[0] ?? 0;
-        steer = Math.abs(raw) < 0.12 ? 0 : -raw;
+        steer = Math.abs(raw) < 0.12 ? 0 : raw;
         throttle = gamepad.buttons[7]?.value ?? 0;
         brake = gamepad.buttons[6]?.value ?? 0;
       } else {
         // клавиши — запасной руль: крутят его, а не дёргают
         const left = keys.has('KeyA') || keys.has('ArrowLeft');
         const right = keys.has('KeyD') || keys.has('ArrowRight');
-        if (left !== right) keySteer = clamp(keySteer + (left ? 1 : -1) * dt * 1.6, -1, 1);
+        if (left !== right) keySteer = clamp(keySteer + (left ? -1 : 1) * dt * 1.6, -1, 1);
         else keySteer -= clamp(keySteer, -dt * 2.2, dt * 2.2);
         steer = clamp(wheel + keySteer, -1, 1);
 

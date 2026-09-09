@@ -124,6 +124,21 @@ function lap(): { spots: Record<string, number>; lowest: number; steps: number }
   return { spots, lowest, steps };
 }
 
+/**
+ * Куда машина едет от положительного руля. Это НЕ мелочь: ось «вбок» легко
+ * назвать наоборот, и тогда наизнанку оказывается и руль, и сторона движения
+ * трафика. Право по ходу — это cross(вперёд, вверх) = (−sin ψ, cos ψ);
+ * при курсе ноль это +z. Значит поворот направо увеличивает и курс, и z.
+ */
+function turnsRight(): { yaw: number; sideways: number } {
+  const car = createCar(P, 0, 0, 0);
+  const v = 14;
+  car.vx = v;
+  for (const w of car.wheels) w.spin = v / w.radius;
+  for (let t = 0; t < 3; t += DT) step(car, P, P_ZERO, FLAT, drive(0.2, 0, 1), DT);
+  return { yaw: car.yaw, sideways: car.z };
+}
+
 /** Как машина стоит под своим весом: осадка подвески и наклон кузова. */
 function stance(): { front: number; rear: number; pitch: number; roll: number } {
   const car = createCar(P, 0, 0, 0);
@@ -225,6 +240,10 @@ if (still > 0.05) { console.log(`  ✗ машина ТРОГАЕТСЯ САМА:
 else console.log(`  ✓ стоит на месте, когда ничего не нажато`);
 if (back < 3 || back * 3.6 > 55) { console.log(`  ✗ задний ход: ${(back * 3.6).toFixed(1)} км/ч — не едет или едет как вперёд`); failed++; }
 else console.log(`  ✓ задний ход едет назад ......... ${(back * 3.6).toFixed(1)} км/ч`);
+
+const turn = turnsRight();
+if (turn.yaw > 0.05 && turn.sideways > 1) console.log('  ✓ руль вправо поворачивает вправо');
+else { console.log(`  ✗ руль вправо поворачивает ВЛЕВО: курс ${(turn.yaw * 180 / Math.PI).toFixed(0)}°, вбок ${turn.sideways.toFixed(1)} м`); failed++; }
 
 const rest = stance();
 const nose = dive();
