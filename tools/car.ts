@@ -16,47 +16,39 @@ const MILE = 1609.344; // м
 const MPH = 0.44704; // м/с в одной миле в час
 
 // ─────────────────────────── ПАСПОРТ ───────────────────────────
-// Всё до единой строки — из media.stellantis: «2013 SRT Viper and SRT Viper GTS
-// SPECIFICATIONS». Переведено в метры/килограммы/ньютоны и больше ни во что.
+// Числа НЕ переписаны сюда: они лежат в src/car/passport.ts — там же, откуда
+// их берёт сама машина. Две копии одних и тех же чисел однажды разойдутся.
+
+import { SPEC, VIPER, engineTorque, radiusFromMarking, radiusFromRevs } from '../src/car/passport.ts';
 
 const PASSPORT = {
-  name: '2013 SRT Viper GTS',
-  mass: 1556.3, // кг, curb weight GTS
-  frontShare: 0.496, // доля веса на передней оси (49.6/50.4)
-  wheelbase: 2.51, // м
-  trackFront: 1.598, // м
-  trackRear: 1.55, // м
-  width: 1.941, // м
-  height: 1.246, // м
-  cd: 0.369, // коэффициент лобового сопротивления
-  // двигатель: 8.4 л V10, отсечка 6400
-  peakTorque: 814, // Н·м при 5000 об/мин
-  peakTorqueRpm: 5000,
-  peakPower: 477_000, // Вт при 6200 об/мин
-  peakPowerRpm: 6200,
-  cutoffRpm: 6400,
-  gears: [2.26, 1.58, 1.19, 1.0, 0.77, 0.63],
-  finalDrive: 3.55,
-  topGearOverall: 2.24, // как напечатано в паспорте — проверим арифметику
-  steeringRatio: 16.7,
-  turningDiameter: 12.34, // м, curb-to-curb
-  // шины: перед 295/30ZR18, зад P355/30ZR19, Pirelli P Zero
-  tyreFront: { width: 0.295, aspect: 0.3, rim: 18, revsPerMile: 835 },
-  tyreRear: { width: 0.355, aspect: 0.3, rim: 19, revsPerMile: 764 },
-  brakeDisc: 0.3556, // м, диаметр 14.0"
+  name: VIPER.name,
+  mass: VIPER.mass,
+  frontShare: VIPER.frontShare,
+  wheelbase: VIPER.wheelbase,
+  trackFront: VIPER.trackFront,
+  cd: 0.369,
+  peakPower: SPEC.peakPower,
+  peakPowerRpm: SPEC.peakPowerRpm,
+  cutoffRpm: VIPER.cutoffRpm,
+  gears: VIPER.gears,
+  finalDrive: VIPER.finalDrive,
+  topGearOverall: SPEC.topGearOverall,
+  tyreFront: SPEC.tyreFront,
+  tyreRear: SPEC.tyreRear,
 };
 
 // ─────────────────────── ЧЕГО В ПАСПОРТЕ НЕТ ───────────────────────
 // Оценки. Каждая названа вслух, у каждой сказано, на что она влияет.
 
 const GUESS = {
-  driveline: 0.88, // ПЕРЕЗАПИСЫВАЕТСЯ ниже: выводится из замера максималки
-  cgHeight: 0.46, // м. Влияет на перенос веса. Диапазон правдоподобия 0.42–0.50
+  driveline: VIPER.driveline, // ПЕРЕЗАПИСЫВАЕТСЯ ниже: выводится из замера максималки
+  cgHeight: VIPER.cgHeight, // м. Влияет на перенос веса. Диапазон правдоподобия 0.42–0.50
   frontalArea: 2.06, // м² = 0.85 × ширина × высота. Влияет на максималку
-  engineInertia: 0.25, // кг·м², крутящиеся части двигателя с маховиком
-  wheelInertiaFront: 1.36, // кг·м² на колесо (24 кг, масса у обода)
-  wheelInertiaRear: 2.02, // кг·м² на колесо (30 кг)
-  rollingResistance: 0.012, // коэффициент сопротивления качению
+  engineInertia: VIPER.engineInertia, // кг·м², крутящиеся части двигателя с маховиком
+  wheelInertiaFront: VIPER.wheelFront.inertia, // кг·м² на колесо (24 кг, масса у обода)
+  wheelInertiaRear: VIPER.wheelRear.inertia, // кг·м² на колесо (30 кг)
+  rollingResistance: VIPER.rollingResistance, // коэффициент сопротивления качению
   launchRpm: 3500, // на каких оборотах держит сцепление на старте
   shiftTime: 0.3, // с, разрыв тяги при переключении
   tyrePressure: 240_000, // Па (2.4 бар) — для площади пятна контакта
@@ -77,13 +69,6 @@ const MEASURED = {
 const broken = process.argv[2] === 'сломать';
 
 // ─────────────────────────── ГЕОМЕТРИЯ ───────────────────────────
-
-/** Радиус колеса по маркировке шины: обод плюс две боковины. */
-const radiusFromMarking = (t: { width: number; aspect: number; rim: number }): number =>
-  (t.rim * 0.0254 + 2 * t.width * t.aspect) / 2;
-
-/** Радиус качения по «оборотам на милю» — то, чем колесо меряет дорогу. */
-const radiusFromRevs = (t: { revsPerMile: number }): number => MILE / t.revsPerMile / (2 * Math.PI);
 
 const rFront = radiusFromRevs(PASSPORT.tyreFront);
 const rRear = radiusFromRevs(PASSPORT.tyreRear);
@@ -107,19 +92,7 @@ function rotatingMass(gear: number): number {
 // Форма между ними — типовая для большого атмосферного мотора, и она обязана
 // проходить ровно через обе паспортные точки. Это проверяется ниже.
 
-const CURVE: readonly (readonly [number, number])[] = [
-  [1000, 610], [2000, 700], [3000, 760], [4000, 795],
-  [5000, 814], [6000, 760], [6200, 735], [6400, 700],
-];
-
-function torque(rpm: number): number {
-  const n = Math.max(CURVE[0][0], Math.min(CURVE[CURVE.length - 1][0], rpm));
-  for (let i = 0; i + 1 < CURVE.length; i++) {
-    const [n0, t0] = CURVE[i], [n1, t1] = CURVE[i + 1];
-    if (n <= n1) return t0 + ((t1 - t0) * (n - n0)) / (n1 - n0);
-  }
-  return CURVE[CURVE.length - 1][1];
-}
+const torque = (rpm: number): number => engineTorque(VIPER, rpm);
 
 const power = (rpm: number): number => (torque(rpm) * rpm * 2 * Math.PI) / 60;
 
@@ -280,6 +253,7 @@ interface Check { name: string; got: number; want: number; unit: string; tol: nu
 const checks: Check[] = [
   { name: 'верхняя передача, общее число', got: PASSPORT.gears[5] * PASSPORT.finalDrive, want: PASSPORT.topGearOverall, unit: '', tol: 0.01 },
   { name: 'пик мощности на 6200', got: power(PASSPORT.peakPowerRpm), want: PASSPORT.peakPower, unit: 'Вт', tol: 0.02 },
+  { name: 'КПД в паспорте против выведенного', got: VIPER.driveline, want: GUESS.driveline, unit: '', tol: 0.02 },
   { name: 'четверть мили, время', got: run.quarterTime, want: MEASURED.quarterTime, unit: 'с', tol: 0.05 },
   { name: 'четверть мили, скорость в конце', got: run.quarterSpeed, want: MEASURED.quarterSpeed, unit: 'м/с', tol: 0.05 },
 ];
