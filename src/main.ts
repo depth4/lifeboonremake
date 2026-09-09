@@ -13,7 +13,9 @@ import { SETUPS, VIPER } from './car/passport.ts';
 import { P_ZERO } from './car/tyre.ts';
 import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.ts';
 import { createDriver } from './car/controls.ts';
-import { type Mover, type Network, buildNetwork, moveTraffic, placeTraffic, poseOf } from './car/traffic.ts';
+import { type Mover, type Network, along, buildNetwork, moveTraffic, placeTraffic, poseOf } from './city/traffic.ts';
+import { lightFor } from './city/signals.ts';
+import { type Walker, moveWalkers, placeWalkers, walkerPose } from './city/walkers.ts';
 
 const query = new URLSearchParams(location.search);
 const startView = query.get('view') ?? 'road';
@@ -97,7 +99,10 @@ function rebuild(): void {
   rebuildMs = performance.now() - started;
   ground = new GroundIndex(surface);
   network = buildNetwork(world);
-  if (traffic.length > 0) traffic = placeTraffic(world, network, TRAFFIC_COUNT);
+  if (traffic.length > 0) {
+    traffic = placeTraffic(world, network, TRAFFIC_COUNT);
+    walkers = placeWalkers(world, network, WALKER_COUNT);
+  }
   viewer.setSurface(surface);
   readout();
   hint();
@@ -299,7 +304,11 @@ let ground = new GroundIndex(surface);
 // ── трафик: чужие машины, которые едут сами
 let network: Network = buildNetwork(world);
 let traffic: Mover[] = [];
+let walkers: Walker[] = [];
 const TRAFFIC_COUNT = 18;
+const WALKER_COUNT = 26;
+/** Городские часы: по ним живут светофоры. Не связаны с кадрами. */
+let cityTime = 0;
 let car: Car | null = null;
 /** Машина остаётся в мире, когда из неё вышли: просто перестаёт считаться. */
 let driving = false;
@@ -369,8 +378,12 @@ el('drive')?.addEventListener('click', (event) => {
     driver.assist = !driver.assist;
     drivePanel();
   } else if (what === 'traffic') {
-    traffic = traffic.length > 0 ? [] : placeTraffic(world, network, TRAFFIC_COUNT);
+    const on = traffic.length === 0;
+    traffic = on ? placeTraffic(world, network, TRAFFIC_COUNT) : [];
+    walkers = on ? placeWalkers(world, network, WALKER_COUNT) : [];
     viewer.setTraffic([]);
+    viewer.setSignals([]);
+    viewer.setWalkers([]);
     drivePanel();
   } else if (what === 'setup') {
     // подвеска меняется на ходу: свободные длины пересчитываются, и машина
@@ -411,7 +424,33 @@ let lastControls = { steer: 0, throttle: 0, brake: 0, handbrake: false, assist: 
 
 viewer.onFrame((dt) => {
   if (traffic.length > 0) {
-    moveTraffic(world, network, traffic, Math.min(dt, 0.1));
+    const step = Math.min(dt, 0.1);
+    cityTime += step;
+    moveWalkers(world, network, walkers, step, cityTime);
+    const crossing = walkers.filter((w) => w.crossing > 0).map((w) => ({ shape: w.shape, s: w.s }));
+    moveTraffic(world, network, traffic, step, cityTime, { crossing });
+    viewer.setWalkers(walkers.map((w) => {
+      const pose = walkerPose(world, w);
+      return { x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: pose.yaw, colour: w.colour };
+    }));
+
+    // светофоры: стойка справа от стоп-линии, головой к подъезжающим
+    const lamps: { x: number; y: number; z: number; yaw: number; colour: number }[] = [];
+    const GLOW: Record<string, number> = { зелёный: 0x3fbf5a, жёлтый: 0xe8b53a, красный: 0xd6392f };
+    for (const signal of network.signals) {
+      for (const approach of signal.approaches) {
+        const at = along(world, approach.shape, approach.stopS);
+        const fx = at.fx * approach.dir, fz = at.fz * approach.dir;
+        const side = world.shapes[approach.shape].outerHalf + 0.6;
+        const x = at.x - fz * side, z = at.z + fx * side;
+        lamps.push({
+          x, y: ground.sample(x, z).height, z,
+          yaw: Math.atan2(fz, fx) + Math.PI,
+          colour: GLOW[lightFor(signal, approach, cityTime).light] ?? 0x555555,
+        });
+      }
+    }
+    viewer.setSignals(lamps);
     viewer.setTraffic(traffic.map((m) => {
       const pose = poseOf(world, m);
       return { x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: m.yaw, colour: m.colour };

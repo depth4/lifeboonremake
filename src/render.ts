@@ -172,6 +172,10 @@ export interface Viewer {
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
   setTraffic(cars: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
+  /** Светофоры: где стоят и каким цветом горят. */
+  setSignals(lamps: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
+  /** Пешеходы. */
+  setWalkers(people: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -289,6 +293,9 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   // видеокарта задыхается от отдельных вызовов
   let trafficBody: THREE.InstancedMesh | null = null;
   let trafficWheels: THREE.InstancedMesh | null = null;
+  let signalPoles: THREE.InstancedMesh | null = null;
+  let signalHeads: THREE.InstancedMesh | null = null;
+  let walkerMesh: THREE.InstancedMesh | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
   const sun = new THREE.DirectionalLight(0xfff3dd, 2.1);
@@ -477,6 +484,67 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       trafficBody.instanceMatrix.needsUpdate = true;
       if (trafficBody.instanceColor) trafficBody.instanceColor.needsUpdate = true;
       (trafficWheels as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+    },
+    setSignals(lamps) {
+      if (signalPoles !== null && signalPoles.count !== lamps.length) {
+        scene.remove(signalPoles, signalHeads as THREE.Object3D);
+        signalPoles.dispose(); signalHeads?.dispose();
+        signalPoles = null; signalHeads = null;
+      }
+      if (lamps.length === 0) return;
+      if (signalPoles === null) {
+        const pole = new THREE.CylinderGeometry(0.09, 0.11, 3.2, 8);
+        pole.translate(0, 1.6, 0);
+        signalPoles = new THREE.InstancedMesh(
+          pole, new THREE.MeshStandardMaterial({ color: 0x3a4046, roughness: 0.7 }), lamps.length,
+        );
+        signalPoles.castShadow = true;
+        // голова светофора светится сама: иначе красный в тени не отличить
+        const head = new THREE.BoxGeometry(0.34, 0.9, 0.28);
+        head.translate(0, 3.4, 0);
+        signalHeads = new THREE.InstancedMesh(
+          head, new THREE.MeshStandardMaterial({ roughness: 0.45, emissiveIntensity: 1 }), lamps.length,
+        );
+        scene.add(signalPoles, signalHeads);
+      }
+      const m = new THREE.Matrix4();
+      const tint = new THREE.Color();
+      lamps.forEach((l, i) => {
+        m.makeRotationY(-l.yaw);
+        m.setPosition(l.x, l.y, l.z);
+        (signalPoles as THREE.InstancedMesh).setMatrixAt(i, m);
+        (signalHeads as THREE.InstancedMesh).setMatrixAt(i, m);
+        (signalHeads as THREE.InstancedMesh).setColorAt(i, tint.setHex(l.colour));
+      });
+      signalPoles.instanceMatrix.needsUpdate = true;
+      (signalHeads as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+      if (signalHeads?.instanceColor) signalHeads.instanceColor.needsUpdate = true;
+    },
+    setWalkers(people) {
+      if (walkerMesh !== null && walkerMesh.count !== people.length) {
+        scene.remove(walkerMesh); walkerMesh.dispose(); walkerMesh = null;
+      }
+      if (people.length === 0) return;
+      if (walkerMesh === null) {
+        // человек — капсула: с любого ракурса читается как человек, а не как ящик
+        const body = new THREE.CapsuleGeometry(0.22, 1.25, 4, 8);
+        body.translate(0, 0.87, 0);
+        walkerMesh = new THREE.InstancedMesh(
+          body, new THREE.MeshStandardMaterial({ roughness: 0.85 }), people.length,
+        );
+        walkerMesh.castShadow = true;
+        scene.add(walkerMesh);
+      }
+      const m = new THREE.Matrix4();
+      const tint = new THREE.Color();
+      people.forEach((p, i) => {
+        m.makeRotationY(-p.yaw);
+        m.setPosition(p.x, p.y, p.z);
+        (walkerMesh as THREE.InstancedMesh).setMatrixAt(i, m);
+        (walkerMesh as THREE.InstancedMesh).setColorAt(i, tint.setHex(p.colour));
+      });
+      walkerMesh.instanceMatrix.needsUpdate = true;
+      if (walkerMesh.instanceColor) walkerMesh.instanceColor.needsUpdate = true;
     },
     setChase(on) {
       chase = on;
