@@ -296,7 +296,7 @@ let car: Car | null = null;
 /** Машина остаётся в мире, когда из неё вышли: просто перестаёт считаться. */
 let driving = false;
 const spinAngle = [0, 0, 0, 0];
-const driver = createDriver();
+const driver = createDriver(canvas ?? document.body);
 const dash = document.getElementById('dash');
 
 /**
@@ -315,8 +315,7 @@ function spawnCar(): Car {
 
 function seat(on: boolean): void {
   if (on && car === null) car = spawnCar();
-  // где рука в этот миг — там и «прямо»: иначе руль сразу в упоре
-  if (on) driver.anchor();
+  if (on) driver.anchor(); // руль в ноль: садимся всегда с прямыми колёсами
   driving = on;
   viewer.setChase(on);
   if (dash) dash.hidden = !on;
@@ -343,8 +342,8 @@ function drivePanel(): void {
   if (tip) {
     tip.textContent = driver.pad()
       ? 'геймпад подключён: левый стик — руль, курки — газ и тормоз'
-      : 'мышь влево-вправо — руль: где курсор, там и руль. W/S — газ и тормоз, '
-        + 'Shift — в пол, X — ручник, R — перехватить руль, [ и ] — острота';
+      : 'щёлкни по картинке — мышь возьмёт руль. Влево-вправо — руль, W/S — газ '
+        + 'и тормоз, Shift — в пол, X — ручник, R — выровнять руль, [ и ] — острота';
   }
 }
 
@@ -413,7 +412,7 @@ viewer.onFrame((dt) => {
   const brake = el('d-brake');
   if (brake) brake.style.height = `${controls.brake * 100}%`;
   const sens = el('d-sens');
-  if (sens) sens.textContent = `острота ${(driver.share * 100).toFixed(0)}%`;
+  if (sens) sens.textContent = driver.held() ? `руль ${driver.travel} px` : 'щёлкни — возьму руль';
   // руль показывает две вещи: куда просит игрок и где колёса на самом деле
   const wheelMark = el('d-wheel');
   if (wheelMark) wheelMark.setAttribute('transform', `rotate(${-driver.command * 240})`);

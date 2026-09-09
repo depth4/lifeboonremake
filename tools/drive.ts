@@ -116,6 +116,20 @@ function lap(): { spots: Record<string, number>; lowest: number; steps: number }
   return { spots, lowest, steps };
 }
 
+/** Стоим и ничего не жмём. Машина обязана стоять. */
+function standStill(): number {
+  const car = createCar(P, 0, 0, 0);
+  for (let t = 0; t < 8; t += DT) step(car, P, P_ZERO, FLAT, drive(0), DT);
+  return Math.abs(forwardSpeed(car));
+}
+
+/** Задний ход: подержать тормоз на стоянке и поехать назад. */
+function backwards(): number {
+  const car = createCar(P, 0, 0, 0);
+  for (let t = 0; t < 6; t += DT) step(car, P, P_ZERO, FLAT, drive(0, 1), DT);
+  return -forwardSpeed(car);
+}
+
 // ─────────────────────────── печать ───────────────────────────
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(40, '.')} ${value}`);
@@ -147,6 +161,13 @@ for (const c of checks) {
 }
 
 const floored = launch(false);
+const still = standStill();
+const back = backwards();
+if (still > 0.05) { console.log(`  ✗ машина ТРОГАЕТСЯ САМА: ${(still * 3.6).toFixed(2)} км/ч без единой педали`); failed++; }
+else console.log(`  ✓ стоит на месте, когда ничего не нажато`);
+if (back < 3 || back * 3.6 > 55) { console.log(`  ✗ задний ход: ${(back * 3.6).toFixed(1)} км/ч — не едет или едет как вперёд`); failed++; }
+else console.log(`  ✓ задний ход едет назад ......... ${(back * 3.6).toFixed(1)} км/ч`);
+
 console.log('\nЗАОДНО:');
 line('0–100 км/ч', `${run.hundred.toFixed(2)} с`);
 line('0–60 миль/ч, если топить в пол без помощи', `${floored.sixty.toFixed(2)} с — колёса горят`);

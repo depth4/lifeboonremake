@@ -95,6 +95,11 @@ await page.goto(url, { waitUntil: 'load' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });
 await page.click('button[data-drive="seat"]');
 await page.waitForFunction(() => window.__car() !== null, null, { timeout: 10000 });
+// взять руль: щелчок по картинке захватывает указатель, как в игре
+await page.mouse.click(800, 500);
+await page.waitForTimeout(300);
+const held = await page.evaluate(() => document.pointerLockElement !== null);
+if (!held) problems.push('указатель не захватился — рулить нечем');
 
 const spawn = await car();
 await page.evaluate(() => { window.__yaw0 = window.__car().yaw; });
@@ -128,7 +133,8 @@ await page.evaluate(() => { window.__yaw0 = window.__car().yaw; });
 await page.keyboard.down('w');
 await until('разгон до шестидесяти', 'шестьдесят', 25000);
 await page.keyboard.up('w');
-await page.mouse.move(1040, 500);
+// руль вправо до упора: с захваченным указателем это сдвиг, а не позиция
+for (let i = 0; i < 12; i++) await page.mouse.move(800 + i * 90, 500);
 await page.waitForTimeout(350);
 const withHelp = await car();
 await page.click('button[data-drive="assist"]');
@@ -139,7 +145,7 @@ await page.click('button[data-drive="assist"]');
 // 4. ПОВОРОТ — руль уже вывернут, ждём, пока курс изменится заметно.
 const turned = await until('поворот', 'поворот', 30000);
 await page.screenshot({ path: 'shots/ride-4-поворот.png' });
-await page.mouse.move(800, 500);
+await page.keyboard.press('r'); // выровнять руль
 await page.keyboard.down('s');
 await until('остановка после поворота', 'стоп');
 await page.keyboard.up('s');

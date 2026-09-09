@@ -169,10 +169,16 @@ export function step(
   const swing = p.steerRate * dt;
   car.steer += clamp(wanted - car.steer, -swing, swing);
 
-  // ── задний ход: если стоим и держим тормоз, «тормоз» становится задней тягой
-  if (Math.abs(u) < 0.4 && controls.brake > 0.15) car.stopHold += dt;
-  else if (Math.abs(u) > 1.5 || controls.throttle > 0.1) { car.stopHold = 0; car.reverse = false; }
-  if (car.stopHold > 0.35) car.reverse = true;
+  /**
+   * Задний ход. Подержал тормоз на стоянке — включился, и тогда тормоз стал
+   * задней тягой, а газ — тормозом. Выводит из него ГАЗ, а не скорость:
+   * раньше выходом была скорость, и назад нельзя было разогнаться быстрее
+   * пяти километров в час — реверс мигал туда-сюда.
+   */
+  if (!car.reverse && Math.abs(u) < 0.5 && controls.brake > 0.15) car.stopHold += dt;
+  else car.stopHold = 0;
+  if (car.stopHold > 0.35) { car.reverse = true; car.stopHold = 0; }
+  if (car.reverse && (controls.throttle > 0.1 || u > 0.5)) car.reverse = false;
   const throttle = car.reverse ? controls.brake : controls.throttle;
   const braking = car.reverse ? controls.throttle : controls.brake;
 
@@ -200,10 +206,21 @@ export function step(
     else if (fromWheels < 2400 && car.gear > 0) { car.gear--; car.shiftLeft = 0.2; }
   }
 
-  const cut = car.shiftLeft > 0 || car.rpm >= p.cutoffRpm - 1;
+  // на заднем ходу мотор придушен: иначе передача 2.9 разгоняет назад до 80 км/ч
+  const ceiling = car.reverse ? 3500 : p.cutoffRpm - 1;
+  const cut = car.shiftLeft > 0 || car.rpm >= ceiling;
   const engine = cut ? 0 : engineTorque(p, car.rpm) * throttle;
-  const drag = cut || throttle > 0.05 ? 0 : engineTorque(p, car.rpm) * 0.12; // торможение двигателем
-  const axleTorque = (engine - drag) * ratio * p.driveline * (car.reverse ? -1 : 1);
+  const push = engine * ratio * p.driveline * (car.reverse ? -1 : 1);
+  /**
+   * Торможение двигателем ГАСИТ вращение, а не крутит колёса.
+   * Раньше оно было просто отрицательным моментом — и на стоянке медленно
+   * увозило машину назад само по себе. Теперь оно всегда против вращения
+   * и исчезает вместе с ним.
+   */
+  const rolling = Math.sign(spinAvg) * Math.min(1, Math.abs(spinAvg) / 3);
+  const engineBrake = cut || throttle > 0.05
+    ? 0 : engineTorque(p, car.rpm) * 0.12 * ratio * p.driveline * rolling;
+  const axleTorque = push - engineBrake;
 
   // вязкостная блокировка: колёса тянут друг друга, разница скоростей давит
   const lock = clamp((car.wheels[2].spin - car.wheels[3].spin) * p.diffLock, -2500, 2500);
