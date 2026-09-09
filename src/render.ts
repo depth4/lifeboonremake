@@ -150,6 +150,8 @@ export const VIEWS: Record<string, View> = {
   road: { label: 'вдоль', from: [-118, 52, -128], at: [15, 2, 8], fog: 480 },
   close: { label: 'вблизи', from: [-52, 14, -34], at: [-4, 4, 4], fog: 320 },
   curb: { label: 'с дороги', from: [-48.1, 1.1, -12.7], at: [-8.8, 2.5, 10.0], fog: 200 },
+  // сверху на один перекрёсток: только отсюда видно, кто кого пропускает
+  node: { label: 'перекрёсток', from: [14, 46, -76], at: [50, 0, -40], fog: 260 },
 };
 
 export interface Viewer {

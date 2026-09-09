@@ -16,7 +16,7 @@
  */
 
 import type { World } from '../world/world.ts';
-import { type Approach, type Signal, buildSignals, lightFor } from './signals.ts';
+import { type Signal, buildSignals, lightFor, stopLine } from './signals.ts';
 
 const G = 9.80665;
 /** С какой боковой перегрузкой ездит обычный водитель. */
@@ -36,10 +36,28 @@ const HEADWAY = 1.3;
 /** Длина машины, м: зазор считается от бампера, а не от середины. */
 const LENGTH = 4.4;
 
-/** Радиус коробки перекрёстка: внутри неё двум машинам тесно. */
-const BOX = 11;
+/** Сколько метров за серединой узла считается «перекрёсток пройден». */
+const CLEAR = 12;
 /** За сколько секунд ожидания на перекрёстке водитель перестаёт уступать. */
 const PATIENCE = 6;
+/**
+ * Запас времени, с которым водитель соглашается пересечь чужой путь, с.
+ * Дорожная инженерия (HCM) даёт критический промежуток 4.5 с для поворота
+ * налево — но в него входит и само время пересечения. Своё время машина
+ * считает отдельно, поэтому здесь остаётся только запас.
+ */
+const CRITICAL = 2.2;
+/** Половина длины машины: ею она занимает точку конфликта. */
+const HALF = LENGTH / 2;
+/** Половина ширины машины. */
+const WIDE = 0.975;
+/**
+ * Ближе этого два пути через перекрёсток считаются пересекающимися, м.
+ * Это НЕ на глаз: столкновение — наложение габаритов 4.4 × 1.95 м, и центры
+ * при нём расходятся самое большее на sqrt(4.4² + 1.95²) ≈ 4.8. Путь, который
+ * проходит дальше, задеть не может.
+ */
+const RUB = 4.8;
 
 export interface Mover {
   shape: number;
@@ -59,12 +77,15 @@ export interface Mover {
   /** Место в кармане, если едет парковаться или стоит. */
   park: { bay: number; phase: 'въезжает' | 'стоит' | 'выезжает'; left: number } | null;
   /**
-   * Какой перекрёсток эта машина заняла. Занятость меряется НЕ радиусом,
-   * а владением: въехать может только владелец, и он держит перекрёсток,
-   * пока не проедет его насквозь. Радиус не годится — машина входит в него
-   * не мгновенно, и двое успевают оказаться внутри одновременно.
+   * Куда поедем через ближайший перекрёсток. Решение принимается НА ПОДЪЕЗДЕ,
+   * а не в точке въезда: пока путь неизвестен, нельзя сказать, пересекается
+   * ли он с чужим, и остаётся только запрещать перекрёсток целиком.
+   *
+   * Пока маршрут есть, `s` продолжает расти за конец дороги — это и значит
+   * «машина внутри перекрёстка». Отдельного состояния «внутри» нет, и потому
+   * «машина одновременно на дороге и в перекрёстке» невыразимо.
    */
-  claim: number;
+  route: Route | null;
   /** Сколько секунд стоим и уступаем. Против вечного взаимного «после вас». */
   wait: number;
   /** Что сейчас держит: для приборки и проверок. */
@@ -75,6 +96,18 @@ export interface Mover {
    * то нет. Теперь выбор поворота зависит только от машины и её пути.
    */
   seed: number;
+}
+
+/**
+ * Путь через перекрёсток: с какой дороги на какую и в какую сторону.
+ * Сама кривая не хранится, а считается из этих трёх чисел — хранимая
+ * разошлась бы с дорогой, если та изменится.
+ */
+export interface Route {
+  readonly junction: number;
+  readonly shape: number;
+  readonly s: number;
+  readonly dir: number;
 }
 
 interface Link { shape: number; s: number }
@@ -241,7 +274,7 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
       seed: Math.floor(next() * 2147483647),
       across: dir * world.shapes[shape].halfWidth * 0.5,
       park: null,
-      claim: -1,
+      route: null,
       cruise: CRUISE * (0.6 + next() * 0.4),
       yaw: Math.atan2(spot.fz * dir, spot.fx * dir),
       colour: COLOURS[Math.floor(next() * COLOURS.length) % COLOURS.length],
@@ -260,8 +293,167 @@ function roll(m: Mover): number {
   return m.seed / 2147483647;
 }
 
+/** Середина своей полосы на этом метре дороги, и куда она смотрит. */
+function lanePoint(world: World, shape: number, s: number, dir: number):
+{ x: number; z: number; fx: number; fz: number } {
+  const spot = along(world, shape, s);
+  const off = dir * world.shapes[shape].halfWidth * 0.5;
+  return { x: spot.x - spot.fz * off, z: spot.z + spot.fx * off, fx: spot.fx * dir, fz: spot.fz * dir };
+}
+
+/** Метр, на котором дорога кончается и начинается перекрёсток. */
+function mouthAt(world: World, shape: number, s: number, dir: number): number {
+  return stopLine(world.shapes[shape].halfWidth, s, dir);
+}
+
+/** Свой въезд в перекрёсток: метр, за которым машина уже внутри. */
+function myMouth(world: World, net: Network, m: Mover): number {
+  return mouthAt(world, m.shape, m.dir > 0 ? net.length[m.shape] : 0, m.dir);
+}
+
+/** Сколько метров пути через перекрёсток уже позади. Меньше нуля — ещё не въехал. */
+function inside(world: World, net: Network, m: Mover): number {
+  return (m.s - myMouth(world, net, m)) * m.dir;
+}
+
+/** Ломаная пути через перекрёсток: точки и метраж до каждой из них. */
+export interface Path {
+  readonly pts: readonly { x: number; z: number }[];
+  readonly mark: readonly number[];
+  readonly len: number;
+  /** Курс на въезде и насколько круто поворачиваем: + направо, − налево. */
+  readonly inYaw: number;
+  readonly turn: number;
+}
+
+/** На сколько кусков режется кривая перекрёстка. Шаг выходит около полутора метров. */
+const STEPS = 12;
+
+/**
+ * Путь через перекрёсток: кривая от своей стоп-линии до стоп-линии дороги,
+ * на которую выезжаем. Она КАСАЕТСЯ своей полосы на въезде и своей полосы
+ * на выезде — поэтому машина не срезает угол и не выползает на встречную,
+ * а едет так, как ездят настоящие.
+ *
+ * Одно представление на всё: по нему машина едет, и им же считаются
+ * пересечения с чужими путями. Второй геометрии перекрёстка в городе нет,
+ * и «поехал не там, где считались конфликты» невыразимо.
+ */
+export function crossPath(world: World, net: Network, shape: number, dir: number, r: Route): Path {
+  const a = lanePoint(world, shape, mouthAt(world, shape, dir > 0 ? net.length[shape] : 0, dir), dir);
+  const b = lanePoint(world, r.shape, mouthAt(world, r.shape, r.s, -r.dir), r.dir);
+  // точка схода касательных: где продолжение въезда встречает продолжение выезда
+  const det = a.fx * b.fz - a.fz * b.fx;
+  let cx = (a.x + b.x) / 2, cz = (a.z + b.z) / 2;
+  if (Math.abs(det) > 1e-4) {
+    const t = ((b.x - a.x) * b.fz - (b.z - a.z) * b.fx) / det;
+    if (t > 0 && t < 60) { cx = a.x + a.fx * t; cz = a.z + a.fz * t; }
+  }
+  const pts: { x: number; z: number }[] = [];
+  for (let i = 0; i <= STEPS; i++) {
+    const t = i / STEPS, u = 1 - t;
+    pts.push({ x: u * u * a.x + 2 * u * t * cx + t * t * b.x, z: u * u * a.z + 2 * u * t * cz + t * t * b.z });
+  }
+  const mark = [0];
+  for (let i = 0; i + 1 < pts.length; i++)
+    mark.push(mark[i] + Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].z - pts[i].z));
+  const inYaw = Math.atan2(a.fz, a.fx);
+  const outYaw = Math.atan2(b.fz, b.fx);
+  return { pts, mark, len: mark[mark.length - 1], inYaw, turn: wrap(outYaw - inYaw) };
+}
+
+/** Разница углов в пределах ±180°. */
+function wrap(a: number): number {
+  return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
+/** Где машина на пути через перекрёсток, проехав столько метров. */
+function alongPath(path: Path, at: number): { x: number; z: number; yaw: number } {
+  const d = Math.max(0, Math.min(path.len, at));
+  let i = 0;
+  while (i + 2 < path.pts.length && path.mark[i + 1] < d) i++;
+  const span = Math.max(1e-6, path.mark[i + 1] - path.mark[i]);
+  const k = (d - path.mark[i]) / span;
+  const p = path.pts[i], q = path.pts[i + 1];
+  return { x: p.x + (q.x - p.x) * k, z: p.z + (q.z - p.z) * k, yaw: Math.atan2(q.z - p.z, q.x - p.x) };
+}
+
+/** Кузов на плоскости: середина и куда смотрит. */
+export interface Box { readonly x: number; readonly z: number; readonly yaw: number }
+
+/**
+ * Насколько два кузова далеки от касания: меньше единицы — уже наложились,
+ * единица — впритирку, два — вдвое дальше, чем нужно.
+ *
+ * ОДНО определение столкновения на весь проект: им пользуется и город,
+ * решая, можно ли ехать, и проверка, решая, столкнулись ли. Пока определений
+ * было два, они и расходились: город считал, что проехал, а проверка — что
+ * задел, и оба были по-своему правы.
+ *
+ * Считается честно, по осям обоих кузовов: прямоугольники не пересекаются
+ * тогда и только тогда, когда их тени не пересекаются хотя бы на одной
+ * из четырёх осей.
+ */
+export function touching(a: Box, b: Box): number {
+  const af = { x: Math.cos(a.yaw), z: Math.sin(a.yaw) };
+  const bf = { x: Math.cos(b.yaw), z: Math.sin(b.yaw) };
+  const dx = b.x - a.x, dz = b.z - a.z;
+  // прямоугольники НЕ пересекаются, если развела хоть одна ось, — значит
+  // «далеко от касания» это самая РАЗВОДЯЩАЯ ось, а не самая тесная
+  let apart = 0;
+  for (const u of [af, { x: -af.z, z: af.x }, bf, { x: -bf.z, z: bf.x }]) {
+    const reach = (f: { x: number; z: number }): number =>
+      Math.abs(u.x * f.x + u.z * f.z) * HALF + Math.abs(-u.x * f.z + u.z * f.x) * WIDE;
+    const k = Math.abs(dx * u.x + dz * u.z) / (reach(af) + reach(bf));
+    if (k > apart) apart = k;
+  }
+  return apart;
+}
+
+/**
+ * С какого метра пути чужой кузов начинает мешать, и на каком метре он стоит.
+ *
+ * «Мешает» меряется ТЕМ ЖЕ наложением габаритов, которым меряется
+ * столкновение: 4.4 м вдоль машины и 1.95 поперёк. Простое расстояние
+ * до точки тут не годится — машина поперёк пути и машина вдоль него
+ * загораживают совсем разное, а расстояние у них одинаковое.
+ */
+function blockAt(path: Path, body: Box): { at: number; centre: number } {
+  let at = Infinity, centre = 0, near = Infinity;
+  for (let i = 0; i < path.pts.length; i++) {
+    const p = path.pts[i];
+    const q = path.pts[Math.min(i + 1, path.pts.length - 1)];
+    const r = path.pts[Math.max(i - 1, 0)];
+    const straight = Math.hypot(body.x - p.x, body.z - p.z);
+    if (straight < near) { near = straight; centre = path.mark[i]; }
+    // мой кузов, поставленный на этот метр пути, против его кузова
+    const me = { x: p.x, z: p.z, yaw: Math.atan2(q.z - r.z, q.x - r.x) };
+    if (touching(me, body) < 1.15 && path.mark[i] < at) at = path.mark[i];
+  }
+  return { at, centre };
+}
+
+/**
+ * Самое тесное место двух путей: метр по каждому и просвет между ними.
+ * Меряется сближение, а не пересечение: два пути, расходящиеся в полуметре,
+ * геометрически не пересекаются, но машины по ним столкнутся.
+ */
+function nearest(a: Path, b: Path): { at: number; foe: number; gap: number } {
+  let best = { at: 0, foe: 0, gap: Infinity };
+  for (let i = 0; i < a.pts.length; i++)
+    for (let k = 0; k < b.pts.length; k++) {
+      const d = Math.hypot(a.pts[i].x - b.pts[k].x, a.pts[i].z - b.pts[k].z);
+      if (d < best.gap) best = { at: a.mark[i], foe: b.mark[k], gap: d };
+    }
+  return best;
+}
+
 /** Куда машина смотрит и где стоит: правостороннее движение. */
-export function poseOf(world: World, m: Mover): { x: number; z: number; yaw: number } {
+export function poseOf(world: World, net: Network, m: Mover): { x: number; z: number; yaw: number } {
+  if (m.route !== null) {
+    const at = inside(world, net, m);
+    if (at > 0) return alongPath(crossPath(world, net, m.shape, m.dir, m.route), at);
+  }
   const spot = along(world, m.shape, m.s);
   const fx = spot.fx * m.dir, fz = spot.fz * m.dir;
   // across задан в осях дороги; право по ходу — это cross(вперёд, вверх)
@@ -319,23 +511,37 @@ function follow(v: number, want: number, holds: readonly Hold[]): { accel: numbe
   return { accel: ACCEL * (free - worst), why: worst > Math.max(0, free) ? why : 'едет' };
 }
 
-/** Сколько метров до перекрёстка впереди и что это за перекрёсток. */
-export function nextJunction(net: Network, m: Mover): { end: End; stopGap: number; centreGap: number } | null {
+/**
+ * За сколько секунд машина покроет столько метров, если поедет как обычно.
+ * Стоящей нельзя мерить время как «путь делить на скорость»: скорость ноль,
+ * любое время выходит бесконечным, и стоящий не трогается никогда.
+ */
+function timeToCover(d: number, v: number): number {
+  if (d <= 0) return 0;
+  return (-v + Math.sqrt(v * v + 2 * ACCEL * d)) / ACCEL;
+}
+
+/**
+ * Сколько метров до перекрёстка впереди и что это за перекрёсток.
+ * Стоп-линия берётся ОДНОЙ формулой, светофор там или нет: раньше у
+ * нерегулируемого была своя константа, и край перекрёстка мерился двумя
+ * способами — то есть когда-нибудь разошёлся бы.
+ */
+export function nextJunction(world: World, net: Network, m: Mover):
+{ end: End; stopGap: number; centreGap: number } | null {
   const slot = m.dir > 0 ? 1 : 0;
   const end = net.ends[m.shape][slot];
   if (end === null) return null;
-  const total = net.length[m.shape];
-  const atS = slot === 1 ? total : 0;
-  const signal = end.signal >= 0 ? net.signals[end.signal] : null;
-  const stopS = signal === null ? atS - m.dir * 9 : signal.approaches[end.approach].stopS;
+  const atS = slot === 1 ? net.length[m.shape] : 0;
+  const stopS = stopLine(world.shapes[m.shape].halfWidth, atS, m.dir);
   return { end, stopGap: (stopS - m.s) * m.dir, centreGap: (atS - m.s) * m.dir };
 }
 
 /** Что машина видит перед собой на перекрёстке: для проверок и приборки. */
-export function watch(net: Network, m: Mover, time: number): {
+export function watch(world: World, net: Network, m: Mover, time: number): {
   junction: number; stopGap: number; centreGap: number; light: string;
 } | null {
-  const ahead = nextJunction(net, m);
+  const ahead = nextJunction(world, net, m);
   if (ahead === null) return null;
   const signal = ahead.end.signal >= 0 ? net.signals[ahead.end.signal] : null;
   const light = signal === null ? 'нерегулируемый'
@@ -363,8 +569,7 @@ export function moveTraffic(
    * въезд. Иначе решение зависело бы от места в списке — а это тот самый
    * «а если сначала вон тот», который потом ловят месяцами.
    */
-  const spots = movers.map((m) => poseOf(world, m));
-  const targets = movers.map((m) => nextJunction(net, m));
+  const targets = movers.map((m) => nextJunction(world, net, m));
 
   /**
    * Машина игрока превращается в такого же участника: где она на дороге,
@@ -377,7 +582,7 @@ export function moveTraffic(
     const p = options.player;
     const facing = Math.cos(p.yaw) * at.fx + Math.sin(p.yaw) * at.fz;
     const dir = facing >= 0 ? 1 : -1;
-    return { shape: at.shape, s: at.s, across: at.across, dir, speed: Math.abs(p.speed), x: p.x, z: p.z };
+    return { shape: at.shape, s: at.s, across: at.across, dir, speed: Math.abs(p.speed), x: p.x, z: p.z, yaw: p.yaw };
   })();
 
   /** Стоит ли машина на своём светофоре. */
@@ -389,49 +594,44 @@ export function moveTraffic(
     if (light === 'зелёный') return false;
     if (light === 'красный') return true;
     const canStop = t.stopGap > (m.speed * m.speed) / (2 * BRAKE) + 1;
-    const clears = m.speed > 1 && (t.centreGap + BOX) / m.speed < left;
+    const clears = m.speed > 1 && (t.centreGap + CLEAR) / m.speed < left;
     return canStop && !clears;
   });
 
   /**
-   * Владение перекрёстками. Сначала те, кто уже владеет, отпускают его,
-   * когда проехали; потом свободный перекрёсток достаётся ближайшему из тех,
-   * кому свет разрешает. Всё это ДО того, как кто-либо тронулся: иначе
-   * решение зависит от места в списке.
+   * МАРШРУТ ВЫБИРАЕТСЯ НА ПОДЪЕЗДЕ. Пока машина не знает, куда поедет,
+   * её путь через перекрёсток не существует — и приходится запрещать
+   * перекрёсток целиком, по одной машине за раз. Как только путь есть,
+   * два непересекающихся пути проезжаются одновременно, а два
+   * пересекающихся разводятся во времени. Это и есть раздел 13 ПДД.
    */
-  const holder = world.junctions.map(() => -1);
   movers.forEach((m, i) => {
-    if (m.claim < 0) return;
-    const j = world.junctions[m.claim];
-    const away = Math.hypot(spots[i].x - j.x, spots[i].z - j.z);
-    const leaving = targets[i] === null || targets[i]!.end.junction !== m.claim;
-    if (away > BOX + 5 && leaving) m.claim = -1; else holder[m.claim] = i;
-  });
-  if (you !== null) {
-    world.junctions.forEach((j, ji) => {
-      if (Math.hypot(you.x - j.x, you.z - j.z) < BOX && holder[ji] < 0) holder[ji] = -2;
-    });
-  }
-  movers.forEach((m, i) => {
+    if (m.route !== null) return;
     const t = targets[i];
-    if (m.claim >= 0 || t === null || onRed[i]) return;
-    if (t.centreGap <= 0 || t.centreGap > 30) return;
-    if (holder[t.end.junction] !== -1) return;
-    // ближайший из претендентов — и только он
-    const rival = movers.findIndex((o, k) => k !== i && o.claim < 0 && !onRed[k]
-      && targets[k] !== null && targets[k]!.end.junction === t.end.junction
-      && targets[k]!.centreGap > 0 && targets[k]!.centreGap < t.centreGap);
-    if (rival >= 0) return;
-    m.claim = t.end.junction;
-    holder[t.end.junction] = i;
+    if (t === null || t.centreGap < 0 || t.centreGap > 45) return;
+    const exits = net.atJunction[t.end.junction].filter((l) => l.shape !== m.shape);
+    // ехать некуда — это тупик, и разбирается он разворотом ниже, а не здесь
+    if (exits.length === 0) return;
+    const pick = exits[Math.floor(roll(m) * exits.length) % exits.length];
+    m.route = {
+      junction: t.end.junction, shape: pick.shape, s: pick.s,
+      dir: pick.s < net.length[pick.shape] / 2 ? 1 : -1,
+    };
   });
+
+  const poses = movers.map((m) => poseOf(world, net, m));
+
+  /** Пути через перекрёстки: считаются один раз за шаг, а не на каждую пару. */
+  const paths = movers.map((m) => m.route === null ? null : crossPath(world, net, m.shape, m.dir, m.route));
+  const entered = movers.map((m) => m.route === null ? -Infinity : inside(world, net, m));
 
   movers.forEach((m, index) => {
     const total = net.length[m.shape];
     const holds: Hold[] = [];
 
-    // ── поворот дороги впереди: смотрим на несколько шагов вперёд
-    for (const look of [8, 18, 32]) {
+    // ── поворот дороги впереди: смотрим на несколько шагов вперёд.
+    // Внутри перекрёстка смотреть некуда: там своя кривая, а не дорога
+    for (const look of entered[index] > 0 ? [] : [8, 18, 32]) {
       const at = m.s + m.dir * look;
       if (at < 0 || at > total) continue;
       const limit = Math.sqrt(COMFORT * G * radius(world, m.shape, at));
@@ -461,54 +661,151 @@ export function moveTraffic(
         holds.push({ gap, speed: you.dir === m.dir ? you.speed : 0, why: 'игрок' });
     }
 
-    // ── перекрёсток: светофор, занятая коробка, помеха справа
-    const ahead = nextJunction(net, m);
-    let mustYield = false;
-    if (rules && ahead !== null && ahead.stopGap > -2 && ahead.stopGap < 70) {
-      const { end } = ahead;
-      const signal = end.signal >= 0 ? net.signals[end.signal] : null;
-      const approach: Approach | null = signal === null ? null : signal.approaches[end.approach];
+    /**
+     * ── ПЕРЕКРЁСТОК. Никакой «занятой коробки» больше нет. Есть путь —
+     * своя кривая от стоп-линии до стоп-линии, — и точки, в которых он
+     * сближается с чужими. Уступаем не перекрёстку, а КОНКРЕТНОЙ точке
+     * и конкретной машине, и только если не успеваем пройти её раньше.
+     *
+     * Раздел 13 ПДД целиком укладывается в три строки приоритета:
+     *  13.4 / 13.12 — поворачивающий налево уступает встречным прямо и направо;
+     *  13.11        — на равнозначном уступают помехе справа;
+     *  13.8         — тому, кто уже в перекрёстке, уступают все.
+     */
+    const ahead = nextJunction(world, net, m);
+    const mine = paths[index];
+    let yielded = false;
+    if (rules && ahead !== null && mine !== null && ahead.stopGap < 70) {
+      // красный свет: стоим ДО линии. Проехал линию — доезжай, не замирай в узле
+      if (onRed[index] && ahead.stopGap > -0.5) {
+        holds.push({ gap: Math.max(0.4, ahead.stopGap), speed: 0, why: 'красный' });
+        yielded = true;
+      }
 
-      if (signal !== null && approach !== null) {
-        if (onRed[index]) mustYield = true;
-      } else if (ahead.stopGap < 24) {
-        // ── нерегулируемый: уступаем помехе справа
-        const mine = Math.atan2(along(world, m.shape, m.s).fz * m.dir, along(world, m.shape, m.s).fx * m.dir);
-        for (const other of movers) {
-          if (other === m || other.speed < 0.8) continue;
-          const theirs = nextJunction(net, other);
-          if (theirs === null || theirs.end.junction !== end.junction) continue;
-          if (theirs.centreGap < 0 || theirs.centreGap > 22) continue;
-          const oPose = poseOf(world, other);
-          const delta = Math.atan2(Math.sin(oPose.yaw - mine), Math.cos(oPose.yaw - mine));
-          // помеха справа: тот, кто едет с курсом на 90° меньше моего
-          if (delta < -Math.PI / 4 && delta > -Math.PI * 0.75 && theirs.centreGap < ahead.centreGap + 4) {
-            mustYield = true;
-          }
+      /**
+       * 13.2: не выезжаем на перекрёсток, если за ним затор и придётся
+       * встать внутри. Смотрим ровно на ту дорогу, на которую сами едем.
+       */
+      const r = m.route as Route;
+      const outMouth = mouthAt(world, r.shape, r.s, -r.dir);
+      const jam = movers.some((o) => o !== m && o.shape === r.shape && o.dir === r.dir
+        && o.speed < 1.5 && (o.s - outMouth) * r.dir < LENGTH + GAP0
+        && (o.s - outMouth) * r.dir > -LENGTH);
+      if (jam && ahead.stopGap > -0.5) {
+        holds.push({ gap: Math.max(0.4, ahead.stopGap), speed: 0, why: 'затор за перекрёстком' });
+        yielded = true;
+      }
+
+      const myAt = entered[index];
+
+      /**
+       * Дистанция НЕ КОНЧАЕТСЯ на въезде в перекрёсток. Пока машина едет
+       * по нему, её `shape` — дорога, с которой она въехала, и очередь
+       * на той дороге, куда она выезжает, для неё невидима. Так она
+       * и въезжала в стоящих. Считаем зазор насквозь: остаток пути плюс
+       * расстояние по выездной дороге.
+       */
+      if (headway) {
+        for (const o of movers) {
+          if (o === m || o.shape !== r.shape || o.dir !== r.dir) continue;
+          if (Math.abs(o.across - r.dir * world.shapes[r.shape].halfWidth * 0.5) > 2.2) continue;
+          const gap = (mine.len - myAt) + (o.s - outMouth) * r.dir - LENGTH;
+          if (gap > 0 && gap < 60) holds.push({ gap, speed: o.speed, why: 'машина впереди' });
         }
       }
 
       /**
-       * В занятую коробку не въезжаем ни при каком свете. Занятость меряется
-       * НАСТОЯЩИМ расстоянием до узла: вдоль дороги её не видно, потому что
-       * на перекрёстке машина переходит с одного участка на другой и её
-       * «метр вдоль» скачет.
+       * КТО УЖЕ ВНУТРИ — ЭТО ТОЧКА НА МОЁМ ПУТИ, а не «чужой путь».
+       * Сравнивать путь с путём здесь нельзя: у двух сходящихся путей одно
+       * «самое тесное место», а стоять машина может где угодно вдоль него —
+       * и тогда она невидима. Смотрим, где она СЕЙЧАС, и что это за метр
+       * моего пути. Едущий в мою же сторону — лидер, его держим по скорости;
+       * поперечный или встречный — препятствие, перед ним останавливаемся.
        */
-      // в перекрёсток въезжает только его владелец
-      if (ahead.centreGap > 1 && m.claim !== end.junction) mustYield = true;
+      const bodies: { x: number; z: number; yaw: number; speed: number; why: string }[] = [];
+      for (let k = 0; k < movers.length; k++) {
+        if (movers[k] === m || entered[k] <= 0) continue;
+        if (movers[k].route?.junction !== r.junction) continue;
+        bodies.push({ ...poses[k], speed: movers[k].speed, why: 'машина в перекрёстке' });
+      }
+      // машина игрока: куда он поедет, город не знает — значит он такое же тело
+      if (you !== null) bodies.push({ x: you.x, z: you.z, yaw: you.yaw, speed: you.speed, why: 'игрок' });
+      for (const body of bodies) {
+        const spot = blockAt(mine, body);
+        if (spot.at === Infinity || spot.centre <= myAt) continue; // не мешает или уже позади
+        const heading = alongPath(mine, spot.centre).yaw;
+        const sameWay = body.why !== 'игрок' && Math.cos(wrap(body.yaw - heading)) > 0.7;
+        holds.push({
+          gap: Math.max(0.4, spot.at - myAt),
+          speed: sameWay ? body.speed : 0, why: body.why,
+        });
+        yielded = true;
+      }
 
       /**
-       * Терпение кончилось — едем: иначе четверо на нерегулируемом встанут
-       * навсегда, каждый уступая соседу. На СВЕТОФОРЕ терпения нет: там
-       * ждать положено, и «я устал» — это проезд на красный.
+       * ЧТО БУДЕТ ДАЛЬШЕ — пересечение путей и расчёт промежутка. Считается
+       * и для тех, кто уже въехал: раньше, стоило чужой машине пересечь
+       * стоп-линию, предсказание про неё пропадало, оставался только её
+       * нынешний кузов — и она успевала выехать наперерез тому, кто по
+       * старому расчёту «успевал». Въезд не отменяет предсказания.
        */
-      if (m.speed < 0.5 && mustYield) m.wait += dt; else m.wait = Math.max(0, m.wait - dt * 0.5);
-      if (m.wait > PATIENCE && signal === null) mustYield = false;
+      for (let k = 0; k < movers.length; k++) {
+        const o = movers[k], his = paths[k];
+        if (o === m || his === null) continue;
+        if (o.route?.junction !== r.junction) continue;
+        if (o.shape === m.shape && o.dir === m.dir) continue; // сзади — это дистанция, а не перекрёсток
+        if (onRed[k] && entered[k] <= 0) continue;             // ему красный, он и не тронется
+        const meet = nearest(mine, his);
+        if (meet.gap > RUB) continue;                          // пути расходятся
+        const toPoint = meet.at - myAt;
+        const foeToPoint = meet.foe - entered[k];
+        if (toPoint < -HALF || foeToPoint < -HALF) continue;    // точка уже позади
 
-      if (mustYield && ahead.stopGap > -1) {
-        holds.push({ gap: Math.max(0.4, ahead.stopGap), speed: 0, why: signal ? 'красный' : 'уступает' });
+        /**
+         * Кто кому уступает — раздел 13 ПДД. Считаем обе стороны, а не только
+         * свою: если правила не развели никого (два встречных поворота налево,
+         * косой съезд), уступать должен ровно ОДИН — иначе они либо
+         * столкнутся, либо встанут оба. Ничья решается тем, кто подъедет
+         * позже, а полная ничья — номером, чтобы ответ не зависел от порядка.
+         */
+        const delta = wrap(his.inYaw - mine.inYaw);
+        const rank = (t: number): number => Math.abs(t) < 0.6 ? 0 : t > 0 ? 1 : 2;
+        const onc = Math.abs(delta) > 2.36;
+        const iYield = onc ? rank(mine.turn) > rank(his.turn) : delta < -0.79 && delta > -2.36;
+        const heYields = onc ? rank(his.turn) > rank(mine.turn) : delta > 0.79 && delta < 2.36;
+        const tie = !iYield && !heYields && (toPoint > foeToPoint + 0.5
+          || (Math.abs(toPoint - foeToPoint) <= 0.5 && index > k));
+        if (!iYield && !tie) continue;
+
+        // хватает ли промежутка: успею ли пройти точку до того, как он в неё войдёт
+        const foeIn = o.speed < 0.2 ? Infinity : (foeToPoint - HALF) / o.speed;
+        const clear = timeToCover(toPoint + HALF, m.speed);
+        if (foeIn > clear + CRITICAL) continue;                // успеваю
+
+        /**
+         * Терпение кончилось — едем: иначе четверо на нерегулируемом встанут
+         * навсегда, каждый уступая соседу. На тех, кто уже в перекрёстке,
+         * терпение не действует — они выше, отдельным списком, — а красный
+         * свет им не отменяется вовсе: это была бы уже не усталость,
+         * а проезд на красный.
+         */
+        if (m.wait > PATIENCE) continue;
+
+        /**
+         * Где останавливаться. Встречному уступают ВНУТРИ перекрёстка,
+         * выехав на него, — так и написано в правилах, и так все ездят.
+         * Помехе справа уступают ДО него: заезжать некуда.
+         */
+        const at = toPoint - 2;
+        holds.push({
+          gap: Math.max(0.4, onc || ahead.stopGap < 0 ? at : Math.min(at, ahead.stopGap)),
+          speed: 0, why: 'уступает',
+        });
+        yielded = true;
       }
+
     }
+    if (m.speed < 0.5 && yielded) m.wait += dt; else m.wait = Math.max(0, m.wait - dt * 0.5);
 
     // ── пешеход на переходе: пропускаем, даже если нам зелёный
     if (rules) {
@@ -519,8 +816,15 @@ export function moveTraffic(
       }
     }
 
-    // ── конец дороги без перекрёстка: разворот
-    const deadEnd = net.ends[m.shape][m.dir > 0 ? 1 : 0] === null;
+    /**
+     * ── ТУПИК: дальше ехать некуда. Это не только «дороги нет», но и
+     * «перекрёсток есть, а выезда с него для меня нет»: в обоих случаях
+     * машина разворачивается. Без второго случая она молча уезжала бы
+     * за конец дороги в никуда — потому что проехать перекрёсток можно
+     * только по маршруту, а маршрута там не берётся.
+     */
+    const deadEnd = m.route === null && (ahead === null
+      || net.atJunction[ahead.end.junction].every((l) => l.shape === m.shape));
     if (deadEnd) {
       // тормозим К ТОЧКЕ РАЗВОРОТА, а не раньше неё: иначе машина встаёт
       // в паре метров от конца и разворот, который включается ближе,
@@ -571,7 +875,7 @@ export function moveTraffic(
           return;
         }
       }
-    } else if (m.speed > 3 && roll(m) < 0.0015) {
+    } else if (m.speed > 3 && m.route === null && roll(m) < 0.0015) {
       // ищем свободный карман по своей стороне впереди
       const side = Math.sign(m.dir);
       const found = net.bays.findIndex((b) => b.taken < 0 && b.shape === m.shape
@@ -588,36 +892,48 @@ export function moveTraffic(
     m.speed = Math.max(0, m.speed + Math.max(-6, Math.min(ACCEL, drive.accel)) * dt);
     m.s += m.speed * m.dir * dt;
 
-    // ── развязка: доехали до конца участка — выбираем следующий
-    const nearEnd = m.dir > 0 ? m.s > total - (deadEnd ? 6 : 3) : m.s < (deadEnd ? 6 : 3);
-    if (nearEnd) {
-      const endS = m.dir > 0 ? total : 0;
-      const node = net.nodes[m.shape].find((n) => Math.abs(n.s - endS) < 8);
-      const exits = node === undefined ? [] : net.atJunction[node.junction]
-        .filter((l) => l.shape !== m.shape)
-        .filter((l) => !movers.some((o) => o !== m && o.shape === l.shape && Math.abs(o.s - l.s) < 14));
-      if (exits.length > 0) {
-        const pick = exits[Math.floor(roll(m) * exits.length) % exits.length];
-        const tail = net.length[pick.shape];
-        m.shape = pick.shape;
-        m.s = pick.s;
-        m.dir = pick.s < tail / 2 ? 1 : -1;
-        m.s += m.dir * 1;
-        m.wait = 0;
+    /**
+     * ── ПРОЕЗД ПЕРЕКРЁСТКА. Раньше машина прыгала через узел: пропадала
+     * за три метра до него и появлялась за метр после, на другой дороге.
+     * Внутри перекрёстка её просто не было — а значит, и столкнуться там
+     * было не с чем, и приходилось пускать по одной.
+     *
+     * Теперь `s` продолжает расти за конец дороги, и это ровно значит
+     * «еду по своему пути через перекрёсток». Кончился путь — встаём
+     * на ту дорогу, на которую собирались, с тем же остатком метров.
+     */
+    if (m.route !== null) {
+      const path = crossPath(world, net, m.shape, m.dir, m.route);
+      const at = inside(world, net, m);
+      if (at >= path.len) {
+        const r = m.route;
+        m.shape = r.shape;
+        m.dir = r.dir;
+        m.s = mouthAt(world, r.shape, r.s, -r.dir) + r.dir * (at - path.len);
         m.across = m.dir * world.shapes[m.shape].halfWidth * 0.5;
-      } else {
-        const back = -m.dir;
-        const busy = movers.some((o) => o !== m && o.shape === m.shape
-          && o.dir === back && Math.abs(o.s - m.s) < 14);
-        if (busy) { m.speed = 0; m.s = Math.max(2, Math.min(total - 2, m.s)); }
-        else {
-          m.dir = back;
-          m.s = Math.max(3, Math.min(total - 3, m.s + m.dir * 2));
-          // развернулись — значит и полоса теперь другая. Без этой строки
-          // машина ехала по встречной, пока смещение плавно переползало
-          // через середину дороги
-          m.across = m.dir * world.shapes[m.shape].halfWidth * 0.5;
-        }
+        m.route = null;
+        m.wait = 0;
+      }
+    }
+
+    /**
+     * ── ТУПИК: разворот на месте. Дорога и её длина берутся заново: выше
+     * машина могла переехать на другую дорогу, и старые числа уже не про неё.
+     */
+    const tail = net.length[m.shape];
+    const stopsHere = net.ends[m.shape][m.dir > 0 ? 1 : 0] === null;
+    if (stopsHere && (m.dir > 0 ? m.s > tail - 6 : m.s < 6)) {
+      const back = -m.dir;
+      const busy = movers.some((o) => o !== m && o.shape === m.shape
+        && o.dir === back && Math.abs(o.s - m.s) < 14);
+      if (busy) { m.speed = 0; m.s = Math.max(2, Math.min(tail - 2, m.s)); }
+      else {
+        m.dir = back;
+        m.s = Math.max(3, Math.min(tail - 3, m.s + m.dir * 2));
+        // развернулись — значит и полоса теперь другая. Без этой строки
+        // машина ехала по встречной, пока смещение плавно переползало
+        // через середину дороги
+        m.across = m.dir * world.shapes[m.shape].halfWidth * 0.5;
       }
     }
 
@@ -626,7 +942,7 @@ export function moveTraffic(
     m.across += Math.max(-0.9 * dt, Math.min(0.9 * dt, wantSide - m.across));
 
     // курс догоняет дорогу, а не прыгает вместе с ней
-    const want = poseOf(world, m).yaw;
+    const want = poseOf(world, net, m).yaw;
     const turn = Math.atan2(Math.sin(want - m.yaw), Math.cos(want - m.yaw));
     m.yaw += Math.max(-2.5 * dt, Math.min(2.5 * dt, turn));
   });

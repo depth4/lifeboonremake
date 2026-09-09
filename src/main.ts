@@ -464,7 +464,7 @@ viewer.onFrame((dt) => {
     }
     viewer.setSignals(lamps);
     viewer.setTraffic(traffic.map((m) => {
-      const pose = poseOf(world, m);
+      const pose = poseOf(world, network, m);
       return { x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: m.yaw, colour: m.colour };
     }));
   }

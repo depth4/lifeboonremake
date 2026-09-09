@@ -39,6 +39,16 @@ export interface Signal {
   readonly offset: number;
 }
 
+/**
+ * Где стоп-линия: метр на дороге, за которым дорога кончается и начинается
+ * сам перекрёсток. Одна формула на весь город — и светофор, и трафик берут
+ * край перекрёстка отсюда. Второго способа мерить этот край нет, и потому
+ * «стоп-линия в одном месте, а перекрёсток начинается в другом» невыразимо.
+ */
+export function stopLine(halfWidth: number, s: number, dir: number): number {
+  return s - dir * (halfWidth + 2.5);
+}
+
 /** Длительности одной фазы, секунды. */
 export const GREEN = 14;
 export const YELLOW = 4;
@@ -70,7 +80,7 @@ export function buildSignals(world: World): Signal[] {
           dir,
           heading,
           group: Math.abs(Math.cos(heading)) > Math.abs(Math.sin(heading)) ? 0 : 1,
-          stopS: station.s - dir * (shape.halfWidth + 2.5),
+          stopS: stopLine(shape.halfWidth, station.s, dir),
         });
       }
     });

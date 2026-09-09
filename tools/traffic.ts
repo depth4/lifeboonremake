@@ -8,7 +8,7 @@
 
 import { SCENES } from '../src/scenes.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
-import { along, buildNetwork, moveTraffic, placeTraffic, poseOf, watch } from '../src/city/traffic.ts';
+import { along, buildNetwork, moveTraffic, placeTraffic, poseOf, touching, watch } from '../src/city/traffic.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
 import { walkLight } from '../src/city/signals.ts';
 
@@ -34,6 +34,19 @@ const wasParked = movers.map(() => false);
 const walked = walkers.map(() => 0);
 const wasBefore = movers.map(() => true); // ещё не пересекли стоп-линию
 let closest = Infinity, turns = 0, moved = 0;
+/**
+ * Кто именно и когда сошёлся ближе всех. Без этого «самое тесное 89%» —
+ * цифра, с которой нечего делать: приходится писать второй инструмент,
+ * чтобы узнать, кто это был.
+ */
+let tightest = { at: 0, who: '' };
+const tell = (m: (typeof movers)[number], i: number): string => {
+  const p = poseOf(world, net, m);
+  return `#${i} дорога ${m.shape} dir ${m.dir} s ${m.s.toFixed(1)} вбок ${m.across.toFixed(1)} `
+    + `${(m.speed * 3.6).toFixed(0)} км/ч «${m.reason}» `
+    + `${m.route === null ? 'едет прямо' : `узел ${m.route.junction}→дорога ${m.route.shape}`} `
+    + `xz ${p.x.toFixed(1)},${p.z.toFixed(1)}`;
+};
 const startShapes = movers.map((m) => m.shape);
 const startS = movers.map((m) => m.s);
 
@@ -78,7 +91,7 @@ for (let t = 0; t < 120; t += DT) {
   // проезд на красный ловится в МИГ пересечения стоп-линии: въехал на жёлтый
   // и доехал на красном — это не нарушение, а именно так и надо
   movers.forEach((m, i) => {
-    const w = watch(net, m, t);
+    const w = watch(world, net, m, t);
     const before = w === null ? true : w.stopGap > 0;
     if (wasBefore[i] && !before && w !== null && w.light === 'красный' && m.speed > 1) ranRed++;
     wasBefore[i] = before;
@@ -87,28 +100,25 @@ for (let t = 0; t < 120; t += DT) {
   // столкновения: меряем настоящее расстояние между машинами, а не вдоль
   // дороги — на перекрёстке они на разных дорогах
   /**
-   * Столкновение — это НАЛОЖЕНИЕ ГАБАРИТОВ, а не близость центров. Первая
-   * версия проверки считала столкновением встречный разъезд по узкой улице:
-   * там центры в трёх с половиной метрах, и это совершенно нормально.
-   * Считаем расстояние в осях самой машины: вдоль неё 4.4 м, поперёк 1.9.
+   * Столкновение — это НАЛОЖЕНИЕ ГАБАРИТОВ, а не близость центров: встречный
+   * разъезд по узкой улице держит центры в трёх с половиной метрах, и это
+   * совершенно нормально. Меру берём ту же, по которой решает сам город
+   * (`touching`): пока определений было два, город считал, что проехал,
+   * а проверка — что задел, и спорить с этим было нечем.
    */
   for (const j of world.junctions) {
-    const box = movers.map((m) => poseOf(world, m))
+    const box = movers.map((m) => poseOf(world, net, m))
       .filter((p) => Math.hypot(p.x - j.x, p.z - j.z) < 12);
     for (let i = 0; i < box.length; i++)
       for (let k = i + 1; k < box.length; k++) {
-        const dx = box[k].x - box[i].x, dz = box[k].z - box[i].z;
-        const fx = Math.cos(box[i].yaw), fz = Math.sin(box[i].yaw);
-        const along = Math.abs(dx * fx + dz * fz);
-        const across = Math.abs(-dx * fz + dz * fx);
-        const overlap = Math.max(along / 4.4, across / 1.95);
+        const overlap = touching(box[i], box[k]);
         if (overlap < closestPair) closestPair = overlap;
         if (overlap < 1) inBoxTogether++;
       }
   }
   for (const m of movers) {
     reasons[m.reason] = (reasons[m.reason] ?? 0) + 1;
-    const pose = poseOf(world, m);
+    const pose = poseOf(world, net, m);
     if (!Number.isFinite(pose.x) || !Number.isFinite(pose.z)) { offRoad++; continue; }
     const near = nearestRoad(world, pose.x, pose.z);
     const off = near === null ? 99 : near.distance - near.halfWidth;
@@ -122,15 +132,15 @@ for (let t = 0; t < 120; t += DT) {
    * в кармане и едущая мимо имеют один и тот же метр, но не сталкиваются.
    */
   {
-    const P = movers.map((m) => poseOf(world, m));
+    const P = movers.map((m) => poseOf(world, net, m));
     for (let i = 0; i < P.length; i++)
       for (let j = i + 1; j < P.length; j++) {
-        const dx = P[j].x - P[i].x, dz = P[j].z - P[i].z;
-        if (Math.abs(dx) > 9 || Math.abs(dz) > 9) continue;
-        const fx = Math.cos(P[i].yaw), fz = Math.sin(P[i].yaw);
-        const alongIt = Math.abs(dx * fx + dz * fz) / 4.4;
-        const acrossIt = Math.abs(-dx * fz + dz * fx) / 1.95;
-        closest = Math.min(closest, Math.max(alongIt, acrossIt));
+        if (Math.abs(P[j].x - P[i].x) > 9 || Math.abs(P[j].z - P[i].z) > 9) continue;
+        const near = touching(P[i], P[j]);
+        if (near < closest) {
+          closest = near;
+          tightest = { at: t, who: `${tell(movers[i], i)}\n      против ${tell(movers[j], j)}` };
+        }
       }
   }
 }
@@ -152,8 +162,9 @@ movers.forEach((m, i) => {
 let wrongSide = 0;
 let sideSample = 0;
 for (const m of movers) {
+  if (m.route !== null) continue; // внутри перекрёстка машина не на полосе
   const axis = along(world, m.shape, m.s);
-  const pose = poseOf(world, m);
+  const pose = poseOf(world, net, m);
   const fx = Math.cos(pose.yaw), fz = Math.sin(pose.yaw);
   const dx = pose.x - axis.x, dz = pose.z - axis.z;
   const side = fx * dz - fz * dx; // > 0 — справа по ходу
@@ -193,17 +204,15 @@ function playerScene(blind: boolean): { held: number; hit: number; closest: numb
   // подъезжающего сажаем руками: сцена не должна зависеть от везения
   const test = cars[0];
   test.shape = road; test.dir = 1; test.s = lo + 5; test.across = lane;
-  test.speed = 11; test.park = null; test.claim = -1; test.cruise = 14;
+  test.speed = 11; test.park = null; test.route = null; test.cruise = 14;
 
   let held = 0, hit = 0, closest = Infinity, approached = Infinity;
   for (let t = 0; t < 25; t += DT) {
     moveTraffic(world, net, cars, DT, t, { player: blind ? null : me });
     if (test.reason === 'игрок') held++;
-    const pose = poseOf(world, test);
-    const dx = me.x - pose.x, dz = me.z - pose.z;
-    const fx = Math.cos(pose.yaw), fz = Math.sin(pose.yaw);
+    const pose = poseOf(world, net, test);
     // то же наложение габаритов, что и между чужими машинами
-    const overlap = Math.max(Math.abs(dx * fx + dz * fz) / 4.4, Math.abs(-dx * fz + dz * fx) / 1.95);
+    const overlap = touching(pose, me);
     closest = Math.min(closest, overlap);
     approached = Math.min(approached, (at - test.s) - 4.4);
     if (overlap < 1) hit++;
@@ -262,6 +271,9 @@ let bad = 0;
 for (const [name, ok, detail] of checks) {
   if (!ok) bad++;
   console.log(`  ${ok ? '✓' : '✗'} ${name.padEnd(36, '.')} ${detail}`);
+}
+if (closest <= 1) {
+  console.log(`\n  кто именно, на ${tightest.at.toFixed(1)} с:\n      ${tightest.who}`);
 }
 console.log(bad === 0 ? '\nТРАФИК В ПОРЯДКЕ\n' : `\nТРАФИК ПРОВАЛЕН: ${bad}\n`);
 process.exit(bad > 0 ? 1 : 0);

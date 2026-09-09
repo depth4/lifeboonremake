@@ -114,7 +114,23 @@ const grabbed = await car();
 
 const spawn = await car();
 await page.evaluate(() => { window.__yaw0 = window.__car().yaw; });
-await page.screenshot({ path: 'shots/ride-1-стоим.png' });
+/**
+ * Снимок — это доказательство, а не утверждение. Если браузер завис на
+ * загрузке шрифтов, приговор поездке от этого не меняется: пробуем ещё раз,
+ * не вышло — говорим вслух и едем дальше. Проверку это не ослабляет:
+ * ни одна галочка на снимках не держится.
+ */
+let missed = 0;
+const shot = async (name) => {
+  for (const wait of [8000, 20000]) {
+    try { await page.screenshot({ path: `shots/${name}.png`, timeout: wait }); return; }
+    catch { /* пробуем ещё раз */ }
+  }
+  missed++;
+  console.log(`  ! снимок «${name}» не получился — браузер не отдал картинку`);
+};
+
+await shot('ride-1-стоим');
 
 // Эталон считается ДО того, как машина тронется: пока Node занят счётом,
 // браузер продолжает жить, и время в нём идёт. Первая версия проверки на
@@ -127,14 +143,14 @@ const REFERENCE = referenceHundred(spawn);
 await page.keyboard.down('w');
 const start = await until('газ появился', 'газ', 10000);
 const hundred = await until('разгон до 100 км/ч', 'сотня');
-await page.screenshot({ path: 'shots/ride-2-разгон.png' });
+await shot('ride-2-разгон');
 
 // 2. ТОРМОЗ в пол до полной остановки, пока не уехали далеко.
 await page.keyboard.up('w');
 await page.keyboard.down('s');
 const stopped = await until('полная остановка', 'стоп');
 await page.keyboard.up('s');
-await page.screenshot({ path: 'shots/ride-3-встали.png' });
+await shot('ride-3-встали');
 await page.waitForTimeout(500);
 
 // 3. ПОМОЩЬ РУЛЮ — на шестидесяти. Там предел по сцеплению уже работает
@@ -156,7 +172,7 @@ await page.keyboard.press('g');
 
 // 4. ПОВОРОТ — руль уже вывернут, ждём, пока курс изменится заметно.
 const turned = await until('поворот', 'поворот', 30000);
-await page.screenshot({ path: 'shots/ride-4-поворот.png' });
+await shot('ride-4-поворот');
 // Просто тормозим пару секунд и едем дальше. Ждать полной остановки тут
 // незачем: торможение уже проверено отдельно, а ожидание хрупкое —
 // на траве машина может докатываться дольше любого срока.
@@ -169,7 +185,7 @@ await page.keyboard.up('s');
 // и на неё можно посмотреть со стороны — проверка глазами.
 await page.keyboard.press('Enter'); // выйти из машины: она остаётся стоять
 await page.waitForTimeout(1600);
-await page.screenshot({ path: 'shots/ride-5-стоит.png' });
+await shot('ride-5-стоит');
 
 // 6. ТРАФИК. Включаем в самом конце и отдельно: восемнадцать чужих машин
 // заметно роняют частоту кадров в безголовом браузере, а ездовые проверки
@@ -182,10 +198,14 @@ const trafficAfter = await page.evaluate(() => window.__traffic());
 // смотрим на весь квартал: иначе камера стоит у машины игрока и чужих не видно
 await page.click('button[data-view="road"]');
 await page.waitForTimeout(2600);
-await page.screenshot({ path: 'shots/ride-6-трафик.png' });
+await shot('ride-6-трафик');
 await page.click('button[data-view="over"]');
 await page.waitForTimeout(2600);
-await page.screenshot({ path: 'shots/ride-7-сверху.png' });
+await shot('ride-7-сверху');
+// один перекрёсток крупно: пути через него и кто кого пропускает
+await page.click('button[data-view="node"]');
+await page.waitForTimeout(6000);
+await shot('ride-9-перекрёсток');
 
 // 7. ВИД ИЗ САЛОНА, уже среди трафика и светофоров. Машину сначала ставим
 // обратно на дорогу: к концу поездки она стоит в поле, и оттуда не видно города
@@ -198,7 +218,7 @@ await page.keyboard.down('w');
 await page.waitForTimeout(2500);
 await page.keyboard.up('w');
 await page.waitForTimeout(300);
-await page.screenshot({ path: 'shots/ride-8-из-салона.png' });
+await shot('ride-8-из-салона');
 
 await browser.close();
 
@@ -236,6 +256,7 @@ for (const [name, ok, detail] of checks) {
   console.log(`  ${ok ? '✓' : '✗'} ${name.padEnd(32, '.')} ${detail}`);
 }
 for (const p of problems) console.log('  ✗ ' + p);
+if (missed > 0) console.log(`  снимков не получилось: ${missed} — приговор от них не зависит`);
 console.log(bad + problems.length === 0 ? '\nПОЕЗДКА ПРОЙДЕНА\n' : `\nПОЕЗДКА ПРОВАЛЕНА: ${bad + problems.length}\n`);
 
 server.close().catch(() => {});
