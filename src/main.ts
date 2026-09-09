@@ -12,7 +12,7 @@ import { GroundIndex } from './car/ground.ts';
 import { VIPER } from './car/passport.ts';
 import { P_ZERO } from './car/tyre.ts';
 import { type Car, createCar, forwardSpeed, step } from './car/car.ts';
-import { SCHEMES, createDriver } from './car/controls.ts';
+import { createDriver } from './car/controls.ts';
 
 const query = new URLSearchParams(location.search);
 const startView = query.get('view') ?? 'road';
@@ -296,7 +296,7 @@ let car: Car | null = null;
 /** Машина остаётся в мире, когда из неё вышли: просто перестаёт считаться. */
 let driving = false;
 const spinAngle = [0, 0, 0, 0];
-const driver = createDriver(canvas ?? document.body);
+const driver = createDriver();
 const dash = document.getElementById('dash');
 
 /**
@@ -315,6 +315,8 @@ function spawnCar(): Car {
 
 function seat(on: boolean): void {
   if (on && car === null) car = spawnCar();
+  // где рука в этот миг — там и «прямо»: иначе руль сразу в упоре
+  if (on) driver.anchor();
   driving = on;
   viewer.setChase(on);
   if (dash) dash.hidden = !on;
@@ -335,15 +337,14 @@ function drivePanel(): void {
   if (!panel) return;
   panel.innerHTML =
     `<button type="button" data-drive="seat" aria-pressed="${driving}">за руль</button>` +
-    `<button type="button" class="plain" data-drive="scheme">${SCHEMES.find((s) => s.id === driver.scheme)?.label}</button>` +
-    `<button type="button" class="plain" data-drive="centre" aria-pressed="${driver.selfCentre}">возврат руля</button>` +
+    `<button type="button" class="plain" data-drive="assist" aria-pressed="${driver.assist}">помощь рулю</button>` +
     (car === null ? '' : '<button type="button" class="plain" data-drive="park">убрать машину</button>');
   const tip = el('d-tip');
   if (tip) {
-    const hint = SCHEMES.find((s) => s.id === driver.scheme)?.hint ?? '';
     tip.textContent = driver.pad()
-      ? 'геймпад подключён: стики и курки главнее мыши'
-      : `${hint}. X — ручник, R — отпустить руль, [ и ] — чувствительность руля`;
+      ? 'геймпад подключён: левый стик — руль, курки — газ и тормоз'
+      : 'мышь влево-вправо — руль: где курсор, там и руль. W/S — газ и тормоз, '
+        + 'Shift — в пол, X — ручник, R — перехватить руль, [ и ] — острота';
   }
 }
 
@@ -353,12 +354,8 @@ el('drive')?.addEventListener('click', (event) => {
   const what = button.dataset.drive;
   if (what === 'seat') seat(!driving);
   else if (what === 'park') { car = null; driving = false; viewer.setCar(null); viewer.setChase(false); if (dash) dash.hidden = true; drivePanel(); }
-  else if (what === 'scheme') {
-    const i = SCHEMES.findIndex((s) => s.id === driver.scheme);
-    driver.scheme = SCHEMES[(i + 1) % SCHEMES.length].id;
-    drivePanel();
-  } else if (what === 'centre') {
-    driver.selfCentre = !driver.selfCentre;
+  else if (what === 'assist') {
+    driver.assist = !driver.assist;
     drivePanel();
   }
 });
@@ -370,14 +367,14 @@ let bank = 0;
 /** Сколько секунд насчитала физика. Не то же, что время на часах. */
 let simTime = 0;
 
-let lastControls = { steer: 0, throttle: 0, brake: 0, handbrake: false };
+let lastControls = { steer: 0, throttle: 0, brake: 0, handbrake: false, assist: true };
 
 viewer.onFrame((dt) => {
   if (car === null) return;
   const speed = forwardSpeed(car);
   const controls = driving
-    ? driver.read(dt, speed)
-    : { steer: 0, throttle: 0, brake: 1, handbrake: true };
+    ? driver.read(dt)
+    : { steer: 0, throttle: 0, brake: 1, handbrake: true, assist: false };
   lastControls = controls;
 
   bank = driving ? Math.min(bank + dt, 0.3) : 0;
@@ -416,9 +413,14 @@ viewer.onFrame((dt) => {
   const brake = el('d-brake');
   if (brake) brake.style.height = `${controls.brake * 100}%`;
   const sens = el('d-sens');
-  if (sens) sens.textContent = `руль ${driver.sensitivity} px`;
+  if (sens) sens.textContent = `острота ${(driver.share * 100).toFixed(0)}%`;
+  // руль показывает две вещи: куда просит игрок и где колёса на самом деле
   const wheelMark = el('d-wheel');
-  if (wheelMark) wheelMark.setAttribute('transform', `rotate(${(-car.steer / VIPER.steerLock) * 240})`);
+  if (wheelMark) wheelMark.setAttribute('transform', `rotate(${-driver.command * 240})`);
+  const realMark = el('d-real');
+  if (realMark) realMark.setAttribute('transform', `rotate(${(-car.steer / VIPER.steerLock) * 240})`);
+  const hand = el('d-hand');
+  if (hand) hand.style.left = `${50 + driver.command * 50}%`;
   const grips = el('d-grips');
   if (grips) {
     if (grips.children.length !== 4) grips.innerHTML = '<i></i><i></i><i></i><i></i>';
@@ -442,6 +444,8 @@ viewer.onFrame((dt) => {
 (window as unknown as { __car?: () => unknown }).__car = () => (car === null ? null : {
   x: car.x, z: car.z, yaw: car.yaw, speed: forwardSpeed(car),
   gear: car.gear, reverse: car.reverse, rpm: car.rpm, sim: simTime,
+  steer: car.steer, neutral: car.neutral, helped: car.helped, command: driver.command,
+  lock: VIPER.steerLock, assist: driver.assist,
   materials: car.wheels.map((w) => w.material),
   loads: car.wheels.map((w) => Math.round(w.load)),
   use: car.wheels.map((w) => Number(w.use.toFixed(2))),

@@ -241,7 +241,20 @@
       .ped { width: 11px; height: 46px; background: rgba(233, 236, 233, 0.12); display: flex; align-items: flex-end; }
       .ped i { display: block; width: 100%; height: 0; background: #7fc46b; }
       .ped i.red { background: #e0483f; }
-      .wheel { width: 46px; height: 46px; color: var(--text); }
+      .tiller { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+      .wheel { width: 62px; height: 62px; color: var(--text); }
+      .rail {
+        position: relative; width: 96px; height: 3px;
+        background: rgba(233, 236, 233, 0.16);
+      }
+      .rail::before {
+        content: ''; position: absolute; left: 50%; top: -3px; width: 1px; height: 9px;
+        background: rgba(233, 236, 233, 0.45);
+      }
+      .rail i {
+        position: absolute; top: -3px; left: 50%; width: 3px; height: 9px;
+        background: var(--mark); transform: translateX(-50%);
+      }
       .grips { display: grid; grid-template-columns: 12px 12px; gap: 4px; }
       .grips i { width: 12px; height: 16px; background: rgba(233, 236, 233, 0.16); display: block; }
       .dash .tip { margin: 0; max-width: 240px; font-size: 11px; line-height: 1.45; color: var(--muted); }
@@ -288,11 +301,17 @@
           <div class="ped"><i id="d-gas"></i></div>
           <div class="ped"><i id="d-brake" class="red"></i></div>
         </div>
-        <svg class="wheel" viewBox="-12 -12 24 24" aria-label="Положение руля">
-          <circle r="10.5" fill="none" stroke="currentColor" stroke-width="1.6" opacity="0.45" />
-          <g id="d-wheel"><path d="M0 -10.5 V-4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
-          <path d="M-9 4 H9" stroke="currentColor" stroke-width="1.8" opacity="0.75" /></g>
-        </svg>
+        <div class="tiller">
+          <svg class="wheel" viewBox="-14 -14 28 28" aria-label="Положение руля">
+            <circle r="12" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.3" />
+            <path d="M0 -13.6 V-11" stroke="currentColor" stroke-width="1.4" opacity="0.5" />
+            <g id="d-real" opacity="0.45"><path d="M0 -12 V-4.5" stroke="currentColor" stroke-width="3.4"
+              stroke-linecap="round" /></g>
+            <g id="d-wheel"><path d="M0 -12 V-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              <path d="M-10.4 3.4 H10.4" stroke="currentColor" stroke-width="1.4" opacity="0.8" /></g>
+          </svg>
+          <div class="rail"><i id="d-hand"></i></div>
+        </div>
         <div class="grips" id="d-grips"></div>
         <p class="tip" id="d-tip"></p>
       </div>

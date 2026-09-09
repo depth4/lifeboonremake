@@ -28,8 +28,9 @@ const FLAT = (): Spot => ({ height: 0, nx: 0, ny: 1, nz: 0, material: 'asphalt' 
 
 const P = broken ? { ...VIPER, cgHeight: 0 } : VIPER; // высота ЦМ = 0 убивает перенос веса
 
+// Помощь рулю здесь ВЫКЛЮЧЕНА: проверка меряет машину, а не помощь водителю.
 const drive = (throttle: number, brake = 0, steer = 0): Controls =>
-  ({ throttle, brake, steer, handbrake: false });
+  ({ throttle, brake, steer, handbrake: false, assist: false });
 
 /**
  * Разгон с места. Газ не «в пол», а через противобуксовочную: она держит
@@ -38,12 +39,12 @@ const drive = (throttle: number, brake = 0, steer = 0): Controls =>
  * и замеренные 3.7 секунды сделаны именно с ним. Без него 640 сил просто
  * жгут резину, и это модель показывает честно (см. ниже «в пол»).
  */
-function launch(assist = true): { sixty: number; hundred: number; quarter: number; trap: number } {
+function launch(traction = true): { sixty: number; hundred: number; quarter: number; trap: number } {
   const car = createCar(P, 0, 0, 0);
   let t = 0, x = 0, sixty = NaN, hundred = NaN, quarter = NaN, trap = NaN;
   while (t < 40) {
     const slip = (car.wheels[2].slip + car.wheels[3].slip) / 2;
-    const gas = assist ? Math.max(0, Math.min(1, 1 - (slip / P_ZERO.peakSlip - 1) * 2.5)) : 1;
+    const gas = traction ? Math.max(0, Math.min(1, 1 - (slip / P_ZERO.peakSlip - 1) * 2.5)) : 1;
     step(car, P, P_ZERO, FLAT, drive(gas), DT);
     const v = forwardSpeed(car);
     x += v * DT; t += DT;

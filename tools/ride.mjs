@@ -37,14 +37,16 @@ function referenceHundred(from) {
   let gas = 0;
   for (let t = 0; t < 40; t += dt) {
     gas = Math.min(0.85, gas + dt / 0.22); // тот же ход педали, что у клавиши W
-    step(car, VIPER, P_ZERO, (x, z) => index.sample(x, z), { steer: 0, throttle: gas, brake: 0, handbrake: false }, dt);
+    step(car, VIPER, P_ZERO, (x, z) => index.sample(x, z), { steer: 0, throttle: gas, brake: 0, handbrake: false, assist: false }, dt);
     if (forwardSpeed(car) >= 100 / 3.6) return t;
   }
   return NaN;
 }
 
 const PORT = 5202;
-const scene = process.argv[2] ?? 'крест';
+// «решётка» — квартал 230×230 с четырьмя перекрёстками. На «кресте» дорога
+// просто кончается: машина на сотне проезжает её за восемь секунд.
+const scene = process.argv[2] ?? 'решётка';
 const terrain = process.argv[3] ?? 'plain';
 const OPTIONAL = /fonts\.(googleapis|gstatic)\.com/;
 
@@ -75,6 +77,7 @@ async function until(name, mark, limit = 45000) {
       if (c === null) return false;
       const hit =
         m === 'газ' ? c.throttle > 0.05
+        : m === 'шестьдесят' ? c.speed * 3.6 >= 60
         : m === 'сотня' ? c.speed * 3.6 >= 100
         : m === 'поворот' ? Math.abs(c.yaw - window.__yaw0) > 0.8
         : Math.abs(c.speed) * 3.6 < 1.5;
@@ -102,41 +105,52 @@ await page.screenshot({ path: 'shots/ride-1-стоим.png' });
 // этом и обманулась — приписала разгону целую секунду стояния на месте.
 const REFERENCE = referenceHundred(spawn);
 
-// Разгон. Отсчёт ведём НЕ от нажатия клавиши, а от мига, когда физика
-// увидела газ: между этими двумя событиями лежит неизвестная задержка
-// браузера, и из-за неё первая версия проверки то проходила, то падала.
+// 1. РАЗГОН. Отсчёт ведём НЕ от нажатия клавиши, а от мига, когда физика
+// увидела газ: между этими событиями лежит неизвестная задержка браузера,
+// и из-за неё первая версия проверки то проходила, то падала.
 await page.keyboard.down('w');
 const start = await until('газ появился', 'газ', 10000);
 const hundred = await until('разгон до 100 км/ч', 'сотня');
-await page.keyboard.up('w');
 await page.screenshot({ path: 'shots/ride-2-разгон.png' });
 
-// тормоз в пол до полной остановки — сразу, пока не уехали за край сцены
+// 2. ТОРМОЗ в пол до полной остановки, пока не уехали далеко.
+await page.keyboard.up('w');
 await page.keyboard.down('s');
 const stopped = await until('полная остановка', 'стоп');
 await page.keyboard.up('s');
 await page.screenshot({ path: 'shots/ride-3-встали.png' });
-await page.waitForTimeout(400);
+await page.waitForTimeout(500);
 
-// поворот: трогаемся и крутим руль вправо, пока курс не изменится заметно
+// 3. ПОМОЩЬ РУЛЮ — на шестидесяти. Там предел по сцеплению уже работает
+// полностью, но машина ещё не сходит с ума: на сотне полный выворот без
+// помощи разворачивает её на месте, и всё, что идёт следом, теряет смысл.
 await page.evaluate(() => { window.__yaw0 = window.__car().yaw; });
 await page.keyboard.down('w');
-await page.keyboard.down('d');
-const turned = await until('поворот', 'поворот', 30000);
-await page.keyboard.up('d');
+await until('разгон до шестидесяти', 'шестьдесят', 25000);
 await page.keyboard.up('w');
+await page.mouse.move(1040, 500);
+await page.waitForTimeout(350);
+const withHelp = await car();
+await page.click('button[data-drive="assist"]');
+await page.waitForTimeout(350);
+const noHelp = await car();
+await page.click('button[data-drive="assist"]');
+
+// 4. ПОВОРОТ — руль уже вывернут, ждём, пока курс изменится заметно.
+const turned = await until('поворот', 'поворот', 30000);
 await page.screenshot({ path: 'shots/ride-4-поворот.png' });
+await page.mouse.move(800, 500);
 await page.keyboard.down('s');
 await until('остановка после поворота', 'стоп');
 await page.keyboard.up('s');
 
-// поставить машину обратно на дорогу и выйти из неё: она остаётся стоять,
-// и на неё можно посмотреть со стороны — это и есть проверка глазами
+// 5. Поставить машину обратно на дорогу и выйти: она остаётся стоять,
+// и на неё можно посмотреть со стороны — проверка глазами.
 await page.click('button[data-drive="park"]');
 await page.click('button[data-drive="seat"]');
 await page.waitForTimeout(400);
 await page.click('button[data-drive="seat"]');
-await page.waitForTimeout(1200);
+await page.waitForTimeout(1400);
 await page.screenshot({ path: 'shots/ride-5-стоит.png' });
 
 await browser.close();
@@ -158,7 +172,11 @@ const checks = [
   ['повернула по рулю', Math.abs(turned.yaw - start.yaw) > 0.7, `${((turned.yaw - start.yaw) * 180 / Math.PI).toFixed(0)}°`],
   ['встала от тормоза', Math.abs(stopped.speed) * 3.6 < 1.5, `${(stopped.speed * 3.6).toFixed(1)} км/ч`],
   ['ни разу не потеряла опору', !start.lost && !hundred.lost && !turned.lost && !stopped.lost, 'колёса на поверхности'],
-  ['осталась в пределах квартала', Math.hypot(turned.x, turned.z) < 130, `${Math.hypot(turned.x, turned.z).toFixed(0)} м от центра`],
+  ['осталась в пределах квартала', Math.hypot(turned.x, turned.z) < 175, `${Math.hypot(turned.x, turned.z).toFixed(0)} м от центра`],
+  ['мышь выворачивает руль до упора', Math.abs(noHelp.command) > 0.95, `${(noHelp.command * 100).toFixed(0)}% хода`],
+  ['помощь держит колёса в пределе сцепления',
+    Math.abs(withHelp.steer) < Math.abs(noHelp.steer) * 0.6,
+    `${(Math.abs(withHelp.steer) * 180 / Math.PI).toFixed(1)}° с помощью против ${(Math.abs(noHelp.steer) * 180 / Math.PI).toFixed(1)}° без неё, упор ${(noHelp.lock * 180 / Math.PI).toFixed(1)}°`],
 ];
 console.log('');
 let bad = 0;

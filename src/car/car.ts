@@ -23,6 +23,8 @@ export interface Controls {
   readonly throttle: number;
   readonly brake: number;
   readonly handbrake: boolean;
+  /** Помощь рулю: предел по сцеплению и контрруль. См. `steerHelp`. */
+  readonly assist: boolean;
 }
 
 export interface Wheel {
@@ -65,6 +67,10 @@ export interface Car {
   /** Сглаженные ускорения от шин — ими двигается вес. */
   accLong: number;
   accLat: number;
+  /** Угол колёс, при котором они смотрят туда, куда машина едет на самом деле. */
+  neutral: number;
+  /** Насколько помощь изменила запрошенный угол, рад. Для приборки. */
+  helped: number;
   /** Для показа: где кузов и как наклонён. */
   bodyY: number;
   pitch: number;
@@ -92,7 +98,7 @@ export function createCar(p: Passport, x: number, z: number, yaw: number): Car {
       wheel(-b, -p.trackRear / 2, false),
     ],
     gear: 0, reverse: false, rpm: p.idleRpm, shiftLeft: 0, stopHold: 0,
-    accLong: 0, accLat: 0, bodyY: 0, pitch: 0, roll: 0,
+    accLong: 0, accLat: 0, neutral: 0, helped: 0, bodyY: 0, pitch: 0, roll: 0,
   };
 }
 
@@ -102,6 +108,41 @@ export const forwardSpeed = (car: Car): number =>
 
 export type Sampler = (x: number, z: number) => Spot;
 
+/**
+ * Помощь рулю — ровно то, что делают BeamNG и Assetto Corsa, и по той же
+ * причине: у человека с мышью нет обратной связи, и он не чувствует, что
+ * передние колёса уже сорвались или что машину развернуло.
+ *
+ * 1. **Предел по сцеплению.** Угол ограничен полосой шириной в пик увода
+ *    вокруг «нейтрали» — того угла, при котором колёса смотрят туда, куда
+ *    машина реально едет. Просить у шины больше её пика бессмысленно: за
+ *    пиком она держит хуже. На малой скорости предел выключен, иначе не
+ *    припарковаться.
+ * 2. **Контрруль (кастор).** Настоящий руль тянет не к нулю, а к направлению
+ *    движения. На прямой это возврат в ноль, в заносе — доворот в занос.
+ *    Тянет слабо: держать поворот это не мешает, а поймать занос помогает.
+ */
+function steerHelp(
+  car: Car, p: Passport, tyre: Tyre, wanted: number, u: number,
+): { angle: number; helped: number } {
+  const speed = Math.abs(u);
+  const asked = wanted;
+
+  // 1. предел: полностью с 60 км/ч, выключен ниже 25
+  const bite = Math.min(1, Math.max(0, (speed - 7) / 10));
+  if (bite > 0) {
+    const band = tyre.peakAngle * 1.15;
+    const capped = clamp(wanted, car.neutral - band, car.neutral + band);
+    wanted = wanted * (1 - bite) + capped * bite;
+  }
+
+  // 2. кастор: чем быстрее, тем сильнее тянет к направлению движения
+  const caster = Math.min(1, speed / 12) * 0.3;
+  wanted += (car.neutral - wanted) * caster;
+
+  return { angle: wanted, helped: wanted - asked };
+}
+
 export function step(
   car: Car,
   p: Passport,
@@ -110,14 +151,23 @@ export function step(
   controls: Controls,
   dt: number,
 ): void {
-  // ── руль: колёса доходят до заданного угла не мгновенно, а со скоростью рук
-  const wanted = clamp(controls.steer, -1, 1) * p.steerLock;
-  const swing = p.steerRate * dt;
-  car.steer += clamp(wanted - car.steer, -swing, swing);
-
   const cos = Math.cos(car.yaw), sin = Math.sin(car.yaw);
   const u = car.vx * cos + car.vz * sin;          // вперёд
   const v = -car.vx * sin + car.vz * cos;         // влево
+
+  // ── руль
+  let wanted = clamp(controls.steer, -1, 1) * p.steerLock;
+  car.neutral = Math.atan2(v + car.yawRate * frontArm(p), Math.max(Math.abs(u), 1)) * Math.sign(u || 1);
+  if (controls.assist) {
+    const help = steerHelp(car, p, tyre, wanted, u);
+    wanted = help.angle;
+    car.helped = help.helped;
+  } else {
+    car.helped = 0;
+  }
+  // колёса доходят до заданного угла не мгновенно, а со скоростью рук
+  const swing = p.steerRate * dt;
+  car.steer += clamp(wanted - car.steer, -swing, swing);
 
   // ── задний ход: если стоим и держим тормоз, «тормоз» становится задней тягой
   if (Math.abs(u) < 0.4 && controls.brake > 0.15) car.stopHold += dt;
