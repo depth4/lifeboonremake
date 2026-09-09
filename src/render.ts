@@ -175,7 +175,13 @@ export interface Viewer {
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
-  setTraffic(cars: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
+  setTraffic(cars: readonly {
+    x: number; y: number; z: number; yaw: number; colour: number;
+    /** Поворотник: −1 левый, +1 правый, 0 погашен. */
+    blink?: -1 | 0 | 1;
+    /** Горят ли стоп-сигналы. */
+    brake?: boolean;
+  }[]): void;
   /** Светофоры: где стоят и каким цветом горят. */
   setSignals(lamps: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
   /** Пешеходы. */
@@ -332,6 +338,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   // видеокарта задыхается от отдельных вызовов
   let trafficBody: THREE.InstancedMesh | null = null;
   let trafficWheels: THREE.InstancedMesh | null = null;
+  let trafficLamps: THREE.InstancedMesh | null = null;
   let signalPoles: THREE.InstancedMesh | null = null;
   let signalHeads: THREE.InstancedMesh | null = null;
   let walkerMesh: THREE.InstancedMesh | null = null;
@@ -504,11 +511,13 @@ export function show(surface: Surface, startView: string, custom: View | null = 
     },
     setTraffic(cars) {
       if (trafficBody !== null && trafficBody.count !== cars.length) {
-        scene.remove(trafficBody, trafficWheels as THREE.Object3D);
+        scene.remove(trafficBody, trafficWheels as THREE.Object3D, trafficLamps as THREE.Object3D);
         trafficBody.dispose();
         trafficWheels?.dispose();
+        trafficLamps?.dispose();
         trafficBody = null;
         trafficWheels = null;
+        trafficLamps = null;
       }
       if (cars.length === 0) return;
       if (trafficBody === null) {
@@ -521,11 +530,22 @@ export function show(surface: Surface, startView: string, custom: View | null = 
         const wheel = new THREE.CylinderGeometry(0.33, 0.33, 0.23, 14);
         wheel.rotateX(Math.PI / 2);
         trafficWheels = new THREE.InstancedMesh(wheel, wheelMaterial, cars.length * 4);
-        scene.add(trafficBody, trafficWheels);
+        /**
+         * Огни: по фонарю в каждом углу. Материал БЕЗ СВЕТА (basic) — фонарь
+         * должен светиться сам, а не отражать солнце: иначе красный в тени
+         * не отличить от чёрного кузова, и на общем плане фонарей просто нет.
+         */
+        const lamp = new THREE.BoxGeometry(0.34, 0.2, 0.12);
+        trafficLamps = new THREE.InstancedMesh(
+          lamp, new THREE.MeshBasicMaterial(), cars.length * 4,
+        );
+        scene.add(trafficBody, trafficWheels, trafficLamps);
       }
       const m = new THREE.Matrix4();
       const tint = new THREE.Color();
       const corners: [number, number][] = [[1.35, 0.78], [1.35, -0.78], [-1.35, 0.78], [-1.35, -0.78]];
+      // фонари по углам кузова: перёд длиннее колёсной базы, зад тоже
+      const lamps: [number, number][] = [[2.1, 0.72], [2.1, -0.72], [-2.1, 0.72], [-2.1, -0.72]];
       cars.forEach((c, i) => {
         m.makeRotationY(-c.yaw);
         m.setPosition(c.x, c.y, c.z);
@@ -537,10 +557,26 @@ export function show(surface: Surface, startView: string, custom: View | null = 
           wm.setPosition(c.x + ahead * cos - left * sin, c.y + 0.33, c.z + ahead * sin + left * cos);
           (trafficWheels as THREE.InstancedMesh).setMatrixAt(i * 4 + k, wm);
         });
+        /**
+         * Угол горит жёлтым, если с ЕГО стороны включён поворотник; иначе
+         * задний горит красным на торможении; иначе погашен. Право по ходу —
+         * это (−fz, fx), поэтому правый угол лежит в отрицательном «влево».
+         */
+        lamps.forEach(([ahead, left], k) => {
+          const lm = new THREE.Matrix4().makeRotationY(-c.yaw);
+          lm.setPosition(c.x + ahead * cos - left * sin, c.y + 0.62, c.z + ahead * sin + left * cos);
+          (trafficLamps as THREE.InstancedMesh).setMatrixAt(i * 4 + k, lm);
+          const side = left > 0 ? -1 : 1;            // слева от оси — левый борт
+          const turning = (c.blink ?? 0) === side;
+          const lit = turning ? 0xffa415 : (c.brake === true && ahead < 0 ? 0xff2a18 : 0x2a2422);
+          (trafficLamps as THREE.InstancedMesh).setColorAt(i * 4 + k, tint.setHex(lit));
+        });
       });
       trafficBody.instanceMatrix.needsUpdate = true;
       if (trafficBody.instanceColor) trafficBody.instanceColor.needsUpdate = true;
       (trafficWheels as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+      (trafficLamps as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+      if (trafficLamps?.instanceColor) trafficLamps.instanceColor.needsUpdate = true;
     },
     setSignals(lamps) {
       if (signalPoles !== null && signalPoles.count !== lamps.length) {

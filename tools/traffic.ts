@@ -8,7 +8,7 @@
 
 import { SCENES } from '../src/scenes.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
-import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, touching, watch } from '../src/city/traffic.ts';
+import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
 import { walkLight } from '../src/city/signals.ts';
 
@@ -34,6 +34,18 @@ const wasParked = movers.map(() => false);
 const walked = walkers.map(() => 0);
 const wasBefore = movers.map(() => true); // ещё не пересекли стоп-линию
 let closest = Infinity, turns = 0, moved = 0;
+/**
+ * ПОВОРОТНИКИ. Сравнивается не «мигает ли», а «в ту ли сторону»: запоминаем
+ * курс в миг, когда машина выбрала маршрут, и последний зажжённый поворотник,
+ * а на выезде смотрим, куда она на самом деле повернула.
+ *
+ * Тут же считается заведомо перепутанный поворотник — та же проверка на
+ * зеркальном сигнале. Она обязана его поймать, иначе она ничего не проверяет.
+ */
+let signalled = 0, agreed = 0, flipped = 0, braked = 0;
+const blinkOf = movers.map(() => 0);
+const yawAt = movers.map(() => 0);
+const hadRoute = movers.map(() => false);
 /**
  * Кто именно и когда сошёлся ближе всех. Без этого «самое тесное 89%» —
  * цифра, с которой нечего делать: приходится писать второй инструмент,
@@ -87,6 +99,24 @@ for (let t = 0; t < 120; t += DT) {
   });
 
   movers.forEach((m, i) => { travelled[i] += m.speed * DT; });
+
+  movers.forEach((m, i) => {
+    const lights = signalsOf(world, net, m, t);
+    if (lights.brake) braked++;
+    const has = m.route !== null;
+    if (has && !hadRoute[i]) { yawAt[i] = poseOf(world, net, m).yaw; blinkOf[i] = 0; }
+    if (has && lights.blink !== 0) blinkOf[i] = lights.blink;
+    if (!has && hadRoute[i] && blinkOf[i] !== 0) {
+      const now = poseOf(world, net, m).yaw;
+      const turn = Math.atan2(Math.sin(now - yawAt[i]), Math.cos(now - yawAt[i]));
+      if (Math.abs(turn) > 0.35) {
+        signalled++;
+        if (Math.sign(turn) === blinkOf[i]) agreed++;
+        if (Math.sign(turn) === -blinkOf[i]) flipped++;
+      }
+    }
+    hadRoute[i] = has;
+  });
 
   // проезд на красный ловится в МИГ пересечения стоп-линии: въехал на жёлтый
   // и доехал на красном — это не нарушение, а именно так и надо
@@ -327,6 +357,11 @@ const checks: [string, boolean, string][] = [
     `подъехал на ${sees.approached.toFixed(1)} м, ближе всего ${(sees.closest * 100).toFixed(0)}% от касания`],
   ['вслепую — обязан задеть', blind.hit > 0,
     blind.hit > 0 ? `задел ${(blind.hit / 60).toFixed(1)} с, проверка ловит` : 'НЕ ЗАДЕЛ — проверка ничего не проверяет'],
+  ['поворотник показывает ту сторону, куда свернули', signalled > 0 && agreed === signalled,
+    `${agreed} из ${signalled} поворотов`],
+  ['перепутанный поворотник — обязан провалиться', signalled > 0 && flipped === 0,
+    flipped === 0 ? `зеркальный сигнал разошёлся бы во всех ${signalled}` : `${flipped} совпали — проверка слепа`],
+  ['стоп-сигналы вообще загораются', braked > 0, `${((braked / (movers.length * 120 / DT)) * 100).toFixed(0)}% времени`],
   ['удар случился, а не проезд насквозь', crash.knocked, crash.knocked ? 'чужую сбило с полосы' : 'проехал сквозь'],
   ['импульс удара сохранился', crash.knocked && crash.keep < 0.01,
     `${crash.before.toFixed(0)} → ${crash.after.toFixed(0)} кг·м/с, разошлось на ${(crash.keep * 100).toFixed(2)}%`],

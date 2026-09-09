@@ -13,7 +13,7 @@ import { SETUPS, VIPER } from './car/passport.ts';
 import { P_ZERO } from './car/tyre.ts';
 import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.ts';
 import { createDriver } from './car/controls.ts';
-import { type Mover, type Network, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf } from './city/traffic.ts';
+import { type Mover, type Network, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf } from './city/traffic.ts';
 import { lightFor } from './city/signals.ts';
 import { type Walker, moveWalkers, placeWalkers, walkerPose } from './city/walkers.ts';
 
@@ -486,7 +486,11 @@ viewer.onFrame((dt) => {
     viewer.setSignals(lamps);
     viewer.setTraffic(traffic.map((m) => {
       const pose = poseOf(world, network, m);
-      return { x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: m.yaw, colour: m.colour };
+      const lights = signalsOf(world, network, m, cityTime);
+      return {
+        x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: m.yaw, colour: m.colour,
+        blink: lights.blink, brake: lights.brake,
+      };
     }));
   }
   if (car === null) return;

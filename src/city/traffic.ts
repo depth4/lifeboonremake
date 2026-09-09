@@ -102,6 +102,12 @@ export interface Mover {
   /** Что сейчас держит: для приборки и проверок. */
   reason: string;
   /**
+   * Ускорение, с которым едет прямо сейчас, м/с². Не второе состояние,
+   * а опубликованный итог шага — из него берутся стоп-сигналы, и из него же
+   * видно в приборке, кто тормозит.
+   */
+  accel: number;
+  /**
    * Своё зерно случайности. Общий Math.random() делал каждый прогон другим,
    * и проверка переставала быть повторяемой: одна и та же поломка то ловилась,
    * то нет. Теперь выбор поворота зависит только от машины и её пути.
@@ -291,7 +297,7 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
     if (net.nodes[shape].some((n) => Math.abs(n.s - s) < 26)) continue;
     const spot = along(world, shape, s);
     movers.push({
-      shape, s, dir, speed: 8 + next() * 5, wait: 0, reason: 'едет',
+      shape, s, dir, speed: 8 + next() * 5, wait: 0, reason: 'едет', accel: 0,
       seed: Math.floor(next() * 2147483647),
       across: dir * world.shapes[shape].halfWidth * 0.5,
       park: null,
@@ -589,6 +595,31 @@ export function watch(world: World, net: Network, m: Mover, time: number): {
   return { junction: ahead.end.junction, stopGap: ahead.stopGap, centreGap: ahead.centreGap, light };
 }
 
+/** Сколько раз в секунду мигает поворотник: как в жизни, полтора. */
+const BLINK = 1.5;
+
+/**
+ * Что машина показывает другим: поворотник и стоп-сигнал.
+ *
+ * Ничего из этого не хранится. Поворотник берётся из ТОГО ЖЕ маршрута,
+ * по которому машина поедет, — поэтому «мигает налево, а свернула направо»
+ * невыразимо, а не отлавливается. Стоп-сигнал — из ускорения, с которым
+ * она едет прямо сейчас.
+ *
+ * ПДД 8.1: показывать заранее и прекратить сразу после манёвра. Маршрут
+ * появляется за 45 метров до узла и пропадает на выезде — ровно это.
+ */
+export function signalsOf(world: World, net: Network, m: Mover, time: number):
+{ blink: -1 | 0 | 1; brake: boolean } {
+  const brake = m.accel < -0.4 && m.speed > 0.1;
+  if (m.route === null || m.knocked !== null) return { blink: 0, brake };
+  const path = crossPath(world, net, m.shape, m.dir, m.route);
+  // прямо — не мигаем: поворотник на «еду прямо» это не сигнал, а шум
+  if (Math.abs(path.turn) < 0.35) return { blink: 0, brake };
+  const on = Math.floor(time * BLINK * 2) % 2 === 0;
+  return { blink: on ? (path.turn > 0 ? 1 : -1) : 0, brake };
+}
+
 /** Масса чужой машины, кг: обычный седан. */
 const CAR_MASS = 1500;
 /** Её момент инерции вокруг вертикали, кг·м². */
@@ -626,6 +657,7 @@ function rollKnocked(world: World, net: Network, m: Mover, dt: number): void {
   m.yaw = k.yaw;
   m.speed = Math.hypot(k.vx, k.vz);
   m.reason = 'сбит';
+  m.accel = -SLIDE;
 
   k.still = m.speed < 0.4 ? k.still + dt : 0;
   if (k.still > 1.5) {
@@ -1073,6 +1105,7 @@ export function moveTraffic(
 
     const drive = follow(m.speed, m.cruise, holds);
     m.reason = drive.why;
+    m.accel = Math.max(-6, Math.min(ACCEL, drive.accel));
     m.speed = Math.max(0, m.speed + Math.max(-6, Math.min(ACCEL, drive.accel)) * dt);
     m.s += m.speed * m.dir * dt;
 
