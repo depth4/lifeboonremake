@@ -14,6 +14,7 @@ import { P_ZERO } from './car/tyre.ts';
 import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.ts';
 import { createDriver } from './car/controls.ts';
 import { type Mover, type Network, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf } from './city/traffic.ts';
+import { judge, newWatchdog, tally } from './city/offence.ts';
 import { lightFor } from './city/signals.ts';
 import { type Walker, moveWalkers, placeWalkers, walkerPose } from './city/walkers.ts';
 
@@ -392,6 +393,8 @@ el('drive')?.addEventListener('click', (event) => {
     drivePanel();
   } else if (what === 'traffic') {
     const on = traffic.length === 0;
+    // город заново — и счёт нарушений заново: прошлый был про прошлый город
+    dog = newWatchdog();
     traffic = on ? placeTraffic(world, network, TRAFFIC_COUNT) : [];
     walkers = on ? placeWalkers(world, network, WALKER_COUNT) : [];
     viewer.setTraffic([]);
@@ -442,6 +445,8 @@ let lastControls = { steer: 0, throttle: 0, brake: 0, handbrake: false, assist: 
 /** Сколько раз стукнулись и как сильно в последний раз: для приборки и проверок. */
 let crashes = 0;
 let lastCrash = 0;
+/** Что игрок нарушил. Считается только пока город жив: без трафика светофоры стоят. */
+let dog = newWatchdog();
 /**
  * Когда физика впервые увидела газ и когда впервые набрала сотню — по её
  * собственным часам. Проверка снаружи опрашивает страницу редко и неровно,
@@ -484,6 +489,12 @@ viewer.onFrame((dt) => {
       }
     }
     viewer.setSignals(lamps);
+    // ── ПДД для игрока: те же правила, которыми живёт трафик
+    if (driving && car !== null) {
+      judge(world, network, dog, {
+        x: car.x, z: car.z, yaw: car.yaw, speed: forwardSpeed(car),
+      }, cityTime, walkers);
+    }
     viewer.setTraffic(traffic.map((m) => {
       const pose = poseOf(world, network, m);
       const lights = signalsOf(world, network, m, cityTime);
@@ -559,6 +570,13 @@ viewer.onFrame((dt) => {
   if (gas) gas.style.height = `${controls.throttle * 100}%`;
   const brake = el('d-brake');
   if (brake) brake.style.height = `${controls.brake * 100}%`;
+  const pdd = el('d-pdd');
+  if (pdd) {
+    const counts = tally(dog);
+    pdd.textContent = counts.length === 0 ? 'ПДД: чисто'
+      : `ПДД: ${counts.map((c) => `${c.what}${c.count > 1 ? ` ×${c.count}` : ''}`).join(', ')}`;
+    pdd.classList.toggle('warn', counts.length > 0);
+  }
   const sens = el('d-sens');
   if (sens) sens.textContent = driver.held() ? `руль ${driver.travel} px` : 'щёлкни — возьму руль';
   // руль показывает две вещи: куда просит игрок и где колёса на самом деле
@@ -597,6 +615,9 @@ viewer.onFrame((dt) => {
     knocked: m.knocked !== null,
   };
 });
+
+/** Что игрок нарушил: нужно проверке. */
+(window as unknown as { __offences?: () => unknown }).__offences = () => dog.list;
 
 /** Сколько раз машина игрока стукнулась о чужую и как сильно в последний раз. */
 (window as unknown as { __crash?: () => unknown }).__crash = () => ({

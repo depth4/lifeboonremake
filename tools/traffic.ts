@@ -10,7 +10,8 @@ import { SCENES } from '../src/scenes.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
 import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
-import { walkLight } from '../src/city/signals.ts';
+import { lightFor, walkLight } from '../src/city/signals.ts';
+import { judge, newWatchdog, tally } from '../src/city/offence.ts';
 
 const scene = process.argv[2] ?? 'решётка';
 const mode = process.argv[3] ?? '';
@@ -318,6 +319,52 @@ function crashScene(through: boolean): {
   return { before, after, keep, energy, apart, knocked, back, hisSpeed };
 }
 
+/**
+ * НАРУШЕНИЯ ИГРОКА. Синтетический игрок нарочно едет на красный и нарочно
+ * выезжает на встречную; город обязан назвать оба. «Послушный» — тот же
+ * игрок, который стоит перед красным и держится своей полосы: ему нельзя
+ * записать ничего, иначе счётчик просто ругается на всех подряд.
+ */
+function offenceScene(naughty: boolean): { red: number; wrong: number; total: number } {
+  const cars = placeTraffic(world, net, 0);
+  const people = placeWalkers(world, net, 0);
+  const dog = newWatchdog();
+  // подъезд к перекрёстку со светофором: там есть чему гореть красным
+  const signal = net.signals[0];
+  const approach = signal.approaches[0];
+  const shape = approach.shape, dir = approach.dir;
+  const lane = dir * world.shapes[shape].halfWidth * 0.5;
+  let s = approach.stopS - dir * 30;
+  let time = 0;
+  // ждём своего красного, стоя на месте, и только потом трогаемся
+  while (time < 60 && lightFor(signal, approach, time).light !== 'красный') time += DT;
+  const started = time;
+  const total = net.length[shape];
+  for (; time < started + 8; time += DT) {
+    const red = lightFor(signal, approach, time).light === 'красный';
+    // послушный останавливается перед линией, нарушитель едет как ехал
+    const stop = !naughty && red && (approach.stopS - s) * dir < 3;
+    const speed = stop ? 0 : 9;
+    // за конец дороги не выезжаем: там `locate` уже про другую улицу
+    s = Math.max(2, Math.min(total - 2, s + speed * dir * DT));
+    const spot = along(world, shape, s);
+    // нарушитель ещё и едет по встречной — с самого начала, вдали от узла,
+    // чтобы `locate` не приняла его за машину на поперечной улице
+    const across = naughty ? -lane : lane;
+    judge(world, net, dog, {
+      x: spot.x - spot.fz * across, z: spot.z + spot.fx * across,
+      yaw: Math.atan2(spot.fz * dir, spot.fx * dir), speed,
+    }, time, people);
+  }
+  void cars;
+  const counts = tally(dog);
+  const of = (name: string): number => counts.find((c) => c.what === name)?.count ?? 0;
+  return { red: of('проезд на красный'), wrong: of('выезд на встречную полосу'), total: dog.list.length };
+}
+
+const naughty = offenceScene(true);
+const lawful = offenceScene(false);
+
 const crash = crashScene(false);
 const through = crashScene(true);
 
@@ -362,6 +409,10 @@ const checks: [string, boolean, string][] = [
   ['перепутанный поворотник — обязан провалиться', signalled > 0 && flipped === 0,
     flipped === 0 ? `зеркальный сигнал разошёлся бы во всех ${signalled}` : `${flipped} совпали — проверка слепа`],
   ['стоп-сигналы вообще загораются', braked > 0, `${((braked / (movers.length * 120 / DT)) * 100).toFixed(0)}% времени`],
+  ['проезд игрока на красный замечен', naughty.red === 1, `${naughty.red} раз`],
+  ['выезд игрока на встречную замечен', naughty.wrong === 1, `${naughty.wrong} раз, а не за каждый кадр`],
+  ['послушному игроку не пишут ничего', lawful.total === 0,
+    lawful.total === 0 ? 'чисто' : `${lawful.total} на ровном месте — счётчик ругается на всех`],
   ['удар случился, а не проезд насквозь', crash.knocked, crash.knocked ? 'чужую сбило с полосы' : 'проехал сквозь'],
   ['импульс удара сохранился', crash.knocked && crash.keep < 0.01,
     `${crash.before.toFixed(0)} → ${crash.after.toFixed(0)} кг·м/с, разошлось на ${(crash.keep * 100).toFixed(2)}%`],

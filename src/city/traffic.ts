@@ -137,6 +137,9 @@ export interface Route {
   readonly dir: number;
 }
 
+/** Кто-то на дороге: этого хватает, чтобы спросить про светофор впереди. */
+export interface OnRoad { readonly shape: number; readonly s: number; readonly dir: number }
+
 interface Link { shape: number; s: number }
 /** Конец дороги: в какой узел упирается и какой веткой светофора является. */
 interface End { junction: number; signal: number; approach: number }
@@ -573,7 +576,7 @@ function timeToCover(d: number, v: number): number {
  * нерегулируемого была своя константа, и край перекрёстка мерился двумя
  * способами — то есть когда-нибудь разошёлся бы.
  */
-export function nextJunction(world: World, net: Network, m: Mover):
+export function nextJunction(world: World, net: Network, m: OnRoad):
 { end: End; stopGap: number; centreGap: number } | null {
   const slot = m.dir > 0 ? 1 : 0;
   const end = net.ends[m.shape][slot];
@@ -583,8 +586,14 @@ export function nextJunction(world: World, net: Network, m: Mover):
   return { end, stopGap: (stopS - m.s) * m.dir, centreGap: (atS - m.s) * m.dir };
 }
 
-/** Что машина видит перед собой на перекрёстке: для проверок и приборки. */
-export function watch(world: World, net: Network, m: Mover, time: number): {
+/**
+ * Что машина видит перед собой на перекрёстке: для проверок и приборки.
+ *
+ * Принимает не Mover, а «кто-то на дороге»: тем же правилом смотрит на свой
+ * светофор и чужая машина, и машина игрока. Второй копии правила «когда
+ * это проезд на красный» в проекте нет и быть не должно.
+ */
+export function watch(world: World, net: Network, m: OnRoad, time: number): {
   junction: number; stopGap: number; centreGap: number; light: string;
 } | null {
   const ahead = nextJunction(world, net, m);

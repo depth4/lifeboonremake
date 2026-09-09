@@ -267,10 +267,26 @@ for (let tick = 0; tick < 45 && crash.count === 0; tick++) {
 await page.keyboard.up('s');
 await page.waitForTimeout(800);
 const afterCrash = await page.evaluate(() => window.__car());
-// снимок делаем НЕ ВЫХОДЯ из машины: камера за рулём стоит там, где удар,
-// а любой из готовых ракурсов смотрит в заранее назначенное место, и оно
-// к месту удара отношения не имеет
+// снимок удара — сразу, пока камера за рулём стоит там, где он случился
 await shot('ride-10-удар');
+
+/**
+ * 6в. ПДД. Выезжаем на встречную нарочно: трогаемся и выкручиваем руль
+ * влево до упора. Город обязан это назвать — и назвать ОДИН раз, а не
+ * шестьсот, по разу на кадр.
+ */
+await page.keyboard.press('r');               // руль в ноль после заднего хода
+await page.keyboard.down('w');
+await page.waitForTimeout(900);               // тронуться вперёд
+for (let i = 0; i < 12; i++) await page.mouse.move(800 - i * 90, 500);
+await page.waitForTimeout(2200);
+await page.keyboard.up('w');
+for (let i = 0; i < 12; i++) await page.mouse.move(800 + i * 90, 500);
+await page.waitForTimeout(600);
+const offences = await page.evaluate(() => window.__offences());
+
+// а этот — про приборку: на ней написано, что именно город засчитал
+await shot('ride-11-пдд');
 // пока руль в руках, мышь захвачена и все щелчки уходят в холст: выходим
 // из машины — это отпускает захват, — и только потом трогаем кнопки
 await page.keyboard.press('Enter');
@@ -329,6 +345,11 @@ const checks = [
     crash.count > 0
       ? `${crash.count} удар(ов), последний на ${crash.force.toFixed(1)} м/с, сбито ${crash.knocked ?? 0}`
       : 'сдавал назад 9 с и никого не задел'],
+  ['город назвал выезд на встречную', offences.some((o) => o.what.includes('встречную')),
+    offences.length === 0 ? 'не заметил ничего'
+      : offences.map((o) => o.what).join(', ')],
+  ['одно нарушение — одна запись', offences.filter((o) => o.what.includes('встречную')).length <= 2,
+    `${offences.filter((o) => o.what.includes('встречную')).length} записей о встречной`],
   ['удар отнял у машины скорость', crash.count === 0
     || Math.abs(afterCrash.speed) < Math.abs(beforeCrash.speed),
     `${(Math.abs(beforeCrash.speed) * 3.6).toFixed(0)} → ${(Math.abs(afterCrash.speed) * 3.6).toFixed(0)} км/ч`],

@@ -237,6 +237,8 @@
       .rev i.red { background: #e0483f; }
       .strip { display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
       .strip span:first-child { color: var(--text); font-weight: 500; }
+      /* нарушение видно сразу: серым его не заметишь */
+      .strip span.warn { color: #ff6b58; font-weight: 500; }
       .pedals { display: flex; gap: 6px; align-items: flex-end; height: 46px; }
       .ped { width: 11px; height: 46px; background: rgba(233, 236, 233, 0.12); display: flex; align-items: flex-end; }
       .ped i { display: block; width: 100%; height: 0; background: #7fc46b; }
@@ -295,7 +297,7 @@
         <div class="speedo"><b id="d-speed">0</b><span>км/ч</span></div>
         <div class="stack">
           <div class="rev"><i id="d-rev"></i></div>
-          <div class="strip"><span id="d-gear">N</span><span id="d-rpm">800</span><span id="d-mat">асфальт</span><span id="d-travel">подвеска</span><span id="d-sens">руль 700 px</span></div>
+          <div class="strip"><span id="d-gear">N</span><span id="d-rpm">800</span><span id="d-mat">асфальт</span><span id="d-travel">подвеска</span><span id="d-sens">руль 700 px</span><span id="d-pdd">ПДД: чисто</span></div>
         </div>
         <div class="pedals">
           <div class="ped"><i id="d-gas"></i></div>
