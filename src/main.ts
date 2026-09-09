@@ -9,10 +9,11 @@ import { DEFAULT_VARIANT, VARIANTS, buildGhost, buildSurface } from './surface/i
 import { VIEWS, show, viewFromQuery } from './render.ts';
 import { createBuilder } from './build.ts';
 import { GroundIndex } from './car/ground.ts';
-import { VIPER } from './car/passport.ts';
+import { SETUPS, VIPER } from './car/passport.ts';
 import { P_ZERO } from './car/tyre.ts';
-import { type Car, createCar, forwardSpeed, step } from './car/car.ts';
+import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.ts';
 import { createDriver } from './car/controls.ts';
+import { type Mover, type Network, buildNetwork, moveTraffic, placeTraffic, poseOf } from './car/traffic.ts';
 
 const query = new URLSearchParams(location.search);
 const startView = query.get('view') ?? 'road';
@@ -95,6 +96,8 @@ function rebuild(): void {
   }
   rebuildMs = performance.now() - started;
   ground = new GroundIndex(surface);
+  network = buildNetwork(world);
+  if (traffic.length > 0) traffic = placeTraffic(world, network, TRAFFIC_COUNT);
   viewer.setSurface(surface);
   readout();
   hint();
@@ -292,6 +295,11 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
 
 /** Опора под колесом. Те же треугольники, что нарисованы на экране. */
 let ground = new GroundIndex(surface);
+
+// ── трафик: чужие машины, которые едут сами
+let network: Network = buildNetwork(world);
+let traffic: Mover[] = [];
+const TRAFFIC_COUNT = 18;
 let car: Car | null = null;
 /** Машина остаётся в мире, когда из неё вышли: просто перестаёт считаться. */
 let driving = false;
@@ -316,6 +324,7 @@ function spawnCar(): Car {
 function seat(on: boolean): void {
   if (on && car === null) car = spawnCar();
   if (on) driver.anchor(); // руль в ноль: садимся всегда с прямыми колёсами
+  else driver.release(); // вышел — мышь снова твоя, иначе по кнопкам не попасть
   driving = on;
   viewer.setChase(on);
   if (dash) dash.hidden = !on;
@@ -337,13 +346,16 @@ function drivePanel(): void {
   panel.innerHTML =
     `<button type="button" data-drive="seat" aria-pressed="${driving}">за руль</button>` +
     `<button type="button" class="plain" data-drive="assist" aria-pressed="${driver.assist}">помощь рулю</button>` +
+    `<button type="button" class="plain" data-drive="setup">подвеска: ${VIPER.suspension.label}</button>` +
+    `<button type="button" class="plain" data-drive="traffic" aria-pressed="${traffic.length > 0}">трафик</button>` +
     (car === null ? '' : '<button type="button" class="plain" data-drive="park">убрать машину</button>');
   const tip = el('d-tip');
   if (tip) {
     tip.textContent = driver.pad()
       ? 'геймпад подключён: левый стик — руль, курки — газ и тормоз'
       : 'щёлкни по картинке — мышь возьмёт руль. Влево-вправо — руль, W/S — газ '
-        + 'и тормоз, Shift — в пол, X — ручник, R — выровнять руль, [ и ] — острота';
+        + 'и тормоз, Shift — в пол, X — ручник, R — выровнять руль, [ и ] — острота, '
+        + 'G — помощь, P — подвеска, Enter — выйти';
   }
 }
 
@@ -356,8 +368,37 @@ el('drive')?.addEventListener('click', (event) => {
   else if (what === 'assist') {
     driver.assist = !driver.assist;
     drivePanel();
+  } else if (what === 'traffic') {
+    traffic = traffic.length > 0 ? [] : placeTraffic(world, network, TRAFFIC_COUNT);
+    viewer.setTraffic([]);
+    drivePanel();
+  } else if (what === 'setup') {
+    // подвеска меняется на ходу: свободные длины пересчитываются, и машина
+    // сама садится на новую высоту — это видно
+    const names = Object.keys(SETUPS);
+    const next = names[(names.indexOf(VIPER.suspension.label) + 1) % names.length];
+    VIPER.suspension = SETUPS[next];
+    if (car !== null) car.wheels.forEach((w, i) => { w.rest = restLength(VIPER, i < 2); });
+    drivePanel();
   }
 });
+/**
+ * Переключатели ещё и на клавишах: с захваченным указателем по кнопкам мышью
+ * не попасть — она отдана рулю. Это не мелочь, а единственный способ менять
+ * настройку на ходу.
+ */
+addEventListener('keydown', (event) => {
+  if (event.code === 'Enter' && dash !== null) { seat(!driving); return; }
+  if (car === null || !driving) return;
+  if (event.code === 'KeyG') { driver.assist = !driver.assist; drivePanel(); }
+  if (event.code === 'KeyP') {
+    const names = Object.keys(SETUPS);
+    VIPER.suspension = SETUPS[names[(names.indexOf(VIPER.suspension.label) + 1) % names.length]];
+    car.wheels.forEach((w, i) => { w.rest = restLength(VIPER, i < 2); });
+    drivePanel();
+  }
+});
+
 drivePanel();
 
 /** Шаг физики. Не связан с кадрами: на слабой машине счёт тот же. */
@@ -369,6 +410,13 @@ let simTime = 0;
 let lastControls = { steer: 0, throttle: 0, brake: 0, handbrake: false, assist: true };
 
 viewer.onFrame((dt) => {
+  if (traffic.length > 0) {
+    moveTraffic(world, network, traffic, Math.min(dt, 0.1));
+    viewer.setTraffic(traffic.map((m) => {
+      const pose = poseOf(world, m);
+      return { x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: m.yaw, colour: m.colour };
+    }));
+  }
   if (car === null) return;
   const speed = forwardSpeed(car);
   const controls = driving
@@ -407,6 +455,12 @@ viewer.onFrame((dt) => {
   if (rpm) rpm.textContent = `${Math.round(car.rpm)} об/мин`;
   const mat = el('d-mat');
   if (mat) mat.textContent = car.wheels[2].material;
+  const travel = el('d-travel');
+  if (travel) {
+    const front = ((car.wheels[0].travel + car.wheels[1].travel) / 2) * 1000;
+    const rear = ((car.wheels[2].travel + car.wheels[3].travel) / 2) * 1000;
+    travel.textContent = `подвеска ${front.toFixed(0)}/${rear.toFixed(0)} мм`;
+  }
   const gas = el('d-gas');
   if (gas) gas.style.height = `${controls.throttle * 100}%`;
   const brake = el('d-brake');
@@ -440,6 +494,11 @@ viewer.onFrame((dt) => {
  * вещи: в безголовом браузере кадры идут медленнее, и мерить разгон
  * секундомером снаружи бессмысленно.
  */
+/** Сколько чужих машин сейчас едет — нужно проверке. */
+(window as unknown as { __traffic?: () => unknown }).__traffic = () => traffic.map((m) => ({
+  shape: m.shape, s: Number(m.s.toFixed(2)), speed: Number(m.speed.toFixed(2)),
+}));
+
 (window as unknown as { __car?: () => unknown }).__car = () => (car === null ? null : {
   x: car.x, z: car.z, yaw: car.yaw, speed: forwardSpeed(car),
   gear: car.gear, reverse: car.reverse, rpm: car.rpm, sim: simTime,

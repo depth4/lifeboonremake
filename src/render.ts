@@ -115,6 +115,27 @@ function buildBody(length: number, width: number): THREE.BufferGeometry {
   return geometry;
 }
 
+/** Простой силуэт городской машины — не Viper: трафик должен отличаться. */
+function buildSedan(length: number, width: number): THREE.BufferGeometry {
+  const nose = length / 2;
+  const points: [number, number][] = [
+    [nose - 0.05, 0.22], [nose, 0.42], [nose - 0.75, 0.62], [nose - 1.25, 0.78],
+    [nose - 1.75, 1.28], [nose - 2.85, 1.30], [nose - 3.35, 0.80],
+    [-nose + 0.25, 0.72], [-nose, 0.5], [-nose - 0.02, 0.26], [-nose + 0.3, 0.16],
+  ];
+  const side = new THREE.Shape();
+  side.moveTo(points[0][0], points[0][1]);
+  for (const [x, y] of points.slice(1)) side.lineTo(x, y);
+  side.closePath();
+  const depth = width - 0.2;
+  const geometry = new THREE.ExtrudeGeometry(side, {
+    depth, bevelEnabled: true, bevelSize: 0.07, bevelThickness: 0.06, bevelSegments: 2,
+  });
+  geometry.translate(0, 0, -depth / 2);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 export interface View {
   readonly label: string;
   readonly from: [number, number, number];
@@ -149,6 +170,8 @@ export interface Viewer {
   setChase(on: boolean): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
+  /** Трафик: положения чужих машин. Пустой список — убрать всех. */
+  setTraffic(cars: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -261,6 +284,11 @@ export function show(surface: Surface, startView: string, custom: View | null = 
 
   const wheelMaterial = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.85 });
   const rimMaterial = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.35, metalness: 0.7 });
+
+  // ── трафик: все чужие машины одной пачкой, иначе на тридцати штуках
+  // видеокарта задыхается от отдельных вызовов
+  let trafficBody: THREE.InstancedMesh | null = null;
+  let trafficWheels: THREE.InstancedMesh | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
   const sun = new THREE.DirectionalLight(0xfff3dd, 2.1);
@@ -409,6 +437,46 @@ export function show(surface: Surface, startView: string, custom: View | null = 
         part.hub.rotation.set(0, -(view.yaw + w.steer), 0);
         part.tyre.rotation.z = -w.spin;
       });
+    },
+    setTraffic(cars) {
+      if (trafficBody !== null && trafficBody.count !== cars.length) {
+        scene.remove(trafficBody, trafficWheels as THREE.Object3D);
+        trafficBody.dispose();
+        trafficWheels?.dispose();
+        trafficBody = null;
+        trafficWheels = null;
+      }
+      if (cars.length === 0) return;
+      if (trafficBody === null) {
+        trafficBody = new THREE.InstancedMesh(
+          buildSedan(4.4, 1.82),
+          new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.2 }),
+          cars.length,
+        );
+        trafficBody.castShadow = true;
+        const wheel = new THREE.CylinderGeometry(0.33, 0.33, 0.23, 14);
+        wheel.rotateX(Math.PI / 2);
+        trafficWheels = new THREE.InstancedMesh(wheel, wheelMaterial, cars.length * 4);
+        scene.add(trafficBody, trafficWheels);
+      }
+      const m = new THREE.Matrix4();
+      const tint = new THREE.Color();
+      const corners: [number, number][] = [[1.35, 0.78], [1.35, -0.78], [-1.35, 0.78], [-1.35, -0.78]];
+      cars.forEach((c, i) => {
+        m.makeRotationY(-c.yaw);
+        m.setPosition(c.x, c.y, c.z);
+        (trafficBody as THREE.InstancedMesh).setMatrixAt(i, m);
+        (trafficBody as THREE.InstancedMesh).setColorAt(i, tint.setHex(c.colour));
+        const cos = Math.cos(c.yaw), sin = Math.sin(c.yaw);
+        corners.forEach(([ahead, left], k) => {
+          const wm = new THREE.Matrix4().makeRotationY(-c.yaw);
+          wm.setPosition(c.x + ahead * cos - left * sin, c.y + 0.33, c.z + ahead * sin + left * cos);
+          (trafficWheels as THREE.InstancedMesh).setMatrixAt(i * 4 + k, wm);
+        });
+      });
+      trafficBody.instanceMatrix.needsUpdate = true;
+      if (trafficBody.instanceColor) trafficBody.instanceColor.needsUpdate = true;
+      (trafficWheels as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
     },
     setChase(on) {
       chase = on;

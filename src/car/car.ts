@@ -8,7 +8,7 @@
  * формул: docs/how-cars-work.md.
  */
 
-import { type Passport, engineTorque, frontArm, rearArm } from './passport.ts';
+import { type Passport, cornerSpring, engineTorque, frontArm, rearArm, sprungMass } from './passport.ts';
 import { type Tyre, SURFACE_GRIP, tyreForce } from './tyre.ts';
 import type { Spot } from './ground.ts';
 
@@ -36,6 +36,14 @@ export interface Wheel {
   readonly driven: boolean;
   /** Вращение, рад/с. */
   spin: number;
+  /** Сжатие подвески от свободного положения, м. Ноль — колесо висит. */
+  travel: number;
+  /** Свободная длина подвески, м. */
+  rest: number;
+  /** Высота земли под колесом на прошлом шаге — демпферу нужна скорость дороги. */
+  groundPrev: number;
+  /** Касается ли колесо земли. */
+  down: boolean;
   /** Что под ним прямо сейчас. */
   load: number;
   slip: number;
@@ -64,9 +72,13 @@ export interface Car {
   rpm: number;
   shiftLeft: number;
   stopHold: number;
-  /** Сглаженные ускорения от шин — ими двигается вес. */
-  accLong: number;
-  accLat: number;
+  /** Высота крепления подвески (плоскости кузова) над нулём мира, м. */
+  heave: number;
+  heaveRate: number;
+  pitchRate: number;
+  rollRate: number;
+  /** Поставлена ли машина на землю. */
+  placed: boolean;
   /** Угол колёс, при котором они смотрят туда, куда машина едет на самом деле. */
   neutral: number;
   /** Насколько помощь изменила запрошенный угол, рад. Для приборки. */
@@ -86,7 +98,8 @@ export function createCar(p: Passport, x: number, z: number, yaw: number): Car {
     radius: front ? p.wheelFront.radius : p.wheelRear.radius,
     inertia: front ? p.wheelFront.inertia : p.wheelRear.inertia,
     driven: !front,
-    spin: 0, load: 0, slip: 0, angle: 0, use: 0, steer: 0,
+    spin: 0, travel: 0, rest: 0, groundPrev: 0, down: true,
+    load: 0, slip: 0, angle: 0, use: 0, steer: 0,
     x: 0, y: 0, z: 0, material: 'asphalt',
   });
   return {
@@ -98,8 +111,20 @@ export function createCar(p: Passport, x: number, z: number, yaw: number): Car {
       wheel(-b, -p.trackRear / 2, false),
     ],
     gear: 0, reverse: false, rpm: p.idleRpm, shiftLeft: 0, stopHold: 0,
-    accLong: 0, accLat: 0, neutral: 0, helped: 0, bodyY: 0, pitch: 0, roll: 0,
+    heave: 0, heaveRate: 0, pitchRate: 0, rollRate: 0, placed: false,
+    neutral: 0, helped: 0, bodyY: 0, pitch: 0, roll: 0,
   };
+}
+
+/**
+ * Свободная длина подвески подбирается так, чтобы под своим весом машина
+ * села ровно на заданную высоту — и передом, и задом одинаково. Иначе кузов
+ * стоял бы наклонённым просто потому, что пружины разные.
+ */
+export function restLength(p: Passport, front: boolean): number {
+  const { k, mass } = cornerSpring(p, front);
+  const radius = front ? p.wheelFront.radius : p.wheelRear.radius;
+  return p.suspension.ride - radius + (mass * G) / k;
 }
 
 /** Скорость машины вдоль её носа, м/с. Отрицательная — едет задом. */
@@ -182,16 +207,21 @@ export function step(
   const throttle = car.reverse ? controls.brake : controls.throttle;
   const braking = car.reverse ? controls.throttle : controls.brake;
 
-  // ── нагрузка на колёса: статика, прижимная сила и перенос веса
-  const down = 0.5 * AIR * p.liftArea * u * u;
-  const weight = p.mass * G + down;
-  const staticFront = (weight * p.frontShare) / 2;
-  const staticRear = (weight * (1 - p.frontShare)) / 2;
-  const shiftLong = (p.mass * car.accLong * p.cgHeight) / p.wheelbase;
-  const trackAvg = (p.trackFront + p.trackRear) / 2;
-  const shiftLatAll = (p.mass * car.accLat * p.cgHeight) / trackAvg;
-  const shiftLatF = shiftLatAll * p.frontShare;
-  const shiftLatR = shiftLatAll * (1 - p.frontShare);
+  // ── прижимная сила: давит на кузов сверху, дальше её разложит подвеска
+  const downforce = 0.5 * AIR * p.liftArea * u * u;
+  const weight = p.mass * G + downforce;
+
+  // ── ПОДВЕСКА. Нагрузку на колёса больше не считает формула переноса веса:
+  // она получается сама, потому что кузов честно качается на четырёх пружинах.
+  const springs = [cornerSpring(p, true), cornerSpring(p, true), cornerSpring(p, false), cornerSpring(p, false)];
+  const sprung = sprungMass(p);
+  if (!car.placed) {
+    for (let i = 0; i < 4; i++) car.wheels[i].rest = restLength(p, i < 2);
+    const under = sample(car.x, car.z).height;
+    car.heave = under + p.suspension.ride;
+    for (const w of car.wheels) w.groundPrev = under;
+    car.placed = true;
+  }
 
   // ── трансмиссия: обороты берутся от ведущих колёс
   const ratio = (car.reverse ? 2.9 : p.gears[car.gear]) * p.finalDrive;
@@ -225,9 +255,9 @@ export function step(
   // вязкостная блокировка: колёса тянут друг друга, разница скоростей давит
   const lock = clamp((car.wheels[2].spin - car.wheels[3].spin) * p.diffLock, -2500, 2500);
 
-  // ── силы в четырёх пятнах
-  let forceLong = 0, forceLat = 0, moment = 0;
-  let groundY = 0, nx = 0, ny = 0, nz = 0, frontY = 0, rearY = 0, leftY = 0, rightY = 0;
+  // ── ПРОХОД ПЕРВЫЙ: где колёса, что под ними и с какой силой давит подвеска
+  const suspension = [0, 0, 0, 0];
+  let groundY = 0, nx = 0, ny = 0, nz = 0;
 
   for (let i = 0; i < 4; i++) {
     const w = car.wheels[i];
@@ -237,18 +267,55 @@ export function step(
     w.z = car.z + w.ahead * sin + w.left * cos;
 
     const spot = sample(w.x, w.z);
-    w.y = spot.height;
     w.material = spot.material;
     groundY += spot.height / 4;
     nx += spot.nx / 4; ny += spot.ny / 4; nz += spot.nz / 4;
-    if (front) frontY += spot.height / 2; else rearY += spot.height / 2;
-    if (w.left > 0) leftY += spot.height / 2; else rightY += spot.height / 2;
 
-    const load = Math.max(0,
-      (front ? staticFront : staticRear)
-      + (front ? -shiftLong / 2 : shiftLong / 2)
-      + (w.left > 0 ? -(front ? shiftLatF : shiftLatR) : (front ? shiftLatF : shiftLatR)));
-    w.load = load;
+    // где крепление подвески: кузов наклонён, значит углы на разной высоте
+    const attach = car.heave + w.ahead * car.pitch - w.left * car.roll;
+    // колесо стоит на земле, но не выше, чем позволяет вытянутая подвеска
+    const centre = Math.max(spot.height + w.radius, attach - w.rest);
+    w.travel = w.rest - (attach - centre);
+    w.down = w.travel > 1e-4;
+    w.y = centre - w.radius;
+
+    // скорость сжатия: движется и кузов, и дорога под колесом
+    const attachRate = car.heaveRate + w.ahead * car.pitchRate - w.left * car.rollRate;
+    const roadRate = clamp((spot.height - w.groundPrev) / dt, -12, 12);
+    w.groundPrev = spot.height;
+    const squeezeRate = w.down ? roadRate - attachRate : 0;
+
+    const spring = springs[i];
+    let force = w.down ? spring.k * w.travel + spring.c * squeezeRate : 0;
+    // отбойник: за пределом хода подвеска резко твердеет
+    const over = w.travel - p.suspension.travel;
+    if (over > 0) force += over * spring.k * 8;
+    suspension[i] = Math.max(0, force);
+  }
+
+  /**
+   * Стабилизатор связывает колёса одной оси: он не мешает обоим сжиматься
+   * вместе и мешает сжиматься по-разному. Поэтому он влияет ТОЛЬКО на крен —
+   * и именно им настраивается характер машины (docs/how-cars-work.md §5.5).
+   */
+  for (const [a, b, bar] of [[0, 1, p.suspension.barFront], [2, 3, p.suspension.barRear]] as const) {
+    const twist = (car.wheels[a].travel - car.wheels[b].travel) / 2;
+    if (car.wheels[a].down) suspension[a] = Math.max(0, suspension[a] + bar * twist);
+    if (car.wheels[b].down) suspension[b] = Math.max(0, suspension[b] - bar * twist);
+  }
+
+  // прижимная сила давит на кузов и через подвеску доходит до колёс
+  for (let i = 0; i < 4; i++) {
+    const w = car.wheels[i];
+    w.load = w.down ? suspension[i] + p.unsprung * G + downforce / 4 : 0;
+  }
+
+  // ── ПРОХОД ВТОРОЙ: силы в четырёх пятнах
+  let forceLong = 0, forceLat = 0, moment = 0;
+
+  for (let i = 0; i < 4; i++) {
+    const w = car.wheels[i];
+    const front = i < 2;
 
     // скорость точки на твёрдом теле: вращение добавляет своё
     const pointLong = u - car.yawRate * w.left;
@@ -261,8 +328,8 @@ export function step(
     w.slip = (w.spin * w.radius - alongWheel) / reference;
     w.angle = Math.atan2(acrossWheel, reference);
 
-    const grip = SURFACE_GRIP[spot.material] ?? 1;
-    const force = tyreForce(tyre, { slip: w.slip, angle: w.angle, load, grip });
+    const grip = SURFACE_GRIP[w.material] ?? 1;
+    const force = tyreForce(tyre, { slip: w.slip, angle: w.angle, load: w.load, grip });
     w.use = force.use;
 
     // назад в оси машины
@@ -291,10 +358,6 @@ export function step(
 
   const accLong = forceLong / p.mass;
   const accLat = forceLat / p.mass;
-  // перенос веса приходит через пружины, а не мгновенно
-  const lag = Math.min(1, dt / 0.12);
-  car.accLong += (accLong - car.accLong) * lag;
-  car.accLat += (accLat - car.accLat) * lag;
 
   // уклон: сила тяжести вдоль поверхности, из нормали под машиной
   const slopeX = G * ny * nx;
@@ -308,6 +371,34 @@ export function step(
   // сопротивление рысканью: без него машина крутится вечно
   car.yawRate -= car.yawRate * Math.min(1, dt * 0.8);
 
+  /**
+   * ── КУЗОВ ПО ВЕРТИКАЛИ: три степени свободы на четырёх пружинах.
+   *
+   * Здесь и рождается перенос веса. Продольная сила шин приложена внизу,
+   * у земли, а масса — наверху, в центре масс: между ними плечо высотой
+   * с центр масс, и оно кренит кузов. Кузов давит на пружины, пружины
+   * меняют нагрузку на колёсах. Никакой формулы переноса веса нет —
+   * есть рычаг, пружина и вторая производная.
+   */
+  let lift = -sprung * G + downforce;
+  let pitchMoment = forceLong * p.cgHeight;
+  let rollMoment = -forceLat * p.cgHeight;
+  for (let i = 0; i < 4; i++) {
+    const w = car.wheels[i];
+    lift += suspension[i];
+    pitchMoment += w.ahead * suspension[i];
+    rollMoment -= w.left * suspension[i];
+  }
+  const pitchInertia = p.mass * (0.3 * p.length) ** 2;
+  const rollInertia = p.mass * (0.28 * p.width) ** 2;
+
+  car.heaveRate += (lift / sprung) * dt;
+  car.heave += car.heaveRate * dt;
+  car.pitchRate += (pitchMoment / pitchInertia) * dt;
+  car.pitch += car.pitchRate * dt;
+  car.rollRate += (rollMoment / rollInertia) * dt;
+  car.roll += car.rollRate * dt;
+
   // полная остановка: иначе машина вечно ползёт от численного мусора
   if (Math.hypot(car.vx, car.vz) < 0.22 && throttle < 0.05) {
     car.vx = 0; car.vz = 0; car.yawRate = 0;
@@ -318,8 +409,6 @@ export function step(
   car.z += car.vz * dt;
   car.yaw += car.yawRate * dt;
 
-  // ── показ: где кузов и как он наклонён
-  car.bodyY = groundY;
-  car.pitch = (frontY - rearY) / p.wheelbase + car.accLong * 0.0027;
-  car.roll = (rightY - leftY) / trackAvg - car.accLat * 0.0024;
+  // показу нужна высота, с которой рисовать кузов
+  car.bodyY = car.heave - p.suspension.ride;
 }

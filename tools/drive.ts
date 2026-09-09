@@ -19,14 +19,22 @@ import { VIPER } from '../src/car/passport.ts';
 import { P_ZERO } from '../src/car/tyre.ts';
 import { type Car, type Controls, createCar, forwardSpeed, step } from '../src/car/car.ts';
 
-const broken = process.argv[2] === 'сломать';
+const mode = process.argv[2] ?? '';
+const broken = mode === 'сломать';
+const soft = mode === 'мягко';
 const MPH = 0.44704;
 const DT = 1 / 600;
 
 /** Ровный асфальт до горизонта — чтобы мерить машину, а не дорогу. */
 const FLAT = (): Spot => ({ height: 0, nx: 0, ny: 1, nz: 0, material: 'asphalt' });
 
-const P = broken ? { ...VIPER, cgHeight: 0 } : VIPER; // высота ЦМ = 0 убивает перенос веса
+// «сломать» — высота центра масс в ноль: перенос веса исчезает.
+// «мягко» — подвеска от дивана: кузов должен завалиться в повороте.
+const P = broken
+  ? { ...VIPER, cgHeight: 0 }
+  : soft
+    ? { ...VIPER, suspension: { ...VIPER.suspension, rideFront: 0.7, rideRear: 0.8, barFront: 0, barRear: 0 } }
+    : VIPER;
 
 // Помощь рулю здесь ВЫКЛЮЧЕНА: проверка меряет машину, а не помощь водителю.
 const drive = (throttle: number, brake = 0, steer = 0): Controls =>
@@ -116,6 +124,55 @@ function lap(): { spots: Record<string, number>; lowest: number; steps: number }
   return { spots, lowest, steps };
 }
 
+/** Как машина стоит под своим весом: осадка подвески и наклон кузова. */
+function stance(): { front: number; rear: number; pitch: number; roll: number } {
+  const car = createCar(P, 0, 0, 0);
+  for (let t = 0; t < 5; t += DT) step(car, P, P_ZERO, FLAT, drive(0), DT);
+  return {
+    front: ((car.wheels[0].travel + car.wheels[1].travel) / 2) * 1000,
+    rear: ((car.wheels[2].travel + car.wheels[3].travel) / 2) * 1000,
+    pitch: (car.pitch * 180) / Math.PI,
+    roll: (car.roll * 180) / Math.PI,
+  };
+}
+
+/** Клевок: на сколько градусов кузов ныряет носом при торможении в пол. */
+function dive(): { angle: number; front: number; rear: number } {
+  const car = createCar(P, 0, 0, 0);
+  car.vx = 30;
+  for (const w of car.wheels) w.spin = 30 / w.radius;
+  for (let t = 0; t < 1.2; t += DT) step(car, P, P_ZERO, FLAT, drive(0), DT); // устояться
+  let worst = 0, front = 0, rear = 0;
+  for (let t = 0; t < 1.5 && forwardSpeed(car) > 2; t += DT) {
+    step(car, P, P_ZERO, FLAT, drive(0, 1), DT);
+    if (-car.pitch > worst) {
+      worst = -car.pitch;
+      front = ((car.wheels[0].travel + car.wheels[1].travel) / 2) * 1000;
+      rear = ((car.wheels[2].travel + car.wheels[3].travel) / 2) * 1000;
+    }
+  }
+  return { angle: (worst * 180) / Math.PI, front, rear };
+}
+
+/** Крен: сколько градусов на единицу боковой перегрузки. */
+function lean(): number {
+  const car = createCar(P, 0, 0, 0);
+  const target = 24;
+  car.vx = target;
+  for (const w of car.wheels) w.spin = target / w.radius;
+  let best = 0;
+  for (let t = 0; t < 7; t += DT) {
+    const v = forwardSpeed(car);
+    step(car, P, P_ZERO, FLAT, drive(v < target ? 0.35 : 0, 0, 0.16), DT);
+    if (t > 5) {
+      const speed = forwardSpeed(car);
+      const g = (speed * Math.abs(car.yawRate)) / 9.80665;
+      if (g > 0.2) best = Math.abs((car.roll * 180) / Math.PI) / g;
+    }
+  }
+  return best;
+}
+
 /** Стоим и ничего не жмём. Машина обязана стоять. */
 function standStill(): number {
   const car = createCar(P, 0, 0, 0);
@@ -133,7 +190,8 @@ function backwards(): number {
 // ─────────────────────────── печать ───────────────────────────
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(40, '.')} ${value}`);
-console.log(`\nМашина «${VIPER.name}» без экрана${broken ? '   [СЛОМАНО: перенос веса выключен]' : ''}\n`);
+const label = broken ? '   [СЛОМАНО: перенос веса выключен]' : soft ? '   [СЛОМАНО: подвеска от дивана]' : '';
+console.log(`\nМашина «${VIPER.name}» без экрана${label}\n`);
 
 const run = launch();
 const brake60 = brakeFrom(60 * MPH);
@@ -167,6 +225,22 @@ if (still > 0.05) { console.log(`  ✗ машина ТРОГАЕТСЯ САМА:
 else console.log(`  ✓ стоит на месте, когда ничего не нажато`);
 if (back < 3 || back * 3.6 > 55) { console.log(`  ✗ задний ход: ${(back * 3.6).toFixed(1)} км/ч — не едет или едет как вперёд`); failed++; }
 else console.log(`  ✓ задний ход едет назад ......... ${(back * 3.6).toFixed(1)} км/ч`);
+
+const rest = stance();
+const nose = dive();
+const gradient = lean();
+console.log('\nПОДВЕСКА (ходы и наклоны — следствие пружин, а не формулы):');
+line('осадка под своим весом, перед / зад', `${rest.front.toFixed(0)} / ${rest.rear.toFixed(0)} мм`);
+line('кузов стоит ровно', `тангаж ${rest.pitch.toFixed(2)}°, крен ${rest.roll.toFixed(2)}°`);
+line('клевок при торможении в пол', `${nose.angle.toFixed(2)}° (перед ${nose.front.toFixed(0)} мм, зад ${nose.rear.toFixed(0)} мм)`);
+line('крен в повороте', `${gradient.toFixed(2)}° на g`);
+if (Math.abs(rest.pitch) > 0.15 || Math.abs(rest.roll) > 0.05) {
+  console.log('  ✗ кузов стоит криво под собственным весом'); failed++;
+} else console.log('  ✓ кузов стоит ровно и осел на свои миллиметры');
+if (nose.angle < 0.3 || nose.angle > 4) { console.log(`  ✗ клевок неправдоподобный: ${nose.angle.toFixed(2)}°`); failed++; }
+else console.log('  ✓ клюёт носом при торможении, как положено');
+if (gradient < 0.6 || gradient > 3) { console.log(`  ✗ крен неправдоподобный: ${gradient.toFixed(2)}° на g`); failed++; }
+else console.log('  ✓ кренится в повороте по-спорткаровски (1–2° на g)');
 
 console.log('\nЗАОДНО:');
 line('0–100 км/ч', `${run.hundred.toFixed(2)} с`);

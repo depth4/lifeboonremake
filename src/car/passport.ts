@@ -18,6 +18,37 @@ export interface WheelSpec {
   readonly width: number;
 }
 
+/**
+ * Подвеска. Задана НЕ жёсткостью в ньютонах на метр, а частотой колебаний
+ * кузова в герцах — тем, что реально называют в справочниках и что можно
+ * сравнить с чужой машиной (легковая 1.0–1.5, спорткар 1.5–2.5, гоночная
+ * 2.5–3.5 Гц). Жёсткость из неё считается: k = (2πf)² · масса на колесо.
+ * См. docs/how-cars-work.md §5.2.
+ */
+export interface Suspension {
+  readonly label: string;
+  /** Частота колебаний, Гц. */
+  readonly rideFront: number;
+  readonly rideRear: number;
+  /** Доля критического демпфирования: 0.2 легковая, 0.5 спорт, 0.7 гонка. */
+  readonly dampFront: number;
+  readonly dampRear: number;
+  /** Стабилизатор: добавка к силе от РАЗНИЦЫ ходов на оси, Н/м. */
+  readonly barFront: number;
+  readonly barRear: number;
+  /** Ход до отбойника, м. */
+  readonly travel: number;
+  /** Высота крепления подвески над землёй под статической нагрузкой, м. */
+  readonly ride: number;
+}
+
+/** Три настройки подвески. Выбирать — руками, по ощущению. */
+export const SETUPS: Record<string, Suspension> = {
+  дорога: { label: 'дорога', rideFront: 1.5, rideRear: 1.7, dampFront: 0.38, dampRear: 0.38, barFront: 20000, barRear: 15000, travel: 0.14, ride: 0.62 },
+  спорт: { label: 'спорт', rideFront: 2.0, rideRear: 2.2, dampFront: 0.52, dampRear: 0.52, barFront: 48000, barRear: 38000, travel: 0.11, ride: 0.6 },
+  трек: { label: 'трек', rideFront: 2.7, rideRear: 3.0, dampFront: 0.66, dampRear: 0.66, barFront: 80000, barRear: 64000, travel: 0.08, ride: 0.56 },
+};
+
 export interface Passport {
   readonly name: string;
   readonly mass: number;
@@ -65,6 +96,11 @@ export interface Passport {
   readonly steerLock: number;
   /** Насколько быстро человек крутит руль, рад колёс в секунду. ОЦЕНКА */
   readonly steerRate: number;
+
+  /** Неподрессоренная масса на колесо, кг: колесо, тормоз, часть рычагов. ОЦЕНКА */
+  readonly unsprung: number;
+  /** Настройка подвески. Меняется на ходу. */
+  suspension: Suspension;
 }
 
 /**
@@ -134,7 +170,24 @@ export const VIPER: Passport = {
 
   steerLock: (SPEC.steeringTurns / 2) * 2 * Math.PI / SPEC.steeringRatio,
   steerRate: 3.4,
+
+  unsprung: 27,
+  suspension: SETUPS.спорт,
 };
+
+/** Подрессоренная масса — та, что качается на пружинах. */
+export const sprungMass = (p: Passport): number => p.mass - 4 * p.unsprung;
+
+/** Жёсткость и демпфирование на колесе, из частоты и массы угла. */
+export function cornerSpring(p: Passport, front: boolean): { k: number; c: number; mass: number } {
+  const s = p.suspension;
+  const share = front ? p.frontShare : 1 - p.frontShare;
+  const mass = (sprungMass(p) * share) / 2;
+  const f = front ? s.rideFront : s.rideRear;
+  const k = (2 * Math.PI * f) ** 2 * mass;
+  const c = 2 * (front ? s.dampFront : s.dampRear) * Math.sqrt(k * mass);
+  return { k, c, mass };
+}
 
 /** Расстояние от центра масс до передней оси, м. */
 export const frontArm = (p: Passport): number => p.wheelbase * (1 - p.frontShare);

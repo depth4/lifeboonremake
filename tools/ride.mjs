@@ -56,6 +56,11 @@ await server.listen();
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+// Шрифты грузятся с чужого хоста, и в контейнере это иногда виснет.
+// Проверка не про шрифты — рубим их сразу, чтобы снимки не ждали сети.
+await page.route('**://fonts.googleapis.com/**', (r) => r.abort());
+await page.route('**://fonts.gstatic.com/**', (r) => r.abort());
+
 const problems = [];
 page.on('pageerror', (e) => problems.push('ошибка в коде: ' + String(e).split('\n')[0]));
 page.on('requestfailed', (r) => { if (!OPTIONAL.test(r.url())) problems.push('не загрузилось: ' + r.url()); });
@@ -100,6 +105,10 @@ await page.mouse.click(800, 500);
 await page.waitForTimeout(300);
 const held = await page.evaluate(() => document.pointerLockElement !== null);
 if (!held) problems.push('указатель не захватился — рулить нечем');
+// Взяли руль и мыши не касались — руль обязан быть прямым. Браузер при
+// захвате телепортирует курсор в середину и присылает это как движение;
+// если его засчитать, машина уезжает в поле сама.
+const grabbed = await car();
 
 const spawn = await car();
 await page.evaluate(() => { window.__yaw0 = window.__car().yaw; });
@@ -137,10 +146,11 @@ await page.keyboard.up('w');
 for (let i = 0; i < 12; i++) await page.mouse.move(800 + i * 90, 500);
 await page.waitForTimeout(350);
 const withHelp = await car();
-await page.click('button[data-drive="assist"]');
-await page.waitForTimeout(350);
+// переключаем КЛАВИШЕЙ: указатель захвачен рулём, по кнопкам мышью не попасть
+await page.keyboard.press('g');
+await page.waitForTimeout(400);
 const noHelp = await car();
-await page.click('button[data-drive="assist"]');
+await page.keyboard.press('g');
 
 // 4. ПОВОРОТ — руль уже вывернут, ждём, пока курс изменится заметно.
 const turned = await until('поворот', 'поворот', 30000);
@@ -152,12 +162,25 @@ await page.keyboard.up('s');
 
 // 5. Поставить машину обратно на дорогу и выйти: она остаётся стоять,
 // и на неё можно посмотреть со стороны — проверка глазами.
-await page.click('button[data-drive="park"]');
-await page.click('button[data-drive="seat"]');
-await page.waitForTimeout(400);
-await page.click('button[data-drive="seat"]');
-await page.waitForTimeout(1400);
+await page.keyboard.press('Enter'); // выйти из машины: она остаётся стоять
+await page.waitForTimeout(1600);
 await page.screenshot({ path: 'shots/ride-5-стоит.png' });
+
+// 6. ТРАФИК. Включаем в самом конце и отдельно: восемнадцать чужих машин
+// заметно роняют частоту кадров в безголовом браузере, а ездовые проверки
+// ограничены реальным временем и начинают не дожидаться.
+await page.click('button[data-drive="traffic"]');
+await page.waitForTimeout(600);
+const trafficBefore = await page.evaluate(() => window.__traffic());
+await page.waitForTimeout(2500);
+const trafficAfter = await page.evaluate(() => window.__traffic());
+// смотрим на весь квартал: иначе камера стоит у машины игрока и чужих не видно
+await page.click('button[data-view="road"]');
+await page.waitForTimeout(2600);
+await page.screenshot({ path: 'shots/ride-6-трафик.png' });
+await page.click('button[data-view="over"]');
+await page.waitForTimeout(2600);
+await page.screenshot({ path: 'shots/ride-7-сверху.png' });
 
 await browser.close();
 
@@ -173,6 +196,7 @@ row('встали от тормоза', stopped);
 row('повернули', turned);
 
 const checks = [
+  ['руль прям, пока мышь не трогали', Math.abs(grabbed.command) < 0.02, `${(grabbed.command * 100).toFixed(1)}% хода`],
   ['разогналась до 100 км/ч', hundred.speed * 3.6 >= 99, `за ${(hundred.sim - start.sim).toFixed(2)} с физики`],
   ['браузер считает ту же машину', Math.abs(hundred.sim - start.sim - REFERENCE) < 0.25, `${(hundred.sim - start.sim).toFixed(2)} с в браузере против ${REFERENCE.toFixed(2)} в терминале`],
   ['повернула по рулю', Math.abs(turned.yaw - start.yaw) > 0.7, `${((turned.yaw - start.yaw) * 180 / Math.PI).toFixed(0)}°`],
@@ -180,6 +204,9 @@ const checks = [
   ['ни разу не потеряла опору', !start.lost && !hundred.lost && !turned.lost && !stopped.lost, 'колёса на поверхности'],
   ['осталась в пределах квартала', Math.hypot(turned.x, turned.z) < 175, `${Math.hypot(turned.x, turned.z).toFixed(0)} м от центра`],
   ['мышь выворачивает руль до упора', Math.abs(noHelp.command) > 0.95, `${(noHelp.command * 100).toFixed(0)}% хода`],
+  ['чужие машины поехали',
+    trafficAfter.length > 0 && trafficAfter.some((c, i) => Math.abs(c.s - trafficBefore[i].s) > 3 || c.shape !== trafficBefore[i].shape),
+    `${trafficAfter.length} штук, самая быстрая ${(Math.max(...trafficAfter.map((c) => c.speed)) * 3.6).toFixed(0)} км/ч`],
   ['помощь держит колёса в пределе сцепления',
     Math.abs(withHelp.steer) < Math.abs(noHelp.steer) * 0.6,
     `${(Math.abs(withHelp.steer) * 180 / Math.PI).toFixed(1)}° с помощью против ${(Math.abs(noHelp.steer) * 180 / Math.PI).toFixed(1)}° без неё, упор ${(noHelp.lock * 180 / Math.PI).toFixed(1)}°`],

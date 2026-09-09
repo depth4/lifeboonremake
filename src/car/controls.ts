@@ -39,6 +39,8 @@ export interface Driver {
   held(): boolean;
   /** Поставить руль в ноль. */
   anchor(): void;
+  /** Отпустить указатель: вышел из машины — мышь снова твоя. */
+  release(): void;
   pad(): boolean;
   detach(): void;
 }
@@ -54,6 +56,13 @@ function pedal(now: number, want: number, dt: number): number {
 export function createDriver(surface: HTMLElement): Driver {
   const keys = new Set<string>();
   let wheel = 0;   // −1..1, накопленное положение руля
+  /**
+   * Захватывая указатель, браузер сам переносит курсор в середину окна
+   * и присылает это как одно огромное движение мыши. Если его засчитать,
+   * руль в тот же миг оказывается в упоре — машина уезжает в поле, хотя
+   * игрок мыши не касался. Первое движение после захвата выбрасываем.
+   */
+  let ignoreNext = false;
   let throttle = 0, brake = 0, keySteer = 0;
 
   const down = (e: KeyboardEvent): void => {
@@ -67,7 +76,12 @@ export function createDriver(surface: HTMLElement): Driver {
   const up = (e: KeyboardEvent): void => { keys.delete(e.code); };
   const move = (e: MouseEvent): void => {
     if (document.pointerLockElement !== surface) return;
+    if (ignoreNext) { ignoreNext = false; return; }
     wheel = clamp(wheel - e.movementX / driver.travel, -1, 1);
+  };
+  // взял руль — руль прямой: иначе «прямо» зависело бы от того, где был курсор
+  const locked = (): void => {
+    if (document.pointerLockElement === surface) { wheel = 0; ignoreNext = true; }
   };
   const grab = (): void => {
     if (document.pointerLockElement !== surface) surface.requestPointerLock();
@@ -77,6 +91,7 @@ export function createDriver(surface: HTMLElement): Driver {
   addEventListener('keyup', up);
   addEventListener('mousemove', move);
   surface.addEventListener('mousedown', grab);
+  document.addEventListener('pointerlockchange', locked);
 
   const driver: Driver = {
     assist: true,
@@ -84,6 +99,7 @@ export function createDriver(surface: HTMLElement): Driver {
     command: 0,
     held(): boolean { return document.pointerLockElement === surface; },
     anchor(): void { wheel = 0; },
+    release(): void { if (document.pointerLockElement === surface) document.exitPointerLock(); },
     pad(): boolean {
       return typeof navigator.getGamepads === 'function' && [...navigator.getGamepads()].some((g) => g !== null);
     },
@@ -92,6 +108,7 @@ export function createDriver(surface: HTMLElement): Driver {
       removeEventListener('keyup', up);
       removeEventListener('mousemove', move);
       surface.removeEventListener('mousedown', grab);
+      document.removeEventListener('pointerlockchange', locked);
       if (document.pointerLockElement === surface) document.exitPointerLock();
     },
     read(dt: number): Controls {
