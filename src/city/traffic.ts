@@ -172,6 +172,43 @@ export function along(world: World, shape: number, s: number): { x: number; z: n
   return { x: a.x + dx * k, z: a.z + dz * k, fx: dx / len, fz: dz / len };
 }
 
+/**
+ * На какой дороге и на каком её метре оказалась произвольная точка мира.
+ *
+ * Считает город, а не дорога: дорога про городскую жизнь ничего не знает
+ * и знать не должна. Нужно это ровно для одного — чтобы трафик видел машину
+ * игрока и вёл себя так, будто она тоже участник движения.
+ */
+export function locate(world: World, x: number, z: number):
+{ shape: number; s: number; across: number; fx: number; fz: number } | null {
+  let best: { shape: number; s: number; across: number; fx: number; fz: number } | null = null;
+  let bestDist = Infinity;
+  world.shapes.forEach((shape, si) => {
+    const st = shape.stations;
+    for (let i = 0; i + 1 < st.length; i++) {
+      const dx = st[i + 1].x - st[i].x, dz = st[i + 1].z - st[i].z;
+      const len2 = dx * dx + dz * dz;
+      if (len2 < 1e-9) continue;
+      let t = ((x - st[i].x) * dx + (z - st[i].z) * dz) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const px = st[i].x + dx * t, pz = st[i].z + dz * t;
+      const d = Math.hypot(x - px, z - pz);
+      if (d >= bestDist) continue;
+      const len = Math.sqrt(len2);
+      const fx = dx / len, fz = dz / len;
+      bestDist = d;
+      best = {
+        shape: si,
+        s: st[i].s + t * (st[i + 1].s - st[i].s),
+        // право по ходу возрастания s — это (−fz, fx)
+        across: -(x - px) * fz + (z - pz) * fx,
+        fx, fz,
+      };
+    }
+  });
+  return bestDist > 40 ? null : best;
+}
+
 /** Насколько круто дорога заворачивает здесь: радиус в метрах. */
 function radius(world: World, shape: number, s: number): number {
   const back = along(world, shape, s - 5), fwd = along(world, shape, s + 5);
@@ -311,7 +348,11 @@ export interface OnCrossing { shape: number; s: number }
 
 export function moveTraffic(
   world: World, net: Network, movers: Mover[], dt: number, time: number,
-  options: { headway?: boolean; rules?: boolean; crossing?: readonly OnCrossing[] } = {},
+  options: {
+    headway?: boolean; rules?: boolean; crossing?: readonly OnCrossing[];
+    /** Машина игрока: город обязан её видеть, иначе он едет сквозь неё. */
+    player?: { x: number; z: number; speed: number; yaw: number } | null;
+  } = {},
 ): void {
   const headway = options.headway ?? true;
   const rules = options.rules ?? true;
@@ -324,6 +365,20 @@ export function moveTraffic(
    */
   const spots = movers.map((m) => poseOf(world, m));
   const targets = movers.map((m) => nextJunction(net, m));
+
+  /**
+   * Машина игрока превращается в такого же участника: где она на дороге,
+   * в какую сторону смотрит и с какой скоростью едет. Дальше она держит
+   * тех, кто за ней, и занимает перекрёсток наравне со всеми.
+   */
+  const you = options.player == null ? null : (() => {
+    const at = locate(world, options.player.x, options.player.z);
+    if (at === null) return null;
+    const p = options.player;
+    const facing = Math.cos(p.yaw) * at.fx + Math.sin(p.yaw) * at.fz;
+    const dir = facing >= 0 ? 1 : -1;
+    return { shape: at.shape, s: at.s, across: at.across, dir, speed: Math.abs(p.speed), x: p.x, z: p.z };
+  })();
 
   /** Стоит ли машина на своём светофоре. */
   const onRed = movers.map((m, i) => {
@@ -352,11 +407,16 @@ export function moveTraffic(
     const leaving = targets[i] === null || targets[i]!.end.junction !== m.claim;
     if (away > BOX + 5 && leaving) m.claim = -1; else holder[m.claim] = i;
   });
+  if (you !== null) {
+    world.junctions.forEach((j, ji) => {
+      if (Math.hypot(you.x - j.x, you.z - j.z) < BOX && holder[ji] < 0) holder[ji] = -2;
+    });
+  }
   movers.forEach((m, i) => {
     const t = targets[i];
     if (m.claim >= 0 || t === null || onRed[i]) return;
     if (t.centreGap <= 0 || t.centreGap > 30) return;
-    if (holder[t.end.junction] >= 0) return;
+    if (holder[t.end.junction] !== -1) return;
     // ближайший из претендентов — и только он
     const rival = movers.findIndex((o, k) => k !== i && o.claim < 0 && !onRed[k]
       && targets[k] !== null && targets[k]!.end.junction === t.end.junction
@@ -387,6 +447,18 @@ export function moveTraffic(
         const gap = (other.s - m.s) * m.dir - LENGTH;
         if (gap > 0 && gap < 60) holds.push({ gap, speed: other.speed, why: 'машина впереди' });
       }
+    }
+
+    /**
+     * Машина игрока — такой же участник движения, только считает её не город.
+     * Попутная впереди — обычный лидер. Встречная на моей полосе — не лидер,
+     * а препятствие: держать дистанцию по ЕГО скорости нельзя, она направлена
+     * навстречу. Такую проходим со скоростью ноль, то есть останавливаемся.
+     */
+    if (you !== null && you.shape === m.shape && Math.abs(you.across - m.across) < 2.6) {
+      const gap = (you.s - m.s) * m.dir - LENGTH;
+      if (gap > 0 && gap < 60)
+        holds.push({ gap, speed: you.dir === m.dir ? you.speed : 0, why: 'игрок' });
     }
 
     // ── перекрёсток: светофор, занятая коробка, помеха справа

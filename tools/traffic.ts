@@ -167,6 +167,53 @@ for (const m of movers) {
   }
 }
 
+/**
+ * Отдельная сцена: машина игрока СТОИТ посреди полосы, к ней сзади подъезжает
+ * чужая. Город обязан её видеть — иначе трафик проедет сквозь игрока.
+ *
+ * Сцена гоняется дважды: как есть и «вслепую» (игрока не передали). Слепой
+ * прогон обязан задеть машину — иначе проверка ничего не проверяет.
+ */
+function playerScene(blind: boolean): { held: number; hit: number; closest: number; approached: number } {
+  const cars = placeTraffic(world, net, 18, 7);
+  // самый длинный кусок дороги без перекрёстков: там никто никуда не свернёт
+  let road = 0, lo = 0, hi = 0;
+  world.shapes.forEach((_, si) => {
+    const marks = [0, ...net.nodes[si].map((n) => n.s), net.length[si]].sort((a, b) => a - b);
+    for (let i = 0; i + 1 < marks.length; i++)
+      if (marks[i + 1] - marks[i] > hi - lo) { road = si; lo = marks[i]; hi = marks[i + 1]; }
+  });
+  const at = lo + (hi - lo) * 0.75;
+  const lane = world.shapes[road].halfWidth * 0.5;
+  const spot = along(world, road, at);
+  const me = {
+    x: spot.x - spot.fz * lane, z: spot.z + spot.fx * lane,
+    speed: 0, yaw: Math.atan2(spot.fz, spot.fx),
+  };
+  // подъезжающего сажаем руками: сцена не должна зависеть от везения
+  const test = cars[0];
+  test.shape = road; test.dir = 1; test.s = lo + 5; test.across = lane;
+  test.speed = 11; test.park = null; test.claim = -1; test.cruise = 14;
+
+  let held = 0, hit = 0, closest = Infinity, approached = Infinity;
+  for (let t = 0; t < 25; t += DT) {
+    moveTraffic(world, net, cars, DT, t, { player: blind ? null : me });
+    if (test.reason === 'игрок') held++;
+    const pose = poseOf(world, test);
+    const dx = me.x - pose.x, dz = me.z - pose.z;
+    const fx = Math.cos(pose.yaw), fz = Math.sin(pose.yaw);
+    // то же наложение габаритов, что и между чужими машинами
+    const overlap = Math.max(Math.abs(dx * fx + dz * fz) / 4.4, Math.abs(-dx * fz + dz * fx) / 1.95);
+    closest = Math.min(closest, overlap);
+    approached = Math.min(approached, (at - test.s) - 4.4);
+    if (overlap < 1) hit++;
+  }
+  return { held, hit, closest, approached };
+}
+
+const sees = playerScene(false);
+const blind = playerScene(true);
+
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(38, '.')} ${value}`);
 console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : lawless ? '   [СЛОМАНО: правила выключены]' : ''}\n`);
 line('дорог в сети / узлов', `${world.shapes.length} / ${world.junctions.length}`);
@@ -195,6 +242,11 @@ const checks: [string, boolean, string][] = [
   ['пешеходы вообще переходят дорогу', crossings > 3, `${crossings} за две минуты`],
   ['кто-то припарковался и уехал', parkedEver > 0 && leftEver > 0, `${parkedEver} парковок, ${leftEver} выездов`],
   ['пешеходы дошли хоть куда-то', walked.every((d) => d > 20), `самый ленивый ${Math.min(...walked).toFixed(0)} м`],
+  ['город видит машину игрока', sees.held > 0, `${(sees.held / 60).toFixed(1)} с держался за неё`],
+  ['трафик не проехал сквозь игрока', sees.hit === 0,
+    `подъехал на ${sees.approached.toFixed(1)} м, ближе всего ${(sees.closest * 100).toFixed(0)}% от касания`],
+  ['вслепую — обязан задеть', blind.hit > 0,
+    blind.hit > 0 ? `задел ${(blind.hit / 60).toFixed(1)} с, проверка ловит` : 'НЕ ЗАДЕЛ — проверка ничего не проверяет'],
 ];
 console.log('');
 line('карманов у бордюра', `${net.bays.length}`);

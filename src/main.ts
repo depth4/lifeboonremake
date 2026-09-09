@@ -437,7 +437,10 @@ viewer.onFrame((dt) => {
     cityTime += step;
     moveWalkers(world, network, walkers, step, cityTime);
     const crossing = walkers.filter((w) => w.crossing > 0).map((w) => ({ shape: w.shape, s: w.s }));
-    moveTraffic(world, network, traffic, step, cityTime, { crossing });
+    moveTraffic(world, network, traffic, step, cityTime, {
+      crossing,
+      player: car === null ? null : { x: car.x, z: car.z, speed: forwardSpeed(car), yaw: car.yaw },
+    });
     viewer.setWalkers(walkers.map((w) => {
       const pose = walkerPose(world, w);
       return { x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: pose.yaw, colour: w.colour };
