@@ -209,6 +209,42 @@
         .hint { display: none; }
         .facts { font-size: 11px; gap: 4px 14px; }
       }
+      /* ── приборка: видно только за рулём ── */
+      .dash {
+        pointer-events: none;
+        align-self: end;
+        justify-self: center;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 12px 18px;
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 3px;
+        backdrop-filter: blur(8px);
+        color: var(--text);
+      }
+      .dash[hidden] { display: none; }
+      .speedo { display: flex; align-items: baseline; gap: 5px; }
+      .speedo b {
+        font-family: var(--sans); font-size: 42px; font-weight: 600; line-height: 1;
+        font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; display: inline-block;
+      }
+      .speedo span { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+      .dash .stack { display: flex; flex-direction: column; gap: 6px; width: 150px; }
+      .rev { height: 5px; background: rgba(233, 236, 233, 0.14); overflow: hidden; }
+      .rev i { display: block; height: 100%; width: 0; background: var(--mark); transition: width 0.06s linear; }
+      .rev i.red { background: #e0483f; }
+      .strip { display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+      .strip span:first-child { color: var(--text); font-weight: 500; }
+      .pedals { display: flex; gap: 6px; align-items: flex-end; height: 46px; }
+      .ped { width: 11px; height: 46px; background: rgba(233, 236, 233, 0.12); display: flex; align-items: flex-end; }
+      .ped i { display: block; width: 100%; height: 0; background: #7fc46b; }
+      .ped i.red { background: #e0483f; }
+      .wheel { width: 46px; height: 46px; color: var(--text); }
+      .grips { display: grid; grid-template-columns: 12px 12px; gap: 4px; }
+      .grips i { width: 12px; height: 16px; background: rgba(233, 236, 233, 0.16); display: block; }
+      .dash .tip { margin: 0; max-width: 240px; font-size: 11px; line-height: 1.45; color: var(--muted); }
     </style>
   </head>
   <body>
@@ -233,11 +269,32 @@
         <div class="group"><span class="tag">сцена</span>
           <div class="views" id="scenes" role="group" aria-label="Сцена"></div>
         </div>
+        <div class="group"><span class="tag">машина</span>
+          <div class="views" id="drive" role="group" aria-label="Машина"></div>
+        </div>
       </div>
       <div class="news" id="news">
         <h2 id="news-when">что нового</h2>
         <ol id="news-list"></ol>
         <button type="button" id="news-close">скрыть</button>
+      </div>
+      <div class="dash" id="dash" hidden>
+        <div class="speedo"><b id="d-speed">0</b><span>км/ч</span></div>
+        <div class="stack">
+          <div class="rev"><i id="d-rev"></i></div>
+          <div class="strip"><span id="d-gear">N</span><span id="d-rpm">800</span><span id="d-mat">асфальт</span><span id="d-sens">руль 360 px</span></div>
+        </div>
+        <div class="pedals">
+          <div class="ped"><i id="d-gas"></i></div>
+          <div class="ped"><i id="d-brake" class="red"></i></div>
+        </div>
+        <svg class="wheel" viewBox="-12 -12 24 24" aria-label="Положение руля">
+          <circle r="10.5" fill="none" stroke="currentColor" stroke-width="1.6" opacity="0.45" />
+          <g id="d-wheel"><path d="M0 -10.5 V-4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+          <path d="M-9 4 H9" stroke="currentColor" stroke-width="1.8" opacity="0.75" /></g>
+        </svg>
+        <div class="grips" id="d-grips"></div>
+        <p class="tip" id="d-tip"></p>
       </div>
       <div class="bottom">
         <div class="readout">

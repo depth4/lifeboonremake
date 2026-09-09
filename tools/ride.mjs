@@ -1,0 +1,173 @@
+/**
+ * Проехаться по кварталу из терминала и снять, что получилось.
+ *
+ * Почему не хватило `npm run shot`: тот снимает неподвижные ракурсы. Здесь
+ * надо нажать на газ, повернуть и затормозить — и убедиться, что машина
+ * поехала, повернула и встала прямо в браузере, а не только в счёте.
+ *
+ * ВАЖНО про время: часы снаружи и время, насчитанное физикой, — разные вещи.
+ * В безголовом браузере кадры идут медленнее реального времени, поэтому все
+ * сроки здесь меряются временем физики, которое машина сообщает сама.
+ *
+ *   npm run ride                — сцена «крест», равнина
+ *   npm run ride -- горка горы  — сцена и рельеф
+ */
+
+import { createServer } from 'vite';
+import { chromium } from 'playwright';
+import { mkdirSync } from 'node:fs';
+import { VIPER } from '../src/car/passport.ts';
+import { P_ZERO } from '../src/car/tyre.ts';
+import { createCar, forwardSpeed, step } from '../src/car/car.ts';
+import { GroundIndex } from '../src/car/ground.ts';
+import { buildWorld } from '../src/world/world.ts';
+import { buildSurface } from '../src/surface/index.ts';
+import { SCENES } from '../src/scenes.ts';
+
+/**
+ * Эталон: та же машина, посчитанная здесь же, в терминале, — по той же сцене,
+ * из той же точки, с тем же газом, что нажимает браузер. Число не переписано
+ * ниоткуда: оно считается заново каждым запуском. Разойтись с браузером оно
+ * может только если браузер считает НЕ ту машину или подаёт НЕ тот газ.
+ */
+function referenceHundred(from) {
+  const index = new GroundIndex(buildSurface(buildWorld(SCENES[scene], terrain), 'A'));
+  const car = createCar(VIPER, from.x, from.z, from.yaw);
+  const dt = 1 / 300;
+  let gas = 0;
+  for (let t = 0; t < 40; t += dt) {
+    gas = Math.min(0.85, gas + dt / 0.22); // тот же ход педали, что у клавиши W
+    step(car, VIPER, P_ZERO, (x, z) => index.sample(x, z), { steer: 0, throttle: gas, brake: 0, handbrake: false }, dt);
+    if (forwardSpeed(car) >= 100 / 3.6) return t;
+  }
+  return NaN;
+}
+
+const PORT = 5202;
+const scene = process.argv[2] ?? 'крест';
+const terrain = process.argv[3] ?? 'plain';
+const OPTIONAL = /fonts\.(googleapis|gstatic)\.com/;
+
+mkdirSync('shots', { recursive: true });
+const server = await createServer({ server: { port: PORT, strictPort: true }, logLevel: 'warn' });
+await server.listen();
+
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+const problems = [];
+page.on('pageerror', (e) => problems.push('ошибка в коде: ' + String(e).split('\n')[0]));
+page.on('requestfailed', (r) => { if (!OPTIONAL.test(r.url())) problems.push('не загрузилось: ' + r.url()); });
+
+const car = () => page.evaluate(() => window.__car());
+
+/**
+ * Дождаться события и снять показания В ТОТ ЖЕ МИГ.
+ *
+ * Читать состояние отдельным запросом после ожидания нельзя: между тем, как
+ * условие сработало, и тем, как ответ дойдёт обратно, машина проезжает ещё
+ * секунду. На этом первая версия проверки и соврала на целую секунду.
+ */
+async function until(name, mark, limit = 45000) {
+  await page.evaluate(() => { window.__hit = null; });
+  try {
+    await page.waitForFunction((m) => {
+      const c = window.__car();
+      if (c === null) return false;
+      const hit =
+        m === 'газ' ? c.throttle > 0.05
+        : m === 'сотня' ? c.speed * 3.6 >= 100
+        : m === 'поворот' ? Math.abs(c.yaw - window.__yaw0) > 0.8
+        : Math.abs(c.speed) * 3.6 < 1.5;
+      if (hit) window.__hit = c;
+      return hit;
+    }, mark, { timeout: limit, polling: 30 });
+  } catch {
+    problems.push(`не дождались: ${name}`);
+  }
+  return page.evaluate(() => window.__hit ?? window.__car());
+}
+
+const url = `http://localhost:${PORT}/?scene=${encodeURIComponent(scene)}&terrain=${terrain}&view=close`;
+await page.goto(url, { waitUntil: 'load' });
+await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });
+await page.click('button[data-drive="seat"]');
+await page.waitForFunction(() => window.__car() !== null, null, { timeout: 10000 });
+
+const spawn = await car();
+await page.evaluate(() => { window.__yaw0 = window.__car().yaw; });
+await page.screenshot({ path: 'shots/ride-1-стоим.png' });
+
+// Эталон считается ДО того, как машина тронется: пока Node занят счётом,
+// браузер продолжает жить, и время в нём идёт. Первая версия проверки на
+// этом и обманулась — приписала разгону целую секунду стояния на месте.
+const REFERENCE = referenceHundred(spawn);
+
+// Разгон. Отсчёт ведём НЕ от нажатия клавиши, а от мига, когда физика
+// увидела газ: между этими двумя событиями лежит неизвестная задержка
+// браузера, и из-за неё первая версия проверки то проходила, то падала.
+await page.keyboard.down('w');
+const start = await until('газ появился', 'газ', 10000);
+const hundred = await until('разгон до 100 км/ч', 'сотня');
+await page.keyboard.up('w');
+await page.screenshot({ path: 'shots/ride-2-разгон.png' });
+
+// тормоз в пол до полной остановки — сразу, пока не уехали за край сцены
+await page.keyboard.down('s');
+const stopped = await until('полная остановка', 'стоп');
+await page.keyboard.up('s');
+await page.screenshot({ path: 'shots/ride-3-встали.png' });
+await page.waitForTimeout(400);
+
+// поворот: трогаемся и крутим руль вправо, пока курс не изменится заметно
+await page.evaluate(() => { window.__yaw0 = window.__car().yaw; });
+await page.keyboard.down('w');
+await page.keyboard.down('d');
+const turned = await until('поворот', 'поворот', 30000);
+await page.keyboard.up('d');
+await page.keyboard.up('w');
+await page.screenshot({ path: 'shots/ride-4-поворот.png' });
+await page.keyboard.down('s');
+await until('остановка после поворота', 'стоп');
+await page.keyboard.up('s');
+
+// поставить машину обратно на дорогу и выйти из неё: она остаётся стоять,
+// и на неё можно посмотреть со стороны — это и есть проверка глазами
+await page.click('button[data-drive="park"]');
+await page.click('button[data-drive="seat"]');
+await page.waitForTimeout(400);
+await page.click('button[data-drive="seat"]');
+await page.waitForTimeout(1200);
+await page.screenshot({ path: 'shots/ride-5-стоит.png' });
+
+await browser.close();
+
+const row = (what, c) => console.log(
+  `  ${what.padEnd(20, '.')} ${(c.speed * 3.6).toFixed(0).padStart(4)} км/ч  ` +
+  `передача ${c.reverse ? 'R' : c.gear + 1}  ${Math.round(c.rpm)} об/мин  ` +
+  `время физики ${c.sim.toFixed(2)} с  под колёсами ${[...new Set(c.materials)].join('+')}`);
+
+console.log('\nчто говорила машина:');
+row('тронулись', start);
+row('набрали сотню', hundred);
+row('встали от тормоза', stopped);
+row('повернули', turned);
+
+const checks = [
+  ['разогналась до 100 км/ч', hundred.speed * 3.6 >= 99, `за ${(hundred.sim - start.sim).toFixed(2)} с физики`],
+  ['браузер считает ту же машину', Math.abs(hundred.sim - start.sim - REFERENCE) < 0.25, `${(hundred.sim - start.sim).toFixed(2)} с в браузере против ${REFERENCE.toFixed(2)} в терминале`],
+  ['повернула по рулю', Math.abs(turned.yaw - start.yaw) > 0.7, `${((turned.yaw - start.yaw) * 180 / Math.PI).toFixed(0)}°`],
+  ['встала от тормоза', Math.abs(stopped.speed) * 3.6 < 1.5, `${(stopped.speed * 3.6).toFixed(1)} км/ч`],
+  ['ни разу не потеряла опору', !start.lost && !hundred.lost && !turned.lost && !stopped.lost, 'колёса на поверхности'],
+  ['осталась в пределах квартала', Math.hypot(turned.x, turned.z) < 130, `${Math.hypot(turned.x, turned.z).toFixed(0)} м от центра`],
+];
+console.log('');
+let bad = 0;
+for (const [name, ok, detail] of checks) {
+  if (!ok) bad++;
+  console.log(`  ${ok ? '✓' : '✗'} ${name.padEnd(32, '.')} ${detail}`);
+}
+for (const p of problems) console.log('  ✗ ' + p);
+console.log(bad + problems.length === 0 ? '\nПОЕЗДКА ПРОЙДЕНА\n' : `\nПОЕЗДКА ПРОВАЛЕНА: ${bad + problems.length}\n`);
+
+server.close().catch(() => {});
+process.exit(bad + problems.length > 0 ? 1 : 0);

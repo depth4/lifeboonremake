@@ -14,6 +14,7 @@
     "section": "node --experimental-strip-types tools/section.ts",
     "car": "node --experimental-strip-types tools/car.ts",
     "drive": "node --experimental-strip-types tools/drive.ts",
+    "ride": "node tools/ride.mjs",
     "where": "node --experimental-strip-types tools/where.ts",
     "report": "node --experimental-strip-types tools/report.ts",
     "site": "node tools/site.mjs",

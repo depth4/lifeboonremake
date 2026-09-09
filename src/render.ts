@@ -69,6 +69,52 @@ function shade(surface: Surface, normals: Float32Array): Float32Array {
   return colors;
 }
 
+/** Что показу нужно знать о машине. Ни грамма физики — только поза. */
+export interface CarView {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly yaw: number;
+  readonly pitch: number;
+  readonly roll: number;
+  /** Скорость вдоль носа, м/с — камере, чтобы отъезжать на быстром ходу. */
+  readonly speed: number;
+  readonly wheels: readonly {
+    readonly x: number; readonly y: number; readonly z: number;
+    readonly steer: number; readonly spin: number;
+    readonly radius: number; readonly width: number;
+  }[];
+}
+
+/**
+ * Кузов: боковой силуэт, выдавленный на ширину машины. Так низкая длинная
+ * машина читается с любого ракурса, а коробка — нет.
+ */
+function buildBody(length: number, width: number): THREE.BufferGeometry {
+  const nose = length / 2;
+  // Силуэт сбоку в метрах над землёй: длинный капот, кабина сдвинута назад,
+  // короткий хвост. Обход против часовой стрелки, начиная с носа снизу.
+  const points: [number, number][] = [
+    [nose - 0.08, 0.16], [nose, 0.34], [nose - 0.55, 0.56], [nose - 1.35, 0.66],
+    [nose - 2.05, 0.80], [nose - 2.45, 1.19], [nose - 3.10, 1.21], [nose - 3.55, 0.86],
+    [-nose + 0.35, 0.76], [-nose, 0.60], [-nose - 0.02, 0.30], [-nose + 0.35, 0.14],
+  ];
+  const side = new THREE.Shape();
+  side.moveTo(points[0][0], points[0][1]);
+  for (const [x, y] of points.slice(1)) side.lineTo(x, y);
+  side.closePath();
+
+  // Кузов рисуется чуть уже настоящего: иначе колёса тонут в нём, а колея —
+  // величина физическая, её подгонять под картинку нельзя.
+  const depth = width - 0.24;
+  const geometry = new THREE.ExtrudeGeometry(side, {
+    depth, bevelEnabled: true, bevelSize: 0.08, bevelThickness: 0.07, bevelSegments: 2,
+  });
+  geometry.translate(0, 0, -depth / 2);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 export interface View {
   readonly label: string;
   readonly from: [number, number, number];
@@ -97,6 +143,12 @@ export interface Viewer {
   /** Показать рёбра треугольников: видно, из чего на самом деле сделан мир. */
   setWire(on: boolean): void;
   wire(): boolean;
+  /** Поставить машину в мир. null — убрать. */
+  setCar(view: CarView | null): void;
+  /** Камера за машиной вместо облёта. */
+  setChase(on: boolean): void;
+  /** Позвать это каждый кадр: сюда main двигает физику. */
+  onFrame(cb: (dt: number) => void): void;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -187,6 +239,29 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   ghost.position.y = 0.12;
   scene.add(ghost);
 
+  // ── машина: собирается один раз, дальше только двигается
+  const carGroup = new THREE.Group();
+  carGroup.visible = false;
+  const body = new THREE.Mesh(
+    new THREE.BufferGeometry(),
+    new THREE.MeshStandardMaterial({ color: 0xb3121d, roughness: 0.35, metalness: 0.25 }),
+  );
+  body.castShadow = true;
+  carGroup.add(body);
+  // остекление: тёмная лента чуть шире кузова на высоте кабины
+  const glass = new THREE.Mesh(
+    new THREE.BoxGeometry(1.32, 0.42, 1.76),
+    new THREE.MeshStandardMaterial({ color: 0x1b2226, roughness: 0.16, metalness: 0.35 }),
+  );
+  glass.position.set(-0.42, 0.94, 0);
+  body.add(glass);
+  const wheelParts: { hub: THREE.Group; tyre: THREE.Mesh }[] = [];
+  scene.add(carGroup);
+  let bodyBuilt = 0;
+
+  const wheelMaterial = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.85 });
+  const rimMaterial = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.35, metalness: 0.7 });
+
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
   const sun = new THREE.DirectionalLight(0xfff3dd, 2.1);
   sun.position.set(-90, 110, -60);
@@ -233,9 +308,32 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
+  let onFrameCb: ((dt: number) => void) | null = null;
+  let chase = false;
+  const chaseEye = new THREE.Vector3();
+  const chaseAim = new THREE.Vector3();
+  let chaseReady = false;
+
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
-    const dt = clock.getDelta();
+    const dt = Math.min(0.1, clock.getDelta());
+    if (onFrameCb) onFrameCb(dt);
+    if (chase && carGroup.visible) {
+      const ahead = new THREE.Vector3(Math.cos(carGroup.userData.yaw as number), 0, Math.sin(carGroup.userData.yaw as number));
+      const speed = (carGroup.userData.speed as number) ?? 0;
+      // на скорости камера отъезжает назад: так виден запас дороги впереди
+      const back = 7.2 + Math.min(4, Math.abs(speed) * 0.11);
+      const eye = carGroup.position.clone().addScaledVector(ahead, -back).add(new THREE.Vector3(0, 2.85, 0));
+      const aim = carGroup.position.clone().addScaledVector(ahead, 7).add(new THREE.Vector3(0, 0.9, 0));
+      if (!chaseReady) { chaseEye.copy(eye); chaseAim.copy(aim); chaseReady = true; }
+      const k = 1 - Math.exp(-dt * 7);
+      chaseEye.lerp(eye, k);
+      chaseAim.lerp(aim, k);
+      camera.position.copy(chaseEye);
+      camera.lookAt(chaseAim);
+      renderer.render(scene, camera);
+      return;
+    }
     if (flight) {
       flight.t = Math.min(1, flight.t + dt * 1.4);
       const e = flight.t < 0.5 ? 2 * flight.t * flight.t : 1 - Math.pow(-2 * flight.t + 2, 2) / 2;
@@ -276,6 +374,58 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       if (!on) {
         ghost.visible = false;
       }
+    },
+    setCar(view) {
+      if (view === null) { carGroup.visible = false; return; }
+      if (bodyBuilt !== view.wheels.length || wheelParts.length === 0) {
+        body.geometry.dispose();
+        body.geometry = buildBody(4.463, 1.941);
+        for (const w of view.wheels) {
+          const hub = new THREE.Group();
+          const tyreGeometry = new THREE.CylinderGeometry(w.radius, w.radius, w.width, 22);
+          tyreGeometry.rotateX(Math.PI / 2);
+          const tyre = new THREE.Mesh(tyreGeometry, wheelMaterial);
+          tyre.castShadow = true;
+          const rimGeometry = new THREE.CylinderGeometry(w.radius * 0.62, w.radius * 0.62, w.width * 1.02, 16);
+          rimGeometry.rotateX(Math.PI / 2);
+          tyre.add(new THREE.Mesh(rimGeometry, rimMaterial));
+          hub.add(tyre);
+          scene.add(hub);
+          wheelParts.push({ hub, tyre });
+        }
+        bodyBuilt = view.wheels.length;
+      }
+      carGroup.visible = true;
+      carGroup.position.set(view.x, view.y, view.z);
+      carGroup.rotation.set(0, -view.yaw, 0);
+      body.rotation.set(view.roll, 0, view.pitch);
+      carGroup.userData.yaw = view.yaw;
+      carGroup.userData.speed = view.speed;
+      view.wheels.forEach((w, i) => {
+        const part = wheelParts[i];
+        if (!part) return;
+        part.hub.visible = true;
+        part.hub.position.set(w.x, w.y + w.radius, w.z);
+        part.hub.rotation.set(0, -(view.yaw + w.steer), 0);
+        part.tyre.rotation.z = -w.spin;
+      });
+    },
+    setChase(on) {
+      chase = on;
+      chaseReady = false;
+      controls.enabled = !on;
+      // вышел из машины — камера смотрит на машину, а не туда, где была раньше
+      if (!on && carGroup.visible) {
+        const ahead = new THREE.Vector3(Math.cos(carGroup.userData.yaw as number), 0, Math.sin(carGroup.userData.yaw as number));
+        const side = new THREE.Vector3(-ahead.z, 0, ahead.x);
+        controls.target.copy(carGroup.position).add(new THREE.Vector3(0, 0.7, 0));
+        camera.position.copy(carGroup.position)
+          .addScaledVector(ahead, -6.5).addScaledVector(side, 5.5).add(new THREE.Vector3(0, 3.2, 0));
+        controls.update();
+      }
+    },
+    onFrame(cb) {
+      onFrameCb = cb;
     },
     setWire(on) {
       wireOn = on;
