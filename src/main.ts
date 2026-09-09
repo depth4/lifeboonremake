@@ -298,6 +298,9 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
 // Склейка: мир даёт опору, водитель — четыре числа, машина — новое состояние,
 // показ — картинку. Ни одна из четырёх частей не знает про три остальные.
 
+/** Откуда смотрит игрок за рулём. */
+let eye: 'сзади' | 'из салона' = 'сзади';
+
 /** Опора под колесом. Те же треугольники, что нарисованы на экране. */
 let ground = new GroundIndex(surface);
 
@@ -332,7 +335,7 @@ function spawnCar(): Car {
 
 function seat(on: boolean): void {
   if (on && car === null) car = spawnCar();
-  if (on) driver.anchor(); // руль в ноль: садимся всегда с прямыми колёсами
+  if (on) { driver.anchor(); viewer.setEye(eye); } // руль в ноль: садимся с прямыми колёсами
   else driver.release(); // вышел — мышь снова твоя, иначе по кнопкам не попасть
   driving = on;
   viewer.setChase(on);
@@ -357,6 +360,7 @@ function drivePanel(): void {
     `<button type="button" class="plain" data-drive="assist" aria-pressed="${driver.assist}">помощь рулю</button>` +
     `<button type="button" class="plain" data-drive="setup">подвеска: ${VIPER.suspension.label}</button>` +
     `<button type="button" class="plain" data-drive="traffic" aria-pressed="${traffic.length > 0}">трафик</button>` +
+    `<button type="button" class="plain" data-drive="eye">вид: ${eye}</button>` +
     (car === null ? '' : '<button type="button" class="plain" data-drive="park">убрать машину</button>');
   const tip = el('d-tip');
   if (tip) {
@@ -364,7 +368,7 @@ function drivePanel(): void {
       ? 'геймпад подключён: левый стик — руль, курки — газ и тормоз'
       : 'щёлкни по картинке — мышь возьмёт руль. Влево-вправо — руль, W/S — газ '
         + 'и тормоз, Shift — в пол, X — ручник, R — выровнять руль, [ и ] — острота, '
-        + 'G — помощь, P — подвеска, Enter — выйти';
+        + 'G — помощь, P — подвеска, C — вид из салона, Enter — выйти';
   }
 }
 
@@ -385,6 +389,10 @@ el('drive')?.addEventListener('click', (event) => {
     viewer.setSignals([]);
     viewer.setWalkers([]);
     drivePanel();
+  } else if (what === 'eye') {
+    eye = eye === 'сзади' ? 'из салона' : 'сзади';
+    viewer.setEye(eye);
+    drivePanel();
   } else if (what === 'setup') {
     // подвеска меняется на ходу: свободные длины пересчитываются, и машина
     // сама садится на новую высоту — это видно
@@ -404,6 +412,7 @@ addEventListener('keydown', (event) => {
   if (event.code === 'Enter' && dash !== null) { seat(!driving); return; }
   if (car === null || !driving) return;
   if (event.code === 'KeyG') { driver.assist = !driver.assist; drivePanel(); }
+  if (event.code === 'KeyC') { eye = eye === 'сзади' ? 'из салона' : 'сзади'; viewer.setEye(eye); drivePanel(); }
   if (event.code === 'KeyP') {
     const names = Object.keys(SETUPS);
     VIPER.suspension = SETUPS[names[(names.indexOf(VIPER.suspension.label) + 1) % names.length]];

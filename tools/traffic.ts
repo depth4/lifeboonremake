@@ -29,6 +29,8 @@ const reasons: Record<string, number> = {};
 let ranRed = 0, closestPair = Infinity, inBoxTogether = 0;
 // пешеходы
 let offKerb = 0, worstKerb = 0, crossedOnRed = 0, yieldedToWalker = 0, crossings = 0;
+let parkedEver = 0, leftEver = 0, maxParked = 0;
+const wasParked = movers.map(() => false);
 const walked = walkers.map(() => 0);
 const wasBefore = movers.map(() => true); // ещё не пересекли стоп-линию
 let closest = Infinity, turns = 0, moved = 0;
@@ -41,6 +43,13 @@ for (let t = 0; t < 120; t += DT) {
   const crossing = walkers.filter((w) => w.crossing > 0).map((w) => ({ shape: w.shape, s: w.s }));
   moveTraffic(world, net, movers, DT, t, { headway: !broken, rules: !lawless, crossing });
   if (movers.some((m) => m.reason === 'пешеход')) yieldedToWalker++;
+  movers.forEach((m, i) => {
+    const parked = m.park?.phase === 'стоит';
+    if (parked && !wasParked[i]) parkedEver++;
+    if (!parked && wasParked[i]) leftEver++;
+    wasParked[i] = parked;
+  });
+  maxParked = Math.max(maxParked, movers.filter((m) => m.park?.phase === 'стоит').length);
 
   walkers.forEach((w, i) => {
     walked[i] += w.speed * DT;
@@ -107,13 +116,23 @@ for (let t = 0; t < 120; t += DT) {
     fastest = Math.max(fastest, m.speed);
     if (m.speed > 17) tooFast++;
   }
-  // насколько близко подъезжают друг к другу на одной дороге
-  for (let i = 0; i < movers.length; i++)
-    for (let j = i + 1; j < movers.length; j++) {
-      const a = movers[i], b = movers[j];
-      if (a.shape !== b.shape || a.dir !== b.dir) continue;
-      closest = Math.min(closest, Math.abs(a.s - b.s));
-    }
+  /**
+   * Теснота меряется ГАБАРИТАМИ по всем парам сразу: вдоль дороги её больше
+   * не видно, потому что у машины появилось боковое смещение — стоящая
+   * в кармане и едущая мимо имеют один и тот же метр, но не сталкиваются.
+   */
+  {
+    const P = movers.map((m) => poseOf(world, m));
+    for (let i = 0; i < P.length; i++)
+      for (let j = i + 1; j < P.length; j++) {
+        const dx = P[j].x - P[i].x, dz = P[j].z - P[i].z;
+        if (Math.abs(dx) > 9 || Math.abs(dz) > 9) continue;
+        const fx = Math.cos(P[i].yaw), fz = Math.sin(P[i].yaw);
+        const alongIt = Math.abs(dx * fx + dz * fz) / 4.4;
+        const acrossIt = Math.abs(-dx * fz + dz * fx) / 1.95;
+        closest = Math.min(closest, Math.max(alongIt, acrossIt));
+      }
+  }
 }
 
 movers.forEach((m, i) => {
@@ -139,7 +158,13 @@ for (const m of movers) {
   const dx = pose.x - axis.x, dz = pose.z - axis.z;
   const side = fx * dz - fz * dx; // > 0 — справа по ходу
   sideSample = side;
-  if (side <= 0.2) wrongSide++;
+  if (side <= 0.2) {
+    wrongSide++;
+    if (wrongSide === 1) {
+      console.log(`  ! не по той стороне: дорога ${m.shape}, dir ${m.dir}, across ${m.across.toFixed(2)}, `
+        + `паркуется ${m.park === null ? 'нет' : m.park.phase}, сторона ${side.toFixed(2)}`);
+    }
+  }
 }
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(38, '.')} ${value}`);
@@ -148,7 +173,7 @@ line('дорог в сети / узлов', `${world.shapes.length} / ${world.ju
 line('свернули на другую дорогу', `${turns} из ${movers.length}`);
 line('сдвинулись с места', `${moved} из ${movers.length}`);
 line('самая быстрая', `${(fastest * 3.6).toFixed(0)} км/ч`);
-line('ближе всего подъехали друг к другу', `${closest === Infinity ? '—' : closest.toFixed(1) + ' м'}`);
+line('ближе всего подъехали друг к другу', `${closest === Infinity ? '—' : (closest * 100).toFixed(0) + '% от касания'}`);
 line('дальше всего вылезли с полотна', `${worstOff.toFixed(2)} м`);
 line('проехали в среднем', `${(travelled.reduce((a, b) => a + b, 0) / movers.length).toFixed(0)} м за две минуты`);
 const total = Object.values(reasons).reduce((a, b) => a + b, 0);
@@ -159,17 +184,22 @@ const checks: [string, boolean, string][] = [
   ['никто не съехал с проезжей части', offRoad === 0, `${offRoad} случаев, худший ${worstOff.toFixed(2)} м`],
   ['никто не гонит быстрее 60 км/ч', tooFast === 0, `${(fastest * 3.6).toFixed(0)} км/ч`],
   ['никто не встал намертво', stuck === 0, `${stuck} проехали меньше 30 м`],
-  ['держат дистанцию друг от друга', closest > 4.5, `${closest === Infinity ? '—' : closest.toFixed(1)} м`],
+  ['габариты нигде не наложились', closest > 1, `самое тесное ${(closest * 100).toFixed(0)}% от касания`],
   ['кто-то свернул на перекрёстке', world.junctions.length === 0 || turns > 0, `${turns} поворотов`],
   ['никто не проехал на красный', ranRed === 0, `${ranRed} проездов`],
-  ['габариты на перекрёстке не наложились', inBoxTogether === 0,
-    `самое тесное сближение — ${closestPair === Infinity ? 'никого рядом' : (closestPair * 100).toFixed(0) + '% от касания'}`],
+  ['на перекрёстке не столкнулись', inBoxTogether === 0,
+    `самое тесное — ${closestPair === Infinity ? 'никого рядом' : (closestPair * 100).toFixed(0) + '% от касания'}`],
   ['едут по ПРАВОЙ стороне', wrongSide === 0, `${wrongSide} не по той стороне, смещение ${sideSample.toFixed(2)} м`],
   ['пешеходы не гуляют по проезжей части', offKerb === 0, `${offKerb} случаев, заход ${worstKerb.toFixed(2)} м`],
   ['пешеходы не идут на красный', crossedOnRed === 0, `${crossedOnRed} переходов`],
   ['пешеходы вообще переходят дорогу', crossings > 3, `${crossings} за две минуты`],
+  ['кто-то припарковался и уехал', parkedEver > 0 && leftEver > 0, `${parkedEver} парковок, ${leftEver} выездов`],
   ['пешеходы дошли хоть куда-то', walked.every((d) => d > 20), `самый ленивый ${Math.min(...walked).toFixed(0)} м`],
 ];
+console.log('');
+line('карманов у бордюра', `${net.bays.length}`);
+line('парковались за прогон', `${parkedEver} раз, уезжали ${leftEver}`);
+line('стояли одновременно, самое большее', `${maxParked} из ${movers.length}`);
 console.log('');
 console.log('  ПЕШЕХОДЫ');
 line('  прошли в среднем', `${(walked.reduce((a, b) => a + b, 0) / walkers.length).toFixed(0)} м за две минуты`);

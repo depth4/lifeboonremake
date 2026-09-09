@@ -85,7 +85,9 @@ async function until(name, mark, limit = 45000) {
         : m === 'шестьдесят' ? c.speed * 3.6 >= 60
         : m === 'сотня' ? c.speed * 3.6 >= 100
         : m === 'поворот' ? Math.abs(c.yaw - window.__yaw0) > 0.8
-        : Math.abs(c.speed) * 3.6 < 1.5;
+        // «встала» — это либо ноль, либо уже включился задний ход: держать
+        // тормоз дольше нельзя, он на стоянке становится задней тягой
+        : Math.abs(c.speed) * 3.6 < 1.5 || c.reverse === true;
       if (hit) window.__hit = c;
       return hit;
     }, mark, { timeout: limit, polling: 30 });
@@ -155,9 +157,12 @@ await page.keyboard.press('g');
 // 4. ПОВОРОТ — руль уже вывернут, ждём, пока курс изменится заметно.
 const turned = await until('поворот', 'поворот', 30000);
 await page.screenshot({ path: 'shots/ride-4-поворот.png' });
+// Просто тормозим пару секунд и едем дальше. Ждать полной остановки тут
+// незачем: торможение уже проверено отдельно, а ожидание хрупкое —
+// на траве машина может докатываться дольше любого срока.
 await page.keyboard.press('r'); // выровнять руль
 await page.keyboard.down('s');
-await until('остановка после поворота', 'стоп');
+await page.waitForTimeout(2500);
 await page.keyboard.up('s');
 
 // 5. Поставить машину обратно на дорогу и выйти: она остаётся стоять,
@@ -181,6 +186,19 @@ await page.screenshot({ path: 'shots/ride-6-трафик.png' });
 await page.click('button[data-view="over"]');
 await page.waitForTimeout(2600);
 await page.screenshot({ path: 'shots/ride-7-сверху.png' });
+
+// 7. ВИД ИЗ САЛОНА, уже среди трафика и светофоров. Машину сначала ставим
+// обратно на дорогу: к концу поездки она стоит в поле, и оттуда не видно города
+await page.click('button[data-drive="park"]');
+await page.click('button[data-drive="seat"]');
+await page.waitForTimeout(500);
+await page.mouse.click(800, 500);             // взять руль
+await page.keyboard.press('c');               // пересесть за руль изнутри
+await page.keyboard.down('w');
+await page.waitForTimeout(2500);
+await page.keyboard.up('w');
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'shots/ride-8-из-салона.png' });
 
 await browser.close();
 

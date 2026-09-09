@@ -50,6 +50,21 @@ export interface Mover {
   colour: number;
   /** Своя крейсерская скорость: одни торопятся, другие нет. */
   cruise: number;
+  /**
+   * Сколько метров вправо от осевой линии. Обычно это середина своей полосы,
+   * у припаркованной — карман у бордюра. Отдельная величина, а не число
+   * внутри показа: из неё потом вырастут и перестроения, и объезд.
+   */
+  across: number;
+  /** Место в кармане, если едет парковаться или стоит. */
+  park: { bay: number; phase: 'въезжает' | 'стоит' | 'выезжает'; left: number } | null;
+  /**
+   * Какой перекрёсток эта машина заняла. Занятость меряется НЕ радиусом,
+   * а владением: въехать может только владелец, и он держит перекрёсток,
+   * пока не проедет его насквозь. Радиус не годится — машина входит в него
+   * не мгновенно, и двое успевают оказаться внутри одновременно.
+   */
+  claim: number;
   /** Сколько секунд стоим и уступаем. Против вечного взаимного «после вас». */
   wait: number;
   /** Что сейчас держит: для приборки и проверок. */
@@ -66,6 +81,16 @@ interface Link { shape: number; s: number }
 /** Конец дороги: в какой узел упирается и какой веткой светофора является. */
 interface End { junction: number; signal: number; approach: number }
 
+/** Карман у бордюра: где машина может встать. */
+export interface Bay {
+  readonly shape: number;
+  readonly s: number;
+  /** Сколько метров вправо от осевой при движении по возрастанию s. */
+  readonly across: number;
+  /** Кто занял: индекс машины или −1. */
+  taken: number;
+}
+
 export interface Network {
   readonly length: number[];
   readonly atJunction: Link[][];
@@ -73,6 +98,8 @@ export interface Network {
   readonly signals: Signal[];
   /** По дороге: конец при s=0 и конец при s=длина. */
   readonly ends: (End | null)[][];
+  /** Карманы у бордюра по всему городу. */
+  readonly bays: Bay[];
 }
 
 export function buildNetwork(world: World): Network {
@@ -112,7 +139,23 @@ export function buildNetwork(world: World): Network {
     }
   });
 
-  return { length, atJunction, nodes, signals, ends };
+  /**
+   * Карманы у бордюра. Только на широких улицах: на однополосной карман
+   * пришёлся бы ровно на полосу движения. У перекрёстков карманов нет —
+   * там переходы и обзор.
+   */
+  const bays: Bay[] = [];
+  world.shapes.forEach((shape, si) => {
+    if (shape.halfWidth < 6) return;
+    const total = length[si];
+    const edge = shape.outerHalf + 4;
+    for (let at = edge; at < total - edge; at += 6.5) {
+      if (nodes[si].some((n) => Math.abs(n.s - at) < shape.outerHalf + 6)) continue;
+      for (const side of [1, -1]) bays.push({ shape: si, s: at, across: side * (shape.halfWidth - 1.4), taken: -1 });
+    }
+  });
+
+  return { length, atJunction, nodes, signals, ends, bays };
 }
 
 /** Где дорога в этом месте и куда она смотрит. */
@@ -140,9 +183,10 @@ function radius(world: World, shape: number, s: number): number {
 const COLOURS = [0x9fa5ab, 0x2b3a4a, 0x7d2b2b, 0xd8d3c6, 0x35513f, 0x1c1e22, 0x8a7b4f];
 
 export function placeTraffic(world: World, net: Network, count: number, seed = 1): Mover[] {
-  let rnd = seed * 9301 + 49297;
-  const next = (): number => { rnd = (rnd * 9301 + 49297) % 233280; return rnd / 233280; };
+  let rnd = (seed * 16807) % 2147483647;
+  const next = (): number => { rnd = (rnd * 16807) % 2147483647; return rnd / 2147483647; };
 
+  for (const b of net.bays) b.taken = -1; // карманы освобождаются вместе с трафиком
   const movers: Mover[] = [];
   for (let attempt = 0; attempt < count * 40 && movers.length < count; attempt++) {
     const shape = Math.floor(next() * world.shapes.length) % world.shapes.length;
@@ -158,6 +202,9 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
     movers.push({
       shape, s, dir, speed: 8 + next() * 5, wait: 0, reason: 'едет',
       seed: Math.floor(next() * 2147483647),
+      across: dir * world.shapes[shape].halfWidth * 0.5,
+      park: null,
+      claim: -1,
       cruise: CRUISE * (0.6 + next() * 0.4),
       yaw: Math.atan2(spot.fz * dir, spot.fx * dir),
       colour: COLOURS[Math.floor(next() * COLOURS.length) % COLOURS.length],
@@ -168,17 +215,48 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
 
 /** Свой генератор: одна и та же машина в одном и том же месте решит одинаково. */
 function roll(m: Mover): number {
-  m.seed = (m.seed * 1103515245 + 12345) % 2147483648;
-  return m.seed / 2147483648;
+  // Лемер: множитель подобран так, чтобы произведение оставалось в пределах
+  // целых, которые число с плавающей точкой хранит ТОЧНО. Прежний множитель
+  // 1103515245 переполнял их, последовательность вырождалась, и парковаться
+  // не хотел никто: «случайное» число просто перестало меняться.
+  m.seed = (m.seed * 16807) % 2147483647;
+  return m.seed / 2147483647;
 }
 
 /** Куда машина смотрит и где стоит: правостороннее движение. */
 export function poseOf(world: World, m: Mover): { x: number; z: number; yaw: number } {
   const spot = along(world, m.shape, m.s);
   const fx = spot.fx * m.dir, fz = spot.fz * m.dir;
-  // право по ходу — это cross(вперёд, вверх) = (−fz, fx)
-  const lane = world.shapes[m.shape].halfWidth * 0.5;
-  return { x: spot.x - fz * lane, z: spot.z + fx * lane, yaw: Math.atan2(fz, fx) };
+  // across задан в осях дороги; право по ходу — это cross(вперёд, вверх)
+  return {
+    x: spot.x - spot.fz * m.across,
+    z: spot.z + spot.fx * m.across,
+    yaw: Math.atan2(fz, fx),
+  };
+}
+
+/**
+ * Куда машина стремится вбок: середина своей полосы или карман.
+ *
+ * К бордюру она начинает прижиматься только рядом с карманом. Если начать
+ * раньше, машина едет по обочине весь квартал и задевает тех, кто уже стоит.
+ */
+function wantAcross(world: World, net: Network, m: Mover): number {
+  const lane = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+  if (m.park === null || m.park.phase === 'выезжает') return lane;
+  const bay = net.bays[m.park.bay];
+  const gap = (bay.s - m.s) * m.dir;
+  return gap > 8 ? lane : bay.across;
+}
+
+/** Свободна ли полоса рядом и сзади — чтобы выехать из кармана. */
+function laneClear(world: World, movers: readonly Mover[], m: Mover): boolean {
+  const lane = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+  return !movers.some((o) => o !== m && o.shape === m.shape && o.dir === m.dir
+    && Math.abs(o.across - lane) < 2.4
+    // назад смотрим далеко: подъезжающий сзади проедет эти метры,
+    // пока машина выползает из кармана
+    && (m.s - o.s) * m.dir > -22 && (m.s - o.s) * m.dir < 20);
 }
 
 /** Точка впереди, которую надо пройти с такой скоростью. */
@@ -245,16 +323,8 @@ export function moveTraffic(
    * «а если сначала вон тот», который потом ловят месяцами.
    */
   const spots = movers.map((m) => poseOf(world, m));
-  const occupied = world.junctions.map(() => 0);
-  const inBox = movers.map((_, i) => {
-    let where = -1;
-    world.junctions.forEach((j, ji) => {
-      if (Math.hypot(spots[i].x - j.x, spots[i].z - j.z) < BOX) { occupied[ji]++; where = ji; }
-    });
-    return where;
-  });
-
   const targets = movers.map((m) => nextJunction(net, m));
+
   /** Стоит ли машина на своём светофоре. */
   const onRed = movers.map((m, i) => {
     const t = targets[i];
@@ -269,18 +339,31 @@ export function moveTraffic(
   });
 
   /**
-   * Кто первый в очереди на въезд в каждый перекрёсток. Только он может
-   * заехать, и только в пустую коробку: иначе двое, увидев пустой
-   * перекрёсток в одно и то же мгновение, въезжают в него вместе.
+   * Владение перекрёстками. Сначала те, кто уже владеет, отпускают его,
+   * когда проехали; потом свободный перекрёсток достаётся ближайшему из тех,
+   * кому свет разрешает. Всё это ДО того, как кто-либо тронулся: иначе
+   * решение зависит от места в списке.
    */
-  const firstAt = new Map<number, number>();
+  const holder = world.junctions.map(() => -1);
+  movers.forEach((m, i) => {
+    if (m.claim < 0) return;
+    const j = world.junctions[m.claim];
+    const away = Math.hypot(spots[i].x - j.x, spots[i].z - j.z);
+    const leaving = targets[i] === null || targets[i]!.end.junction !== m.claim;
+    if (away > BOX + 5 && leaving) m.claim = -1; else holder[m.claim] = i;
+  });
   movers.forEach((m, i) => {
     const t = targets[i];
-    if (t === null || onRed[i] || t.centreGap <= 0 || t.centreGap > 34) return;
-    const best = firstAt.get(t.end.junction);
-    if (best === undefined || t.centreGap < (targets[best]?.centreGap ?? Infinity)) {
-      firstAt.set(t.end.junction, i);
-    }
+    if (m.claim >= 0 || t === null || onRed[i]) return;
+    if (t.centreGap <= 0 || t.centreGap > 30) return;
+    if (holder[t.end.junction] >= 0) return;
+    // ближайший из претендентов — и только он
+    const rival = movers.findIndex((o, k) => k !== i && o.claim < 0 && !onRed[k]
+      && targets[k] !== null && targets[k]!.end.junction === t.end.junction
+      && targets[k]!.centreGap > 0 && targets[k]!.centreGap < t.centreGap);
+    if (rival >= 0) return;
+    m.claim = t.end.junction;
+    holder[t.end.junction] = i;
   });
 
   movers.forEach((m, index) => {
@@ -295,10 +378,12 @@ export function moveTraffic(
       if (limit < m.cruise) holds.push({ gap: look, speed: limit, why: 'поворот' });
     }
 
-    // ── машина впереди
+    // ── машина впереди. Припаркованная стоит в кармане и полосу не держит:
+    // мешает только тот, кто примерно на моей линии движения
     if (headway) {
       for (const other of movers) {
         if (other === m || other.shape !== m.shape || other.dir !== m.dir) continue;
+        if (Math.abs(other.across - m.across) > 2.2) continue;
         const gap = (other.s - m.s) * m.dir - LENGTH;
         if (gap > 0 && gap < 60) holds.push({ gap, speed: other.speed, why: 'машина впереди' });
       }
@@ -337,10 +422,8 @@ export function moveTraffic(
        * на перекрёстке машина переходит с одного участка на другой и её
        * «метр вдоль» скачет.
        */
-      if (ahead.centreGap > 1 && inBox[index] < 0) {
-        if (occupied[end.junction] > 0) mustYield = true;
-        if (firstAt.get(end.junction) !== index) mustYield = true;
-      }
+      // в перекрёсток въезжает только его владелец
+      if (ahead.centreGap > 1 && m.claim !== end.junction) mustYield = true;
 
       /**
        * Терпение кончилось — едем: иначе четверо на нерегулируемом встанут
@@ -374,6 +457,60 @@ export function moveTraffic(
       if (gap < 40) holds.push({ gap: Math.max(0.3, gap), speed: 0, why: 'тупик' });
     }
 
+    /**
+     * ── ПАРКОВКА. Машина иногда решает встать в свободный карман: тормозит
+     * к нему как к любой другой точке впереди, потом смещается вбок,
+     * стоит и уезжает. Отдельного «режима парковки» в движении нет —
+     * есть та же точка впереди и то же боковое смещение.
+     */
+    if (m.park !== null) {
+      const bay = net.bays[m.park.bay];
+      if (m.park.phase === 'въезжает') {
+        const gap = (bay.s - m.s) * m.dir;
+        holds.push({ gap: Math.max(0.3, gap), speed: 0, why: 'паркуется' });
+        // модель следования держит зазор и останавливает машину НЕ ДОЕЗЖАЯ
+        // до точки — поэтому «приехал» это «встал рядом», а не «в точке»
+        if (gap < 4.5 && m.speed < 0.6) { m.park.phase = 'стоит'; m.speed = 0; }
+      } else if (m.park.phase === 'стоит') {
+        m.park.left -= dt;
+        m.speed = 0;
+        m.reason = 'стоит в кармане';
+        if (m.park.left <= 0 && laneClear(world, movers, m)) m.park.phase = 'выезжает';
+        const want = wantAcross(world, net, m);
+        m.across += Math.max(-0.9 * dt, Math.min(0.9 * dt, want - m.across));
+        return;
+      } else {
+        /**
+         * Выезжает. Полосу проверяем ВСЁ ВРЕМЯ выезда, а не только в миг
+         * решения: пока машина выползает, сзади успевает подъехать другая,
+         * и они оказываются в одном месте.
+         */
+        const lane = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+        if (Math.abs(m.across - lane) < 0.15) { net.bays[m.park.bay].taken = -1; m.park = null; }
+        else if (!laneClear(world, movers, m)) {
+          m.speed = 0;
+          m.reason = 'выезжает, ждёт';
+          return;
+        } else {
+          m.speed = Math.min(m.speed, 2);
+          m.reason = 'выезжает';
+          m.across += Math.max(-0.9 * dt, Math.min(0.9 * dt, lane - m.across));
+          m.s += m.speed * m.dir * dt;
+          return;
+        }
+      }
+    } else if (m.speed > 3 && roll(m) < 0.0015) {
+      // ищем свободный карман по своей стороне впереди
+      const side = Math.sign(m.dir);
+      const found = net.bays.findIndex((b) => b.taken < 0 && b.shape === m.shape
+        && Math.sign(b.across) === side
+        && (b.s - m.s) * m.dir > 14 && (b.s - m.s) * m.dir < 70);
+      if (found >= 0) {
+        net.bays[found].taken = index;
+        m.park = { bay: found, phase: 'въезжает', left: 8 + roll(m) * 25 };
+      }
+    }
+
     const drive = follow(m.speed, m.cruise, holds);
     m.reason = drive.why;
     m.speed = Math.max(0, m.speed + Math.max(-6, Math.min(ACCEL, drive.accel)) * dt);
@@ -395,14 +532,26 @@ export function moveTraffic(
         m.dir = pick.s < tail / 2 ? 1 : -1;
         m.s += m.dir * 1;
         m.wait = 0;
+        m.across = m.dir * world.shapes[m.shape].halfWidth * 0.5;
       } else {
         const back = -m.dir;
         const busy = movers.some((o) => o !== m && o.shape === m.shape
           && o.dir === back && Math.abs(o.s - m.s) < 14);
         if (busy) { m.speed = 0; m.s = Math.max(2, Math.min(total - 2, m.s)); }
-        else { m.dir = back; m.s = Math.max(3, Math.min(total - 3, m.s + m.dir * 2)); }
+        else {
+          m.dir = back;
+          m.s = Math.max(3, Math.min(total - 3, m.s + m.dir * 2));
+          // развернулись — значит и полоса теперь другая. Без этой строки
+          // машина ехала по встречной, пока смещение плавно переползало
+          // через середину дороги
+          m.across = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+        }
       }
     }
+
+    // боковое смещение догоняет желаемое: съезд в карман и выезд из него
+    const wantSide = wantAcross(world, net, m);
+    m.across += Math.max(-0.9 * dt, Math.min(0.9 * dt, wantSide - m.across));
 
     // курс догоняет дорогу, а не прыгает вместе с ней
     const want = poseOf(world, m).yaw;

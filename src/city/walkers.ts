@@ -41,13 +41,13 @@ export interface Walker {
 const CLOTHES = [0x2f3a44, 0x6b4a3a, 0x8f8574, 0x3d5a4a, 0x77303a, 0x4a4a58, 0xa89a7c];
 
 function roll(w: Walker): number {
-  w.seed = (w.seed * 1103515245 + 12345) % 2147483648;
-  return w.seed / 2147483648;
+  w.seed = (w.seed * 16807) % 2147483647;
+  return w.seed / 2147483647;
 }
 
 export function placeWalkers(world: World, net: Network, count: number, seed = 3): Walker[] {
-  let rnd = seed * 7919 + 104729;
-  const next = (): number => { rnd = (rnd * 1103515245 + 12345) % 2147483648; return rnd / 2147483648; };
+  let rnd = (seed * 7919) % 2147483647;
+  const next = (): number => { rnd = (rnd * 16807) % 2147483647; return rnd / 2147483647; };
 
   const walkers: Walker[] = [];
   for (let attempt = 0; attempt < count * 30 && walkers.length < count; attempt++) {

@@ -168,6 +168,8 @@ export interface Viewer {
   setCar(view: CarView | null): void;
   /** Камера за машиной вместо облёта. */
   setChase(on: boolean): void;
+  /** Откуда смотреть за рулём: сзади или с места водителя. */
+  setEye(from: 'сзади' | 'из салона'): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -282,6 +284,41 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   );
   glass.position.set(-0.42, 0.94, 0);
   body.add(glass);
+  /**
+   * Салон: торпедо и руль. Нужны не для красоты — без них вид «из салона»
+   * читается как летящая камера, и по рулю не видно, что делают колёса.
+   * Руль поворачивается на настоящий угол, помноженный на передаточное
+   * число рулевой: 25.9° на колёсах это 432° на руле.
+   */
+  const interior = new THREE.Group();
+  interior.visible = false;
+  const dash = new THREE.Mesh(
+    new THREE.BoxGeometry(0.7, 0.3, 1.55),
+    new THREE.MeshStandardMaterial({ color: 0x1a1d21, roughness: 0.9 }),
+  );
+  dash.position.set(0.78, 0.8, 0);
+  interior.add(dash);
+  const hoodTop = new THREE.Mesh(
+    new THREE.BoxGeometry(1.5, 0.06, 1.6),
+    new THREE.MeshStandardMaterial({ color: 0x8e1420, roughness: 0.4, metalness: 0.2 }),
+  );
+  hoodTop.position.set(1.6, 0.74, 0);
+  interior.add(hoodTop);
+  const rim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.155, 0.019, 8, 24),
+    new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.7 }),
+  );
+  const spoke = new THREE.Mesh(
+    new THREE.BoxGeometry(0.3, 0.02, 0.035),
+    new THREE.MeshStandardMaterial({ color: 0x22262b, roughness: 0.8 }),
+  );
+  const steering = new THREE.Group();
+  steering.add(rim, spoke);
+  steering.position.set(0.34, 0.83, -0.38);
+  steering.rotation.set(0, Math.PI / 2, -Math.PI / 9);
+  interior.add(steering);
+  body.add(interior);
+
   const wheelParts: { hub: THREE.Group; tyre: THREE.Mesh }[] = [];
   scene.add(carGroup);
   let bodyBuilt = 0;
@@ -345,6 +382,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
 
   let onFrameCb: ((dt: number) => void) | null = null;
   let chase = false;
+  let eye: 'сзади' | 'из салона' = 'сзади';
   const chaseEye = new THREE.Vector3();
   const chaseAim = new THREE.Vector3();
   let chaseReady = false;
@@ -353,6 +391,21 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(0.1, clock.getDelta());
     if (onFrameCb) onFrameCb(dt);
+    if (chase && carGroup.visible && eye === 'из салона') {
+      /**
+       * Из салона. Точка взгляда берётся ИЗ САМОГО КУЗОВА: он уже наклонён
+       * подвеской, значит голова водителя качается вместе с машиной сама,
+       * без единого отдельного коэффициента «тряски».
+       */
+      carGroup.updateMatrixWorld(true);
+      const head = body.localToWorld(new THREE.Vector3(-0.52, 1.16, -0.38));
+      const look = body.localToWorld(new THREE.Vector3(24, 1.06, -0.38));
+      camera.position.copy(head);
+      camera.up.copy(body.localToWorld(new THREE.Vector3(-0.52, 2.16, -0.38)).sub(head).normalize());
+      camera.lookAt(look);
+      renderer.render(scene, camera);
+      return;
+    }
     if (chase && carGroup.visible) {
       const ahead = new THREE.Vector3(Math.cos(carGroup.userData.yaw as number), 0, Math.sin(carGroup.userData.yaw as number));
       const speed = (carGroup.userData.speed as number) ?? 0;
@@ -436,6 +489,8 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       body.rotation.set(view.roll, 0, view.pitch);
       carGroup.userData.yaw = view.yaw;
       carGroup.userData.speed = view.speed;
+      // руль в салоне крутится на настоящий угол колёс × передаточное рулевой
+      steering.rotation.z = -Math.PI / 9 - (view.wheels[0]?.steer ?? 0) * 16.7;
       view.wheels.forEach((w, i) => {
         const part = wheelParts[i];
         if (!part) return;
@@ -546,10 +601,26 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       walkerMesh.instanceMatrix.needsUpdate = true;
       if (walkerMesh.instanceColor) walkerMesh.instanceColor.needsUpdate = true;
     },
+    setEye(from) {
+      eye = from;
+      // изнутри кузов не рисуем: иначе видно его изнанку. Салон — наоборот.
+      body.visible = true;
+      (body.material as THREE.Material).visible = from === 'сзади';
+      glass.visible = from === 'сзади';
+      interior.visible = from === 'из салона';
+      chaseReady = false;
+      camera.up.set(0, 1, 0);
+    },
     setChase(on) {
       chase = on;
       chaseReady = false;
       controls.enabled = !on;
+      if (!on) {
+        (body.material as THREE.Material).visible = true;
+        glass.visible = true;
+        interior.visible = false;
+        camera.up.set(0, 1, 0);
+      }
       // вышел из машины — камера смотрит на машину, а не туда, где была раньше
       if (!on && carGroup.visible) {
         const ahead = new THREE.Vector3(Math.cos(carGroup.userData.yaw as number), 0, Math.sin(carGroup.userData.yaw as number));
