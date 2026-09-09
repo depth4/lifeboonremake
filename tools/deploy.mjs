@@ -6,11 +6,16 @@
  * файлов напрямую, минуя переключение веток. Поэтому выкладка не может
  * помешать тому, что сейчас в работе.
  *
+ * Перед выкладкой собранный файл ПРОВЕРЯЕТСЯ: он открывается по-настоящему,
+ * в нём заводится машина, разгоняется и тормозит. Не «не забыть проверить»,
+ * а нельзя выложить непроверенное: сломанная сборка сюда просто не пройдёт.
+ *
  * Запуск: npm run deploy
  */
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { chromium } from 'playwright';
 
 const BRANCH = 'gh-pages';
 const FILES = [
@@ -25,6 +30,41 @@ for (const [from] of FILES) {
     console.log(`нет файла ${from} — сначала npm run site и npm run page`);
     process.exit(1);
   }
+}
+
+/** Открыть собранный файл и проехать в нём. Бросает, если что-то не так. */
+async function itDrives(path) {
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e).split('\n')[0]));
+  try {
+    await page.goto('file://' + process.cwd() + '/' + path);
+    await page.waitForFunction(() => window.__ready === true, null, { timeout: 60000 });
+    await page.click('button[data-drive="seat"]');
+    await page.waitForFunction(() => window.__car() !== null, null, { timeout: 15000 });
+    await page.keyboard.down('w');
+    await page.waitForFunction(() => (window.__car()?.speed ?? 0) * 3.6 > 60, null, { timeout: 40000, polling: 40 });
+    const fast = await page.evaluate(() => window.__car());
+    await page.keyboard.up('w');
+    await page.keyboard.down('s');
+    await page.waitForFunction(() => Math.abs(window.__car()?.speed ?? 9) * 3.6 < 1.5, null, { timeout: 40000, polling: 40 });
+    await page.keyboard.up('s');
+    if (fast.lost) errors.push('колесо теряло опору');
+    if (errors.length > 0) throw new Error(errors.join('; '));
+    console.log(`проверено в собранном файле: разгон до ${(fast.speed * 3.6).toFixed(0)} км/ч и остановка тормозом`);
+  } finally {
+    await browser.close();
+  }
+}
+
+try {
+  await itDrives('build/pages/index.html');
+} catch (error) {
+  console.log('НЕ ВЫЛОЖЕНО: в собранном файле машина не поехала.');
+  console.log('  ' + String(error instanceof Error ? error.message : error).split('\n')[0]);
+  console.log('  Сайт остался прежним. Чинить, потом выкладывать снова.');
+  process.exit(1);
 }
 
 // .nojekyll выключает сборщик блогов, который GitHub иначе прогоняет по файлам
