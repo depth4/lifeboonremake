@@ -15,7 +15,8 @@
     "where": "node --experimental-strip-types tools/where.ts",
     "report": "node --experimental-strip-types tools/report.ts",
     "site": "node tools/site.mjs",
-    "deploy": "node tools/deploy.mjs"
+    "deploy": "node tools/deploy.mjs",
+    "lanes": "node --experimental-strip-types tools/lanes.ts"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",

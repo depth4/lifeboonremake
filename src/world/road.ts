@@ -99,12 +99,20 @@ export interface Band {
   readonly from: number;
   readonly to: number;
   readonly rise: number;
+  /** 1 — едут по направлению линии, -1 — навстречу, 0 — не для езды */
+  readonly direction: -1 | 0 | 1;
 }
 
 export function bands(type: RoadType): Band[] {
   let offset = -roadWidth(type) / 2;
   return type.lanes.map((lane) => {
-    const band = { kind: lane.kind, from: offset, to: offset + lane.width, rise: lane.rise };
+    const band = {
+      kind: lane.kind,
+      from: offset,
+      to: offset + lane.width,
+      rise: lane.rise,
+      direction: lane.direction,
+    };
     offset += lane.width;
     return band;
   });
@@ -266,6 +274,27 @@ export function stationsFromLine(raw: readonly Point2[]): Station[] {
     stations.push({ x: raw[i].x, z: raw[i].z, nx: -tz, nz: tx, s: travelled });
   }
   return stations;
+}
+
+/**
+ * ЕДИНСТВЕННОЕ место, где «вдоль дороги и вбок» превращается в место на карте.
+ *
+ * У дороги своя система координат: `s` — сколько метров проехали вдоль осевой
+ * линии, `t` — сколько метров вбок от неё. Так устроено везде, где дороги
+ * делают всерьёз: полосы, знаки, светофоры, машины — всё задаётся в (s, t),
+ * а не в (x, z).
+ *
+ * Смысл именно в том, что таких мест ДОЛЖНО быть одно. Пока этот пересчёт
+ * переписывался на каждом углу, «предмет разъехался с дорогой» было делом
+ * времени; теперь у всех, кто стоит на дороге, один и тот же ответ.
+ */
+export function at(st: Station, t: number): Point2 {
+  return { x: st.x + st.nx * t, z: st.z + st.nz * t };
+}
+
+/** Единичный вектор ВДОЛЬ дороги в этой станции, по направлению роста `s`. */
+export function forward(st: Station): Point2 {
+  return { x: st.nz, z: -st.nx };
 }
 
 /** Разбивает осевую линию на точки примерно через каждые `spacing` метров. */

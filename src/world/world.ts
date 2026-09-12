@@ -43,6 +43,9 @@ export interface RoadShape {
   readonly outerHalf: number;
   readonly grade: number;
   readonly lift: number;
+  /** номера узлов сети на концах участка: где он начинается и где кончается */
+  readonly from: number;
+  readonly to: number;
 }
 
 /**
@@ -58,6 +61,8 @@ export interface Junction {
 export interface World {
   readonly shapes: readonly RoadShape[];
   readonly junctions: readonly Junction[];
+  /** Сколько узлов в сети всего — включая простые концы дорог. */
+  readonly nodeCount: number;
   readonly terrain: Terrain;
   readonly grade: number;
   readonly lift: number;
@@ -312,6 +317,8 @@ export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT
       outerHalf: roadWidth(edge.type) / 2 + edge.type.sidewalk,
       grade: steepest(stations, height),
       lift: stations.reduce((m, st, i) => Math.max(m, Math.abs(height[i] - terrain(st.x, st.z))), 0),
+      from: edge.from,
+      to: edge.to,
     };
   });
 
@@ -322,6 +329,7 @@ export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT
   return {
     shapes,
     junctions,
+    nodeCount: net.nodes.length,
     terrain,
     grade: shapes.reduce((g, s) => Math.max(g, s.grade), 0),
     lift: shapes.reduce((l, s) => Math.max(l, s.lift), 0),
