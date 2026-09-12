@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Material, Surface } from './surface/index.ts';
 import type { Point2 } from './world/road.ts';
+import type { Point3, Traffic, Turn } from './world/lanes.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
@@ -69,6 +70,119 @@ function shade(surface: Surface, normals: Float32Array): Float32Array {
   return colors;
 }
 
+/**
+ * Цвет связи — по тому, какой это поворот. Цвет здесь, а не в мире: мир знает,
+ * куда можно ехать, а как это выглядит — дело показа.
+ */
+const TURN_COLOR: Record<Turn, [number, number, number]> = {
+  'прямо':    [0.36, 0.85, 0.44],
+  'налево':   [1.00, 0.68, 0.20],
+  'направо':  [0.30, 0.70, 1.00],
+  'разворот': [0.74, 0.55, 1.00],
+};
+/** Цвет самой полосы: холодный светлый, чтобы не путался с белой разметкой. */
+const LANE_COLOR: [number, number, number] = [0.62, 0.93, 0.96];
+/** Цвет места, где связи мешают друг другу. */
+const CONFLICT_COLOR: [number, number, number] = [1.0, 0.32, 0.26];
+/** На сколько линии движения подняты над асфальтом, чтобы не спорить с ним. */
+const LIFT = 0.22;
+/** Ширина ленты полосы и ленты связи, метры. */
+const LANE_BAND = 0.42;
+const LINK_BAND = 0.34;
+/** Стрелка на конце: длина и половина ширины, метры. */
+const HEAD = 1.9;
+const HEAD_HALF = 0.85;
+/** Половина размера ромбика помехи, метры. */
+const SPOT = 0.55;
+
+/** Копилка треугольников: точки и цвета, больше ничего не нужно. */
+class Ribbons {
+  readonly xyz: number[] = [];
+  readonly rgb: number[] = [];
+
+  private point(x: number, y: number, z: number, c: [number, number, number]): void {
+    this.xyz.push(x, y + LIFT, z);
+    this.rgb.push(c[0], c[1], c[2]);
+  }
+
+  quad(
+    a: Point3, b: Point3,
+    an: { x: number; z: number }, bn: { x: number; z: number },
+    half: number, c: [number, number, number],
+  ): void {
+    const p = [
+      { x: a.x - an.x * half, y: a.y, z: a.z - an.z * half },
+      { x: a.x + an.x * half, y: a.y, z: a.z + an.z * half },
+      { x: b.x + bn.x * half, y: b.y, z: b.z + bn.z * half },
+      { x: b.x - bn.x * half, y: b.y, z: b.z - bn.z * half },
+    ];
+    for (const i of [0, 1, 2, 0, 2, 3]) this.point(p[i].x, p[i].y, p[i].z, c);
+  }
+
+  triangle(a: Point3, b: Point3, d: Point3, c: [number, number, number]): void {
+    this.point(a.x, a.y, a.z, c);
+    this.point(b.x, b.y, b.z, c);
+    this.point(d.x, d.y, d.z, c);
+  }
+}
+
+/** Направления поперёк пути в каждой его точке: усреднённые, чтобы лента не рвалась. */
+function normalsAlong(path: readonly Point3[]): { x: number; z: number }[] {
+  const out: { x: number; z: number }[] = [];
+  for (let i = 0; i < path.length; i++) {
+    const a = path[Math.max(0, i - 1)];
+    const b = path[Math.min(path.length - 1, i + 1)];
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const len = Math.hypot(dx, dz) || 1;
+    out.push({ x: -dz / len, z: dx / len });
+  }
+  return out;
+}
+
+/** Лента вдоль пути и стрелка на её конце. */
+function ribbon(into: Ribbons, path: readonly Point3[], half: number, c: [number, number, number]): void {
+  if (path.length < 2) return;
+  const n = normalsAlong(path);
+  for (let i = 1; i < path.length; i++) into.quad(path[i - 1], path[i], n[i - 1], n[i], half, c);
+
+  const tip = path[path.length - 1];
+  const prev = path[path.length - 2];
+  const dx = tip.x - prev.x, dz = tip.z - prev.z;
+  const len = Math.hypot(dx, dz) || 1;
+  const ux = dx / len, uz = dz / len;
+  const base = { x: tip.x - ux * HEAD, y: tip.y, z: tip.z - uz * HEAD };
+  into.triangle(
+    tip,
+    { x: base.x - uz * HEAD_HALF, y: base.y, z: base.z + ux * HEAD_HALF },
+    { x: base.x + uz * HEAD_HALF, y: base.y, z: base.z - ux * HEAD_HALF },
+    c,
+  );
+}
+
+/**
+ * Превращает сеть движения в треугольники для показа.
+ *
+ * Ничего не выдумывает: берёт ровно те пути, по которым машина и поедет.
+ * Если на картинке стрелка ведёт не туда — значит не туда ведёт и связь,
+ * и это настоящая поломка, а не ошибка рисования. Так и нашлась перепутанная
+ * обрезка встречных полос: в цифрах её видно не было, на картинке — сразу.
+ */
+function trafficMesh(traffic: Traffic): { positions: Float32Array; colors: Float32Array } {
+  const r = new Ribbons();
+  for (const lane of traffic.lanes) ribbon(r, lane.path, LANE_BAND / 2, LANE_COLOR);
+  for (const link of traffic.links) ribbon(r, link.path, LINK_BAND / 2, TURN_COLOR[link.turn]);
+
+  // Ромбик там, где две связи мешают друг другу. Это места будущих
+  // «уступи дорогу»: их никто не расставлял, они вычислены.
+  for (const spot of traffic.conflicts) {
+    const p = (dx: number, dz: number): Point3 => ({ x: spot.x + dx, y: spot.y, z: spot.z + dz });
+    r.triangle(p(0, -SPOT), p(SPOT, 0), p(0, SPOT), CONFLICT_COLOR);
+    r.triangle(p(0, -SPOT), p(0, SPOT), p(-SPOT, 0), CONFLICT_COLOR);
+  }
+
+  return { positions: new Float32Array(r.xyz), colors: new Float32Array(r.rgb) };
+}
+
 export interface View {
   readonly label: string;
   readonly from: [number, number, number];
@@ -97,6 +211,8 @@ export interface Viewer {
   /** Показать рёбра треугольников: видно, из чего на самом деле сделан мир. */
   setWire(on: boolean): void;
   wire(): boolean;
+  /** Показать сеть движения: полосы и стрелки «откуда куда можно». */
+  setTraffic(traffic: Traffic | null): void;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -142,6 +258,17 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   wire.visible = START_WIRE;
   scene.add(wire);
   let wireOn = START_WIRE;
+
+  // Сеть движения поверх асфальта. Отдельным объектом, а не частью поверхности:
+  // это не покрытие, а правила, и класть их в замкнутую поверхность нельзя —
+  // тогда проверка целости считала бы стрелку дыркой.
+  const paths = new THREE.Mesh(
+    new THREE.BufferGeometry(),
+    new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  paths.visible = false;
+  paths.renderOrder = 3;
+  scene.add(paths);
 
   let lastGeometry: THREE.BufferGeometry | null = null;
 
@@ -285,6 +412,20 @@ export function show(surface: Surface, startView: string, custom: View | null = 
     },
     wire() {
       return wireOn;
+    },
+    setTraffic(traffic) {
+      paths.geometry.dispose();
+      if (!traffic || traffic.lanes.length === 0) {
+        paths.geometry = new THREE.BufferGeometry();
+        paths.visible = false;
+        return;
+      }
+      const { positions, colors } = trafficMesh(traffic);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      paths.geometry = geometry;
+      paths.visible = true;
     },
     project(x, z) {
       const hit = new THREE.Raycaster();

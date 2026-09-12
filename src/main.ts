@@ -5,6 +5,7 @@ import { DEFAULT_SCENE, SCENES } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
+import { buildTraffic } from './world/lanes.ts';
 import { DEFAULT_VARIANT, VARIANTS, buildGhost, buildSurface } from './surface/index.ts';
 import { VIEWS, show, viewFromQuery } from './render.ts';
 import { createBuilder } from './build.ts';
@@ -26,6 +27,8 @@ if (!VARIANTS[variant]) variant = DEFAULT_VARIANT;
 
 let world = buildWorld(roads, terrainName);
 let surface = buildSurface(world, variant);
+let traffic = buildTraffic(world);
+let showTraffic = query.get('traffic') === '1';
 let rebuildMs = 0;
 let lastGood: Road[] = [...roads];
 let refusal = '';
@@ -67,6 +70,7 @@ if (news && newsList && changes.length > 0 && query.get('bare') !== '1') {
 
 const viewer = show(surface, startView, viewFromQuery(query));
 const canvas = document.querySelector('canvas');
+if (showTraffic) viewer.setTraffic(traffic);
 
 /**
  * Пересобрать мир. Если постройка такая, что мир её принять не может,
@@ -89,7 +93,9 @@ function rebuild(): void {
     surface = buildSurface(world, variant);
   }
   rebuildMs = performance.now() - started;
+  traffic = buildTraffic(world);
   viewer.setSurface(surface);
+  viewer.setTraffic(showTraffic ? traffic : null);
   readout();
   hint();
 }
@@ -113,6 +119,8 @@ function readout(): void {
       ['уклон', `${(world.grade * 100).toFixed(1)}% из ${(MAX_GRADE * 100).toFixed(0)}%`],
       ['отрыв от земли', `${world.lift.toFixed(1)} м${world.lift > 6 ? ' — нужен мост' : ''}`],
       ['перекрёстков', String(world.junctions.length)],
+      ['полос', String(traffic.lanes.length)],
+      ['связей', `${traffic.links.length}, помех ${traffic.conflicts.length}`],
       ['пересборка', `${rebuildMs.toFixed(0)} мс`],
       ['вариант', VARIANTS[variant].label],
     ];
@@ -194,6 +202,27 @@ if (wireBox) {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-wire]');
     if (!button) return;
     viewer.setWire(button.dataset.wire === 'on');
+    paint();
+  });
+}
+
+// --- кнопка «движение»: показать, куда откуда можно ехать ---
+const trafficBox = document.getElementById('traffic');
+if (trafficBox) {
+  trafficBox.innerHTML =
+    '<button type="button" data-traffic="off">скрыть</button>' +
+    '<button type="button" data-traffic="on">показать</button>';
+  const paint = (): void => {
+    trafficBox.querySelectorAll<HTMLButtonElement>('button[data-traffic]').forEach((b) => {
+      b.setAttribute('aria-pressed', String((b.dataset.traffic === 'on') === showTraffic));
+    });
+  };
+  paint();
+  trafficBox.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-traffic]');
+    if (!button) return;
+    showTraffic = button.dataset.traffic === 'on';
+    viewer.setTraffic(showTraffic ? traffic : null);
     paint();
   });
 }

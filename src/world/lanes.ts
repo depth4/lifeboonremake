@@ -84,8 +84,9 @@ export interface Link {
 export interface Conflict {
   readonly a: number;
   readonly b: number;
-  /** где именно пересекаются */
+  /** где именно пересекаются — включая высоту: дорога лежит не на нуле */
   readonly x: number;
+  readonly y: number;
   readonly z: number;
 }
 
@@ -130,30 +131,18 @@ export function buildTraffic(world: World, handicap: Handicap = {}): Traffic {
  * и одной и той же осевой линии.
  */
 function buildLanes(world: World): Lane[] {
-  // Докуда от узла достаёт ЧУЖОЙ асфальт: настолько полоса и не доезжает
-  // до узла. Число не подобрано — оно вычислено из ширин тех дорог, которые
-  // в этом узле сходятся.
-  const reach = new Float64Array(world.nodeCount);
-  for (const shape of world.shapes) {
-    for (const node of [shape.from, shape.to]) {
-      // ширину САМОЙ дороги в её же узле не считаем: она себе не помеха
-      for (const other of world.shapes) {
-        if (other === shape) continue;
-        if (other.from !== node && other.to !== node) continue;
-        reach[node] = Math.max(reach[node], other.halfWidth);
-      }
-    }
-  }
-
   const lanes: Lane[] = [];
   world.shapes.forEach((shape, road) => {
     const st = shape.stations;
     if (st.length < 2) return;
     const total = st[st.length - 1].s;
 
-    // сколько метров съедает перекрёсток с каждого конца
-    const cutStart = Math.min(reach[shape.from] + NODE_CLEAR, total / 2 - 0.1);
-    const cutEnd = Math.min(reach[shape.to] + NODE_CLEAR, total / 2 - 0.1);
+    // Сколько метров съедает перекрёсток с каждого конца. Считается по
+    // ПЕРЕСЕЧЕНИЮ с чужим асфальтом, а не по ширинам: тогда прямое
+    // продолжение той же улицы ничего не съедает, а перпендикулярная
+    // дорога съедает ровно свою полуширину, и на остром угле — больше.
+    const cutStart = Math.min(covered(world, shape, shape.from) + NODE_CLEAR, total / 2 - 0.1);
+    const cutEnd = Math.min(covered(world, shape, shape.to) + NODE_CLEAR, total / 2 - 0.1);
 
     let index = 0;
     for (const band of bands(shape.type)) {
@@ -161,20 +150,89 @@ function buildLanes(world: World): Lane[] {
       const offset = (band.from + band.to) / 2;
       const forwardLane = band.direction === 1;
 
-      const from = forwardLane ? shape.from : shape.to;
-      const to = forwardLane ? shape.to : shape.from;
-      const lo = forwardLane ? cutStart : cutEnd;
-      const hi = forwardLane ? cutEnd : cutStart;
-
-      const path = tracePath(st, shape.height, offset, lo, total - hi, forwardLane);
+      // Обрезка не зависит от того, в какую сторону по полосе едут: она
+      // зависит только от того, какой узел с какого конца осевой линии.
+      // От направления зависит ТОЛЬКО порядок точек. Пока это было
+      // перепутано, встречные полосы въезжали в перекрёсток на восемь
+      // метров глубже попутных — на картинке это сразу видно, в цифрах нет.
+      const path = tracePath(st, shape.height, offset, cutStart, total - cutEnd, forwardLane);
       if (path.length < 2) continue;
       const length = pathLength(path);
       if (length < MIN_LANE) continue;
 
-      lanes.push({ id: lanes.length, road, index: index++, from, to, offset, path, length });
+      lanes.push({
+        id: lanes.length,
+        road,
+        index: index++,
+        from: forwardLane ? shape.from : shape.to,
+        to: forwardLane ? shape.to : shape.from,
+        offset,
+        path,
+        length,
+      });
     }
   });
   return lanes;
+}
+
+/**
+ * Докуда от узла осевая линия этого участка накрыта ЧУЖИМ асфальтом.
+ *
+ * Не «полуширина самой широкой соседки» — это было бы назначенное число,
+ * и прямое продолжение улицы съедало бы восемь метров на ровном месте.
+ * Здесь ответ вычисляется: идём от узла по своим станциям, пока точка
+ * лежит внутри коридора хоть одной соседней дороги.
+ *
+ * На остром угле это само даёт больше, чем полуширина, — и правильно:
+ * там чужой асфальт и правда тянется вдоль нас дольше.
+ */
+function covered(world: World, shape: World['shapes'][number], node: number): number {
+  const others = world.shapes.filter(
+    (o) => o !== shape && (o.from === node || o.to === node),
+  );
+  if (others.length === 0) return 0;
+
+  const st = shape.stations;
+  const atStart = shape.from === node;
+  const total = st[st.length - 1].s;
+  // дальше самой широкой соседки искать нечего
+  const limit = others.reduce((m, o) => Math.max(m, o.halfWidth), 0) * 6;
+
+  let deepest = 0;
+  for (let k = 0; k < st.length; k++) {
+    const i = atStart ? k : st.length - 1 - k;
+    const away = atStart ? st[i].s : total - st[i].s;
+    if (away > limit) break;
+    let inside = false;
+    for (const o of others) {
+      if (insideCorridor(o, st[i].x, st[i].z)) { inside = true; break; }
+    }
+    if (inside) deepest = away;
+  }
+  return deepest;
+}
+
+/**
+ * Лежит ли точка внутри коридора участка.
+ *
+ * Коридор — это полоса шириной в две полуширины ВДОЛЬ линии, и он КОНЧАЕТСЯ
+ * там, где кончается линия: торец срезан прямо, а не скруглён. Поэтому проекция
+ * обязана попасть внутрь отрезка, а не прижаться к его концу. Пока расстояние
+ * мерилось до ближайшей точки линии, торец вёл себя как полукруг, и прямое
+ * продолжение улицы «накрывало» соседний участок на всю свою полуширину —
+ * из-за чего полосы обрезались на десять метров вместо четырёх.
+ */
+function insideCorridor(shape: World['shapes'][number], x: number, z: number): boolean {
+  const st = shape.stations;
+  for (let i = 0; i + 1 < st.length; i++) {
+    const dx = st[i + 1].x - st[i].x, dz = st[i + 1].z - st[i].z;
+    const lenSq = dx * dx + dz * dz;
+    if (lenSq < 1e-9) continue;
+    const t = ((x - st[i].x) * dx + (z - st[i].z) * dz) / lenSq;
+    if (t < 0 || t > 1) continue;
+    if (Math.hypot(x - (st[i].x + dx * t), z - (st[i].z + dz * t)) <= shape.halfWidth) return true;
+  }
+  return false;
 }
 
 /**
@@ -346,18 +404,18 @@ function findConflicts(links: readonly Link[]): Conflict[] {
         if (a.from === b.from) continue;
         if (a.to === b.to) {
           const p = a.path[a.path.length - 1];
-          out.push({ a: a.id, b: b.id, x: p.x, z: p.z });
+          out.push({ a: a.id, b: b.id, x: p.x, y: p.y, z: p.z });
           continue;
         }
         const hit = crossPoint(a.path, b.path);
-        if (hit) out.push({ a: a.id, b: b.id, x: hit.x, z: hit.z });
+        if (hit) out.push({ a: a.id, b: b.id, x: hit.x, y: hit.y, z: hit.z });
       }
     }
   }
   return out;
 }
 
-function crossPoint(a: readonly Point3[], b: readonly Point3[]): Point2 | null {
+function crossPoint(a: readonly Point3[], b: readonly Point3[]): Point3 | null {
   for (let i = 0; i + 1 < a.length; i++) {
     for (let j = 0; j + 1 < b.length; j++) {
       const ax = a[i + 1].x - a[i].x, az = a[i + 1].z - a[i].z;
@@ -367,7 +425,7 @@ function crossPoint(a: readonly Point3[], b: readonly Point3[]): Point2 | null {
       const t = ((b[j].x - a[i].x) * bz - (b[j].z - a[i].z) * bx) / den;
       const u = ((b[j].x - a[i].x) * az - (b[j].z - a[i].z) * ax) / den;
       if (t < 0 || t > 1 || u < 0 || u > 1) continue;
-      return { x: a[i].x + ax * t, z: a[i].z + az * t };
+      return { x: a[i].x + ax * t, y: a[i].y + (a[i + 1].y - a[i].y) * t, z: a[i].z + az * t };
     }
   }
   return null;
