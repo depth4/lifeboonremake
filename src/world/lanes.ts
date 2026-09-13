@@ -269,7 +269,7 @@ function pathLength(path: readonly Point3[]): number {
 }
 
 /** Направление, с которым полоса входит в свой конечный узел. */
-function endDirection(lane: Lane): Point2 {
+export function endDirection(lane: Lane): Point2 {
   const p = lane.path;
   const a = p[Math.max(0, p.length - 3)];
   const b = p[p.length - 1];
@@ -278,7 +278,7 @@ function endDirection(lane: Lane): Point2 {
 }
 
 /** Направление, с которым полоса выходит из своего начального узла. */
-function startDirection(lane: Lane): Point2 {
+export function startDirection(lane: Lane): Point2 {
   const p = lane.path;
   const a = p[0];
   const b = p[Math.min(p.length - 1, 2)];
