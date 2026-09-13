@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node tools/all.mjs",
     "dev": "vite --port 5199",
     "build": "tsc --noEmit && vite build",
     "shot": "node --experimental-strip-types tools/shot.mjs",

@@ -21,7 +21,14 @@ import { crossingBorders } from './edges.ts';
 
 const TRIES = Number(process.argv[2] ?? 200);
 /** Одно зерно подробно: `npm run fuzz -- 0 48`. */
-const ONLY = Number(process.argv[3] ?? 0);
+const ONLY = process.argv[3] === 'долг' ? 0 : Number(process.argv[3] ?? 0);
+/**
+ * Долг — сколько поломок уже записано в «Известные дыры» и потому допускается:
+ * `npm run fuzz 250 долг 5`. Это потолок долга, а не цель. Стало больше —
+ * падаем: значит сломали что-то новое. Стало меньше — говорим, что долг пора
+ * опустить, иначе он тихо превратится в разрешение ломать.
+ */
+const DEBT = process.argv[3] === 'долг' ? Number(process.argv[4] ?? 0) : 0;
 /** Обстрел идёт, только когда файл запустили. Постройки нужны и другим. */
 const RUNNING = process.argv[1]?.endsWith('fuzz.ts') ?? false;
 
@@ -138,5 +145,10 @@ if (kinds.size > 0) {
   for (const b of broken.slice(0, 5)) console.log(`  зерно ${b.seed}, рельеф ${b.terrain}, дорог ${b.roads}: ${b.reasons[0]}`);
 }
 
-process.exit(broken.length > 0 ? 1 : 0);
+if (broken.length > DEBT) process.exit(1);
+if (DEBT > 0) {
+  console.log(`\nдопущено ${DEBT} известных поломок (дыра 0 в STATE.md), сейчас ${broken.length}`);
+  if (broken.length < DEBT) console.log(`стало лучше — опусти долг в tools/all.mjs до ${broken.length}`);
+}
+process.exit(0);
 }

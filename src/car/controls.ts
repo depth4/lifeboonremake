@@ -91,16 +91,24 @@ export function createDriver(surface: HTMLElement): Driver {
   addEventListener('keydown', down);
   addEventListener('keyup', up);
   addEventListener('mousemove', move);
-  surface.addEventListener('mousedown', grab);
   document.addEventListener('pointerlockchange', locked);
+  // Слушателя «щелчок берёт руль» тут нет нарочно: он живёт только пока сидим
+  // в машине (anchor ставит, release снимает). Иначе любой щелчок по миру —
+  // повернуть камеру, вести дорогу — забирал бы мышь у игрока, а заодно ломал
+  // вращение камеры: три.js в тот же миг просит захват указателя и получает
+  // отказ, потому что указатель уже заперт. «Мышь у руля, а за рулём никого»
+  // теперь невыразимо.
 
   const driver: Driver = {
     assist: true,
     travel: TRAVEL_DEFAULT,
     command: 0,
     held(): boolean { return document.pointerLockElement === surface; },
-    anchor(): void { wheel = 0; },
-    release(): void { if (document.pointerLockElement === surface) document.exitPointerLock(); },
+    anchor(): void { wheel = 0; surface.addEventListener('mousedown', grab); },
+    release(): void {
+      surface.removeEventListener('mousedown', grab);
+      if (document.pointerLockElement === surface) document.exitPointerLock();
+    },
     pad(): boolean {
       return typeof navigator.getGamepads === 'function' && [...navigator.getGamepads()].some((g) => g !== null);
     },
