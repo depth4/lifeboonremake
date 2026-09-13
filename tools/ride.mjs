@@ -246,8 +246,14 @@ const behind = async () => {
   }
   return best;
 };
+/**
+ * Ждём ДОЛГО. Безголовый браузер считает примерно втрое медленнее часов,
+ * а один цикл светофора — двадцать шесть секунд модельного времени. Прежние
+ * 24 секунды по часам давали меньше десяти секунд в городе: очередь просто
+ * не успевала собраться, и проверка падала не по делу.
+ */
 let queued = null;
-for (let tick = 0; tick < 60 && queued === null; tick++) {
+for (let tick = 0; tick < 220 && queued === null; tick++) {
   await page.waitForTimeout(400);
   queued = await behind();
 }
@@ -279,7 +285,12 @@ await page.keyboard.press('r');               // руль в ноль после
 await page.keyboard.down('w');
 await page.waitForTimeout(900);               // тронуться вперёд
 for (let i = 0; i < 12; i++) await page.mouse.move(800 - i * 90, 500);
-await page.waitForTimeout(2200);
+/**
+ * Держим руль дольше, чем раньше: машина теперь стоит в правой полосе
+ * четырёхполосной улицы, и до встречной ей девять метров поперёк,
+ * а не четыре, как было с осевой.
+ */
+await page.waitForTimeout(4000);
 await page.keyboard.up('w');
 for (let i = 0; i < 12; i++) await page.mouse.move(800 + i * 90, 500);
 await page.waitForTimeout(600);
@@ -340,7 +351,7 @@ const checks = [
     trafficAfter.length > 0 && trafficAfter.some((c, i) => Math.abs(c.s - trafficBefore[i].s) > 3 || c.shape !== trafficBefore[i].shape),
     `${trafficAfter.length} штук, самая быстрая ${(Math.max(...trafficAfter.map((c) => c.speed)) * 3.6).toFixed(0)} км/ч`],
   ['за машиной игрока собралась очередь', queued !== null,
-    queued === null ? 'никто не встал сзади за 24 с' : `ближайший в ${(-queued).toFixed(1)} м позади`],
+    queued === null ? 'никто не встал сзади за 88 с' : `ближайший в ${(-queued).toFixed(1)} м позади`],
   ['въехал в чужую машину', crash.count > 0,
     crash.count > 0
       ? `${crash.count} удар(ов), последний на ${crash.force.toFixed(1)} м/с, сбито ${crash.knocked ?? 0}`
