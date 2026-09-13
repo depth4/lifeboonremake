@@ -441,6 +441,7 @@ H — таблички под знаком.
 **Дорожная инженерия**
 - [Поток насыщения 1900 машин/час/полосу, задержка старта](https://www.tandfonline.com/doi/full/10.1080/03081060.2023.2214144)
 - [Формула ITE для жёлтого сигнала](https://redlightrobber.com/red/links_pdf/Derivation-of-the-Yellow-Change-Interval-Formula.pdf)
+- [Жёсткая программа светофора против вызывной](https://nacto.org/publication/urban-street-design-guide/intersection-design-elements/traffic-signals/fixed-vs-actuated-signalization/)
 - [Скорость волны пробки назад: 10–24 км/ч по замерам](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7751863/)
 - [Опыт Сугиямы: пробка без причины на кольце 230 м](https://www.science.org/content/article/traffic-jams-happen-get-used-it)
 - [Тот же опыт, статья целиком](https://iopscience.iop.org/article/10.1088/1367-2630/10/3/033001/pdf)
@@ -455,7 +456,9 @@ H — таблички под знаком.
 - [SUMO: устройство перекрёстка, приоритеты, внутренние полосы](https://sumo.dlr.de/docs/Simulation/Intersections.html)
 - [SUMO: безопасность, поиск окна, нетерпеливость](https://sumo.dlr.de/docs/Simulation/Safety.html)
 - [SUMO: устройство дорожной сети](https://sumo.dlr.de/docs/Networks/SUMO_Road_Networks.html)
+- [SUMO: учебник по моделированию движения и спросу](https://arxiv.org/html/2304.05982v2)
 - [OpenDRIVE: знаки и светофоры как signals](https://publications.pages.asam.net/standards/ASAM_OpenDRIVE/ASAM_OpenDRIVE_Specification/latest/specification/14_signals/14_01_introduction.html)
+- [OpenDRIVE: система координат вдоль осевой линии](https://publications.pages.asam.net/standards/ASAM_OpenDRIVE/ASAM_OpenDRIVE_Specification/v1.8.1/specification/08_coordinate_systems/08_03_reference_line_coordinate_system.html)
 - [Cities: Skylines 2 — как устроен их трафик](https://www.paradoxinteractive.com/games/cities-skylines-ii/features/traffic-ai)
 - [Что игроки считают сломанным в трафике CS2](https://www.pcgamesn.com/cities-skylines-2/vehicle-ai-mods)
 - [GTA: плотность движения по районам и времени суток](https://red-ita.gitbook.io/traffic-plus+/learn-more/popcycle.dat)
