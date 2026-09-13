@@ -345,6 +345,12 @@ aim.onMove((dx, dy) => { if (walker !== null) look(walker, dx, dy, LOOK_TRAVEL);
  * Мышь под захватом присылает встречные скачки, и снимок с ней получается
  * случайным; а спросить «повернись на 70°» можно ровно.
  */
+/** Состояние пешехода — проверкам из терминала, как `__car` для машины. */
+(window as unknown as { __walker?: () => unknown }).__walker = () => (walker === null ? null : {
+  x: walker.x, z: walker.z,
+  body: walker.body, neck: walker.neck, eyeYaw: walker.eyeYaw,
+  speed: Math.hypot(walker.vx, walker.vz), walked: walker.walked, lids: walker.lids,
+});
 (window as unknown as { __turn?: (deg: number) => void }).__turn = (degrees) => {
   if (walker !== null) look(walker, (degrees * Math.PI) / 180 * LOOK_TRAVEL, 0, LOOK_TRAVEL);
 };
