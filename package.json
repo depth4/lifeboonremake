@@ -16,6 +16,7 @@
     "drive": "node --experimental-strip-types tools/drive.ts",
     "ride": "node tools/ride.mjs",
     "traffic": "node --experimental-strip-types tools/traffic.ts",
+    "lanes": "node --experimental-strip-types tools/lanes.ts",
     "where": "node --experimental-strip-types tools/where.ts",
     "report": "node --experimental-strip-types tools/report.ts",
     "site": "node tools/site.mjs",

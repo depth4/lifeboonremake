@@ -15,6 +15,7 @@ import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.t
 import { createDriver } from './car/controls.ts';
 import { type Mover, type Network, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf } from './city/traffic.ts';
 import { judge, newWatchdog, tally } from './city/offence.ts';
+import { laneAcross } from './city/lanes.ts';
 import { lightFor } from './city/signals.ts';
 import { type Walker, moveWalkers, placeWalkers, walkerPose } from './city/walkers.ts';
 
@@ -333,12 +334,11 @@ function spawnCar(): Car {
   const len = Math.hypot(dx, dz) || 1;
   const fx = dx / len, fz = dz / len;
   /**
-   * Машина появляется В СВОЕЙ ПОЛОСЕ, а не на осевой. Раньше она вставала
-   * верхом на разделительной — единственная в городе, кто не соблюдал
-   * правостороннее движение. Смещение то же, что у чужих машин: право
-   * по ходу — это (−fz, fx).
+   * Машина появляется В СВОЕЙ ПОЛОСЕ, а не на осевой и не посреди неё.
+   * Полоса берётся из той же таблицы, что у чужих машин: самая правая
+   * по ходу. Право по ходу — это (−fz, fx).
    */
-  const lane = shape.halfWidth * 0.5;
+  const lane = laneAcross(network.lanes, 0, 1, 0);
   spinAngle.fill(0);
   return createCar(VIPER, st[i].x - fz * lane, st[i].z + fx * lane, Math.atan2(fz, fx));
 }

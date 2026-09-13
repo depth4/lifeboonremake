@@ -9,6 +9,7 @@
 import { SCENES } from '../src/scenes.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
 import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
+import { laneAcross, laneCount, sideOf } from '../src/city/lanes.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
 import { lightFor, walkLight } from '../src/city/signals.ts';
 import { judge, newWatchdog, tally } from '../src/city/offence.ts';
@@ -17,6 +18,7 @@ const scene = process.argv[2] ?? 'решётка';
 const mode = process.argv[3] ?? '';
 const broken = mode === 'сломать';
 const lawless = mode === 'без-правил';
+const oneLane = mode === 'одна-полоса';
 const world = buildWorld(SCENES[scene] ?? SCENES['решётка'], 'plain');
 const net = buildNetwork(world);
 const movers = placeTraffic(world, net, 18);
@@ -44,6 +46,14 @@ let closest = Infinity, turns = 0, moved = 0;
  * зеркальном сигнале. Она обязана его поймать, иначе она ничего не проверяет.
  */
 let signalled = 0, agreed = 0, flipped = 0, braked = 0;
+/**
+ * ПОЛОСЫ И ОБГОНЫ. «Обгон» считается не по намерению, а по факту: машина,
+ * которая была позади другой на той же дороге, оказалась впереди неё.
+ * Намерение соврать может, порядок в колонне — нет.
+ */
+let overtakes = 0, betweenLanes = 0, inLane = 0, worstStray = 0;
+const laneUse: number[] = [];
+const order = new Map<string, number>();
 const blinkOf = movers.map(() => 0);
 const yawAt = movers.map(() => 0);
 const hadRoute = movers.map(() => false);
@@ -67,7 +77,7 @@ for (let t = 0; t < 120; t += DT) {
   // «сломать» — выключить соблюдение дистанции: машины въедут друг в друга
   moveWalkers(world, net, walkers, DT, t);
   const crossing = walkers.filter((w) => w.crossing > 0).map((w) => ({ shape: w.shape, s: w.s }));
-  moveTraffic(world, net, movers, DT, t, { headway: !broken, rules: !lawless, crossing });
+  moveTraffic(world, net, movers, DT, t, { headway: !broken, rules: !lawless, lanes: !oneLane, crossing });
   if (movers.some((m) => m.reason === 'пешеход')) yieldedToWalker++;
   movers.forEach((m, i) => {
     const parked = m.park?.phase === 'стоит';
@@ -100,6 +110,35 @@ for (let t = 0; t < 120; t += DT) {
   });
 
   movers.forEach((m, i) => { travelled[i] += m.speed * DT; });
+
+  // кто кого обогнал: следим за порядком в каждой паре на одной дороге
+  for (let i = 0; i < movers.length; i++)
+    for (let j = i + 1; j < movers.length; j++) {
+      const a = movers[i], b = movers[j];
+      const key = `${i}-${j}`;
+      if (a.shape !== b.shape || a.dir !== b.dir || a.knocked !== null || b.knocked !== null) {
+        order.delete(key); continue;
+      }
+      const now = Math.sign((a.s - b.s) * a.dir);
+      const was = order.get(key);
+      // обгон — это проехать МИМО, по соседней полосе. Если оба шли по одной
+      // линии, значит один просто отстал или встал, и это не обгон
+      // первые десять секунд не в счёт: машины рождаются кто где и в это время
+      // просто разъезжаются по своим полосам, а это не обгон
+      if (t > 10 && was !== undefined && was !== 0 && now !== 0 && was !== now
+        && Math.abs(a.across - b.across) > 1.5) overtakes++;
+      order.set(key, now);
+    }
+
+  // держатся ли машины середины полосы
+  for (const m of movers) {
+    if (m.knocked !== null || m.route !== null || m.park !== null) continue;
+    const side = sideOf(net.lanes, m.shape, m.dir as 1 | -1);
+    if (side.length === 0) continue;
+    laneUse[m.lane] = (laneUse[m.lane] ?? 0) + 1;
+    const stray = Math.min(...side.map((l) => Math.abs(l.across - m.across)));
+    if (stray > 0.6) { betweenLanes++; worstStray = Math.max(worstStray, stray); } else inLane++;
+  }
 
   movers.forEach((m, i) => {
     const lights = signalsOf(world, net, m, t);
@@ -226,7 +265,7 @@ function playerScene(blind: boolean): { held: number; hit: number; closest: numb
       if (marks[i + 1] - marks[i] > hi - lo) { road = si; lo = marks[i]; hi = marks[i + 1]; }
   });
   const at = lo + (hi - lo) * 0.75;
-  const lane = world.shapes[road].halfWidth * 0.5;
+  const lane = laneAcross(net.lanes, road, 1, 0);
   const spot = along(world, road, at);
   const me = {
     x: spot.x - spot.fz * lane, z: spot.z + spot.fx * lane,
@@ -234,7 +273,7 @@ function playerScene(blind: boolean): { held: number; hit: number; closest: numb
   };
   // подъезжающего сажаем руками: сцена не должна зависеть от везения
   const test = cars[0];
-  test.shape = road; test.dir = 1; test.s = lo + 5; test.across = lane;
+  test.shape = road; test.dir = 1; test.s = lo + 5; test.across = lane; test.lane = 0;
   test.speed = 11; test.park = null; test.route = null; test.cruise = 14;
 
   let held = 0, hit = 0, closest = Infinity, approached = Infinity;
@@ -272,11 +311,11 @@ function crashScene(through: boolean): {
       if (marks[i + 1] - marks[i] > hi - lo) { road = si; lo = marks[i]; hi = marks[i + 1]; }
   });
   const at = lo + (hi - lo) * 0.75;
-  const lane = world.shapes[road].halfWidth * 0.5;
+  const lane = laneAcross(net.lanes, road, 1, 0);
   const spot = along(world, road, at);
   // жертву ставим руками и держим на месте
   const target = cars[0];
-  target.shape = road; target.dir = 1; target.s = at; target.across = lane;
+  target.shape = road; target.dir = 1; target.s = at; target.across = lane; target.lane = 0;
   target.speed = 0; target.park = null; target.route = null; target.cruise = 0;
 
   const MASS = 1556.3, SPIN = MASS * 1.265 * 1.245;
@@ -333,7 +372,7 @@ function offenceScene(naughty: boolean): { red: number; wrong: number; total: nu
   const signal = net.signals[0];
   const approach = signal.approaches[0];
   const shape = approach.shape, dir = approach.dir;
-  const lane = dir * world.shapes[shape].halfWidth * 0.5;
+  const lane = laneAcross(net.lanes, shape, dir as 1 | -1, 0);
   let s = approach.stopS - dir * 30;
   let time = 0;
   // ждём своего красного, стоя на месте, и только потом трогаемся
@@ -372,7 +411,7 @@ const sees = playerScene(false);
 const blind = playerScene(true);
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(38, '.')} ${value}`);
-console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : lawless ? '   [СЛОМАНО: правила выключены]' : ''}\n`);
+console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : lawless ? '   [СЛОМАНО: правила выключены]' : oneLane ? '   [СЛОМАНО: перестроений нет, все в правой полосе]' : ''}\n`);
 line('дорог в сети / узлов', `${world.shapes.length} / ${world.junctions.length}`);
 line('свернули на другую дорогу', `${turns} из ${movers.length}`);
 line('сдвинулись с места', `${moved} из ${movers.length}`);
@@ -404,6 +443,11 @@ const checks: [string, boolean, string][] = [
     `подъехал на ${sees.approached.toFixed(1)} м, ближе всего ${(sees.closest * 100).toFixed(0)}% от касания`],
   ['вслепую — обязан задеть', blind.hit > 0,
     blind.hit > 0 ? `задел ${(blind.hit / 60).toFixed(1)} с, проверка ловит` : 'НЕ ЗАДЕЛ — проверка ничего не проверяет'],
+  ['машины держатся середины полосы', betweenLanes / Math.max(1, betweenLanes + inLane) < 0.15,
+    `${((betweenLanes / Math.max(1, betweenLanes + inLane)) * 100).toFixed(1)}% времени между полос, дальше всего ${worstStray.toFixed(2)} м`],
+  ['кто-то кого-то обогнал', overtakes > 0, `${overtakes} обгонов за две минуты`],
+  ['левая полоса не пустует', (laneUse[1] ?? 0) > 0,
+    laneUse.map((n, i) => `полоса ${i}: ${((n / Math.max(1, laneUse.reduce((a, b) => a + (b ?? 0), 0))) * 100).toFixed(0)}%`).join(', ')],
   ['поворотник показывает ту сторону, куда свернули', signalled > 0 && agreed === signalled,
     `${agreed} из ${signalled} поворотов`],
   ['перепутанный поворотник — обязан провалиться', signalled > 0 && flipped === 0,

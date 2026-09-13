@@ -17,6 +17,7 @@
 
 import type { World } from '../world/world.ts';
 import { type Signal, buildSignals, lightFor, stopLine } from './signals.ts';
+import { type Lanes, buildLanes, laneAcross, laneAt, laneCount } from './lanes.ts';
 
 const G = 9.80665;
 /** С какой боковой перегрузкой ездит обычный водитель. */
@@ -69,11 +70,17 @@ export interface Mover {
   /** Своя крейсерская скорость: одни торопятся, другие нет. */
   cruise: number;
   /**
-   * Сколько метров вправо от осевой линии. Обычно это середина своей полосы,
-   * у припаркованной — карман у бордюра. Отдельная величина, а не число
-   * внутри показа: из неё потом вырастут и перестроения, и объезд.
+   * Сколько метров вправо от осевой линии. Это НАСТОЯЩЕЕ положение кузова
+   * поперёк дороги: при перестроении оно плавно переползает с полосы
+   * на полосу, у припаркованной стоит в кармане.
    */
   across: number;
+  /**
+   * Номер полосы, на которую машина едет: 0 — самая правая по ходу.
+   * Не то же, что `across`: `across` — где кузов сейчас, `lane` — куда он
+   * стремится. Пока они не совпали, машина перестраивается.
+   */
+  lane: number;
   /** Место в кармане, если едет парковаться или стоит. */
   park: { bay: number; phase: 'въезжает' | 'стоит' | 'выезжает'; left: number } | null;
   /**
@@ -135,6 +142,8 @@ export interface Route {
   readonly shape: number;
   readonly s: number;
   readonly dir: number;
+  /** На какую полосу выезжаем: 0 — самая правая по ходу. */
+  readonly lane: number;
 }
 
 /** Кто-то на дороге: этого хватает, чтобы спросить про светофор впереди. */
@@ -163,6 +172,8 @@ export interface Network {
   readonly ends: (End | null)[][];
   /** Карманы у бордюра по всему городу. */
   readonly bays: Bay[];
+  /** Полосы: где именно по каждой дороге можно ехать. */
+  readonly lanes: Lanes;
 }
 
 export function buildNetwork(world: World): Network {
@@ -208,17 +219,30 @@ export function buildNetwork(world: World): Network {
    * там переходы и обзор.
    */
   const bays: Bay[] = [];
+  const lanes = buildLanes(world);
   world.shapes.forEach((shape, si) => {
     if (shape.halfWidth < 6) return;
     const total = length[si];
     const edge = shape.outerHalf + 4;
     for (let at = edge; at < total - edge; at += 6.5) {
       if (nodes[si].some((n) => Math.abs(n.s - at) < shape.outerHalf + 6)) continue;
-      for (const side of [1, -1]) bays.push({ shape: si, s: at, across: side * (shape.halfWidth - 1.4), taken: -1 });
+      /**
+       * Карман — это ПРАВАЯ ПОЛОСА, а не полоска у бордюра. Отдельного места
+       * для стоянки на наших улицах нет: полосы движения занимают полотно
+       * целиком. Так и в жизни — стоящая машина перегораживает правую полосу,
+       * и её объезжают. Прежнее «полуширина минус 1.4» попадало внутрь той же
+       * полосы, только мимо её середины, и машины налезали друг на друга.
+       */
+      for (const dir of [1, -1] as const) {
+        const side = lanes[si].forward.length > 0 || lanes[si].backward.length > 0
+          ? (dir > 0 ? lanes[si].forward : lanes[si].backward) : [];
+        if (side.length === 0) continue;
+        bays.push({ shape: si, s: at, across: side[0].across, taken: -1 });
+      }
     }
   });
 
-  return { length, atJunction, nodes, signals, ends, bays };
+  return { length, atJunction, nodes, signals, ends, bays, lanes };
 }
 
 /** Где дорога в этом месте и куда она смотрит. */
@@ -294,7 +318,7 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
     if (total < 30) continue;
     const dir = next() < 0.5 ? 1 : -1;
     const s = 10 + next() * (total - 20);
-    if (movers.some((o) => o.shape === shape && Math.abs(o.s - s) < 16)) continue;
+    if (movers.some((o) => o.shape === shape && o.dir === dir && Math.abs(o.s - s) < 16)) continue;
     // не ставим машину на подъезде к перекрёстку: она родится на ходу перед
     // стоп-линией и проедет на красный, ещё не сделав ни одного решения
     if (net.nodes[shape].some((n) => Math.abs(n.s - s) < 26)) continue;
@@ -302,7 +326,8 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
     movers.push({
       shape, s, dir, speed: 8 + next() * 5, wait: 0, reason: 'едет', accel: 0,
       seed: Math.floor(next() * 2147483647),
-      across: dir * world.shapes[shape].halfWidth * 0.5,
+      lane: 0,
+      across: 0,   // ставится ниже, когда полоса выбрана
       park: null,
       route: null,
       knocked: null,
@@ -310,6 +335,12 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
       yaw: Math.atan2(spot.fz * dir, spot.fx * dir),
       colour: COLOURS[Math.floor(next() * COLOURS.length) % COLOURS.length],
     });
+    // полоса выбирается из тех, что есть у этой дороги в эту сторону,
+    // и кузов сразу ставится в её середину
+    const last = movers[movers.length - 1];
+    const count = laneCount(net.lanes, shape, dir as 1 | -1);
+    last.lane = count <= 1 ? 0 : Math.floor(next() * count) % count;
+    last.across = laneAcross(net.lanes, shape, dir as 1 | -1, last.lane);
   }
   return movers;
 }
@@ -324,11 +355,16 @@ function roll(m: Mover): number {
   return m.seed / 2147483647;
 }
 
+/** Середина полосы, на которую эта машина едет. */
+function laneMid(net: Network, m: Mover): number {
+  return laneAcross(net.lanes, m.shape, m.dir as 1 | -1, m.lane);
+}
+
 /** Середина своей полосы на этом метре дороги, и куда она смотрит. */
-function lanePoint(world: World, shape: number, s: number, dir: number):
+function lanePoint(world: World, net: Network, shape: number, s: number, dir: number, lane: number):
 { x: number; z: number; fx: number; fz: number } {
   const spot = along(world, shape, s);
-  const off = dir * world.shapes[shape].halfWidth * 0.5;
+  const off = laneAcross(net.lanes, shape, dir as 1 | -1, lane);
   return { x: spot.x - spot.fz * off, z: spot.z + spot.fx * off, fx: spot.fx * dir, fz: spot.fz * dir };
 }
 
@@ -370,9 +406,11 @@ const STEPS = 12;
  * пересечения с чужими путями. Второй геометрии перекрёстка в городе нет,
  * и «поехал не там, где считались конфликты» невыразимо.
  */
-export function crossPath(world: World, net: Network, shape: number, dir: number, r: Route): Path {
-  const a = lanePoint(world, shape, mouthAt(world, shape, dir > 0 ? net.length[shape] : 0, dir), dir);
-  const b = lanePoint(world, r.shape, mouthAt(world, r.shape, r.s, -r.dir), r.dir);
+export function crossPath(
+  world: World, net: Network, shape: number, dir: number, lane: number, r: Route,
+): Path {
+  const a = lanePoint(world, net, shape, mouthAt(world, shape, dir > 0 ? net.length[shape] : 0, dir), dir, lane);
+  const b = lanePoint(world, net, r.shape, mouthAt(world, r.shape, r.s, -r.dir), r.dir, r.lane);
   // точка схода касательных: где продолжение въезда встречает продолжение выезда
   const det = a.fx * b.fz - a.fz * b.fx;
   let cx = (a.x + b.x) / 2, cz = (a.z + b.z) / 2;
@@ -391,6 +429,32 @@ export function crossPath(world: World, net: Network, shape: number, dir: number
   const inYaw = Math.atan2(a.fz, a.fx);
   const outYaw = Math.atan2(b.fz, b.fx);
   return { pts, mark, len: mark[mark.length - 1], inYaw, turn: wrap(outYaw - inYaw) };
+}
+
+/**
+ * Куда сворачивает этот маршрут: + направо, − налево. Считается по курсам
+ * дорог, а не по кривой, — поэтому его можно спросить ДО того, как кривая
+ * построена, и выбрать по нему полосу выезда.
+ */
+function turnOf(world: World, net: Network, shape: number, dir: number, r: Route): number {
+  const inS = mouthAt(world, shape, dir > 0 ? net.length[shape] : 0, dir);
+  const a = along(world, shape, inS);
+  const b = along(world, r.shape, mouthAt(world, r.shape, r.s, -r.dir));
+  return wrap(Math.atan2(b.fz * r.dir, b.fx * r.dir) - Math.atan2(a.fz * dir, a.fx * dir));
+}
+
+/**
+ * На какую полосу выезжать. ПДД 8.6: поворот направо выполняется так, чтобы
+ * машина оказалась как можно ближе к правому краю. Налево — наоборот, в левую
+ * из доступных: оттуда и поворачивают. Прямо — со своей же по счёту.
+ */
+function exitLane(world: World, net: Network, m: Mover, r: Route, changing: boolean): number {
+  const count = laneCount(net.lanes, r.shape, r.dir as 1 | -1);
+  if (count <= 1 || !changing) return 0;
+  const turn = turnOf(world, net, m.shape, m.dir, r);
+  if (turn > 0.35) return 0;                       // направо — в правую
+  if (turn < -0.35) return count - 1;              // налево — в левую
+  return Math.min(m.lane, count - 1);              // прямо — со своей же
 }
 
 /** Разница углов в пределах ±180°. */
@@ -496,12 +560,125 @@ function nearest(a: Path, b: Path): { at: number; foe: number; gap: number } {
   return best;
 }
 
+/** Сколько метров впереди смотрят, решая, не пора ли перестроиться. */
+const SCAN = 55;
+/** Насколько медленнее должен ехать лидер, чтобы его захотелось обогнать, м/с. */
+const SLOWER = 2.5;
+
+/**
+ * Кто едет передо мной на этой линии и как быстро. null — свободно.
+ * `line` — смещение поперёк дороги, а не номер полосы: так же можно
+ * спросить и про соседнюю полосу, и про ту, где машина сейчас между полос.
+ */
+function aheadOn(movers: readonly Mover[], m: Mover, line: number, reach: number):
+{ gap: number; speed: number; parked: boolean } | null {
+  let best: { gap: number; speed: number; parked: boolean } | null = null;
+  for (const o of movers) {
+    if (o === m || o.shape !== m.shape) continue;
+    if (o.knocked === null && o.dir !== m.dir) continue;
+    if (Math.abs(o.across - line) > 2.2) continue;
+    const gap = (o.s - m.s) * m.dir - LENGTH;
+    if (gap < 0 || gap > reach) continue;
+    if (best === null || gap < best.gap)
+      best = { gap, speed: o.speed, parked: o.park?.phase === 'стоит' || o.knocked !== null };
+  }
+  return best;
+}
+
+/**
+ * Можно ли перестроиться на эту линию. Два условия, оба из MOBIL:
+ * впереди хватает места, и тому, кто сзади, не придётся бить по тормозам.
+ */
+function laneSafe(movers: readonly Mover[], m: Mover, line: number): boolean {
+  for (const o of movers) {
+    if (o === m || o.shape !== m.shape) continue;
+    if (o.knocked === null && o.dir !== m.dir) continue;
+    if (Math.abs(o.across - line) > 2.2) continue;
+    const gap = (o.s - m.s) * m.dir;
+    if (gap >= 0 && gap < LENGTH + GAP0 + m.speed * 0.6) return false;      // впереди тесно
+    // сзади: ему должно хватить места, чтобы не тормозить резко
+    if (gap < 0 && -gap < LENGTH + GAP0 + o.speed * HEADWAY * 0.7) return false;
+  }
+  return true;
+}
+
+/**
+ * Кто стоит бок о бок со мной так, что ехать в его сторону нельзя.
+ * Возвращается его смещение поперёк дороги; null — рядом никого.
+ */
+function sideBlocker(movers: readonly Mover[], m: Mover): number | null {
+  let near: number | null = null, best = Infinity;
+  for (const o of movers) {
+    if (o === m || o.shape !== m.shape) continue;
+    if (o.knocked === null && o.dir !== m.dir) continue;
+    const along = Math.abs(o.s - m.s);
+    if (along > LENGTH + GAP0) continue;             // разъехались вдоль — не мешает
+    const side = Math.abs(o.across - m.across);
+    if (side > 3.6) continue;                        // дальше полосы — не мешает
+    if (side < best) { best = side; near = o.across; }
+  }
+  return near;
+}
+
+/**
+ * На какую полосу машине надо. Считается каждый шаг из обстановки и нигде
+ * не хранится: «поехал влево, а почему — забыл» невыразимо.
+ *
+ * Причины по убыванию силы, ровно как в ПДД и в модели перестроения MOBIL:
+ *  8.5  — поворачивать надо из крайней полосы: направо из правой, налево из левой;
+ *  препятствие — стоящая машина в моей полосе, её надо объехать;
+ *  обгон — впереди заметно медленнее, а слева свободно;
+ *  9.4  — держись правее, когда ничего не держит.
+ */
+function wantLane(world: World, net: Network, movers: readonly Mover[], m: Mover): number {
+  const count = laneCount(net.lanes, m.shape, m.dir as 1 | -1);
+  if (count <= 1) return 0;
+  const left = count - 1;
+
+  // 8.5: поворот выполняется из крайней полосы, и решение принимается заранее
+  const ahead = nextJunction(world, net, m);
+  if (m.route !== null && ahead !== null && ahead.stopGap < 70) {
+    const turn = turnOf(world, net, m.shape, m.dir, m.route);
+    if (turn > 0.35) return 0;
+    if (turn < -0.35) return left;
+  }
+
+  const line = (i: number): number => laneAcross(net.lanes, m.shape, m.dir as 1 | -1, i);
+  const mine = aheadOn(movers, m, line(m.lane), SCAN);
+
+  // препятствие: стоящего надо объезжать, ждать его бессмысленно
+  if (mine !== null && mine.parked && mine.gap < 40) {
+    for (const to of [m.lane + 1, m.lane - 1]) {
+      if (to < 0 || to > left) continue;
+      if (laneSafe(movers, m, line(to))) return to;
+    }
+    return m.lane;
+  }
+
+  // обгон: впереди заметно медленнее меня, а слева есть куда
+  if (mine !== null && mine.speed < m.cruise - SLOWER && m.lane < left) {
+    const to = m.lane + 1;
+    const there = aheadOn(movers, m, line(to), SCAN);
+    const better = there === null || there.speed > mine.speed + 1;
+    if (better && laneSafe(movers, m, line(to))) return to;
+  }
+
+  // 9.4: держись правее. Возвращаемся, только если справа не хуже
+  if (m.lane > 0) {
+    const to = m.lane - 1;
+    const there = aheadOn(movers, m, line(to), SCAN);
+    const free = there === null || there.speed >= Math.min(m.cruise, m.speed) - 0.5;
+    if (free && laneSafe(movers, m, line(to))) return to;
+  }
+  return m.lane;
+}
+
 /** Куда машина смотрит и где стоит: правостороннее движение. */
 export function poseOf(world: World, net: Network, m: Mover): { x: number; z: number; yaw: number } {
   if (m.knocked !== null) return { x: m.knocked.x, z: m.knocked.z, yaw: m.knocked.yaw };
   if (m.route !== null) {
     const at = inside(world, net, m);
-    if (at > 0) return alongPath(crossPath(world, net, m.shape, m.dir, m.route), at);
+    if (at > 0) return alongPath(crossPath(world, net, m.shape, m.dir, m.lane, m.route), at);
   }
   const spot = along(world, m.shape, m.s);
   const fx = spot.fx * m.dir, fz = spot.fz * m.dir;
@@ -520,7 +697,7 @@ export function poseOf(world: World, net: Network, m: Mover): { x: number; z: nu
  * раньше, машина едет по обочине весь квартал и задевает тех, кто уже стоит.
  */
 function wantAcross(world: World, net: Network, m: Mover): number {
-  const lane = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+  const lane = laneMid(net, m);
   if (m.park === null || m.park.phase === 'выезжает') return lane;
   const bay = net.bays[m.park.bay];
   const gap = (bay.s - m.s) * m.dir;
@@ -528,8 +705,8 @@ function wantAcross(world: World, net: Network, m: Mover): number {
 }
 
 /** Свободна ли полоса рядом и сзади — чтобы выехать из кармана. */
-function laneClear(world: World, movers: readonly Mover[], m: Mover): boolean {
-  const lane = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+function laneClear(world: World, net: Network, movers: readonly Mover[], m: Mover): boolean {
+  const lane = laneMid(net, m);
   return !movers.some((o) => o !== m && o.shape === m.shape && o.dir === m.dir
     && Math.abs(o.across - lane) < 2.4
     // назад смотрим далеко: подъезжающий сзади проедет эти метры,
@@ -622,7 +799,7 @@ export function signalsOf(world: World, net: Network, m: Mover, time: number):
 { blink: -1 | 0 | 1; brake: boolean } {
   const brake = m.accel < -0.4 && m.speed > 0.1;
   if (m.route === null || m.knocked !== null) return { blink: 0, brake };
-  const path = crossPath(world, net, m.shape, m.dir, m.route);
+  const path = crossPath(world, net, m.shape, m.dir, m.lane, m.route);
   // прямо — не мигаем: поворотник на «еду прямо» это не сигнал, а шум
   if (Math.abs(path.turn) < 0.35) return { blink: 0, brake };
   const on = Math.floor(time * BLINK * 2) % 2 === 0;
@@ -671,9 +848,11 @@ function rollKnocked(world: World, net: Network, m: Mover, dt: number): void {
   k.still = m.speed < 0.4 ? k.still + dt : 0;
   if (k.still > 1.5) {
     // пришёл в себя: снова едет по своей полосе, в ту сторону, куда смотрит
-    const lane = along(world, m.shape, m.s);
-    m.dir = Math.cos(k.yaw) * lane.fx + Math.sin(k.yaw) * lane.fz >= 0 ? 1 : -1;
-    m.across = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+    const axis = along(world, m.shape, m.s);
+    m.dir = Math.cos(k.yaw) * axis.fx + Math.sin(k.yaw) * axis.fz >= 0 ? 1 : -1;
+    // встаёт в ту полосу, к которой ближе всего оказался кузов
+    m.lane = laneAt(net.lanes, m.shape, m.dir as 1 | -1, m.across);
+    m.across = laneMid(net, m);
     m.route = null;
     m.park = null;
     m.speed = 0;
@@ -771,12 +950,15 @@ export function moveTraffic(
   world: World, net: Network, movers: Mover[], dt: number, time: number,
   options: {
     headway?: boolean; rules?: boolean; crossing?: readonly OnCrossing[];
+    /** Выключить перестроения: все едут в правой полосе, как было до 13.09. */
+    lanes?: boolean;
     /** Машина игрока: город обязан её видеть, иначе он едет сквозь неё. */
     player?: { x: number; z: number; speed: number; yaw: number } | null;
   } = {},
 ): void {
   const headway = options.headway ?? true;
   const rules = options.rules ?? true;
+  const changing = options.lanes ?? true;
 
   /**
    * ПРЕДПРОХОД. Всё, что зависит от других машин, считается ДО того, как
@@ -828,16 +1010,16 @@ export function moveTraffic(
     // ехать некуда — это тупик, и разбирается он разворотом ниже, а не здесь
     if (exits.length === 0) return;
     const pick = exits[Math.floor(roll(m) * exits.length) % exits.length];
-    m.route = {
-      junction: t.end.junction, shape: pick.shape, s: pick.s,
-      dir: pick.s < net.length[pick.shape] / 2 ? 1 : -1,
-    };
+    const half = { junction: t.end.junction, shape: pick.shape, s: pick.s,
+      dir: pick.s < net.length[pick.shape] / 2 ? 1 : -1, lane: 0 };
+    // полоса выезда выбирается по тому, куда сворачиваем (ПДД 8.6)
+    m.route = { ...half, lane: exitLane(world, net, m, half, changing) };
   });
 
   const poses = movers.map((m) => poseOf(world, net, m));
 
   /** Пути через перекрёстки: считаются один раз за шаг, а не на каждую пару. */
-  const paths = movers.map((m) => m.route === null ? null : crossPath(world, net, m.shape, m.dir, m.route));
+  const paths = movers.map((m) => m.route === null ? null : crossPath(world, net, m.shape, m.dir, m.lane, m.route));
   const entered = movers.map((m) => m.route === null ? -Infinity : inside(world, net, m));
 
   movers.forEach((m, index) => {
@@ -845,6 +1027,10 @@ export function moveTraffic(
     if (m.knocked !== null) { rollKnocked(world, net, m, dt); return; }
     const total = net.length[m.shape];
     const holds: Hold[] = [];
+
+    // ── ПОЛОСА. Решается до всего остального: от неё зависит, кто впереди
+    if (rules && m.park === null && entered[index] <= 0)
+      m.lane = changing ? wantLane(world, net, movers, m) : 0;
 
     // ── поворот дороги впереди: смотрим на несколько шагов вперёд.
     // Внутри перекрёстка смотреть некуда: там своя кривая, а не дорога
@@ -864,10 +1050,22 @@ export function moveTraffic(
         // а не лидер, и «в какую сторону она едет» смысла не имеет
         const stray = other.knocked !== null;
         if (!stray && other.dir !== m.dir) continue;
+        /**
+         * Мешает тот, кто на моей линии движения. Меряем НАСТОЯЩЕЕ смещение,
+         * а не номер полосы: пока машина перестраивается, она между полосами,
+         * и номер про неё врёт. Полосы разнесены на 3.5 м, кузов 1.95 —
+         * порога 2.2 хватает, чтобы соседняя полоса не держала, а своя держала.
+         */
         if (Math.abs(other.across - m.across) > (stray ? 3.4 : 2.2)) continue;
         const gap = (other.s - m.s) * m.dir - LENGTH;
-        if (gap > 0 && gap < 60)
-          holds.push({ gap, speed: stray ? 0 : other.speed, why: stray ? 'сбитая машина' : 'машина впереди' });
+        /**
+         * Зазор меньше нуля — это уже НАЛОЖЕНИЕ, а не «лидера нет». Раньше
+         * такой лидер просто пропадал из расчёта, и машины тихо вползали
+         * друг в друга на нулевой скорости. Теперь это самый строгий случай.
+         */
+        if (gap > -LENGTH && gap < 60)
+          holds.push({ gap: Math.max(0.2, gap), speed: stray ? 0 : other.speed,
+            why: stray ? 'сбитая машина' : 'машина впереди' });
       }
     }
 
@@ -930,7 +1128,7 @@ export function moveTraffic(
       if (headway) {
         for (const o of movers) {
           if (o === m || o.shape !== r.shape || o.dir !== r.dir) continue;
-          if (Math.abs(o.across - r.dir * world.shapes[r.shape].halfWidth * 0.5) > 2.2) continue;
+          if (Math.abs(o.across - laneAcross(net.lanes, r.shape, r.dir as 1 | -1, r.lane)) > 2.2) continue;
           const gap = (mine.len - myAt) + (o.s - outMouth) * r.dir - LENGTH;
           if (gap > 0 && gap < 60) holds.push({ gap, speed: o.speed, why: 'машина впереди' });
         }
@@ -1071,12 +1269,20 @@ export function moveTraffic(
         holds.push({ gap: Math.max(0.3, gap), speed: 0, why: 'паркуется' });
         // модель следования держит зазор и останавливает машину НЕ ДОЕЗЖАЯ
         // до точки — поэтому «приехал» это «встал рядом», а не «в точке»
-        if (gap < 4.5 && m.speed < 0.6) { m.park.phase = 'стоит'; m.speed = 0; }
+        /**
+         * Встал — значит встал В КАРМАНЕ, а не где придётся. Без проверки
+         * бокового положения машина «парковалась» посреди полосы, если ей
+         * не дали доехать вбок, и оставалась там торчать.
+         */
+        if (gap < 4.5 && m.speed < 0.6 && Math.abs(m.across - bay.across) < 0.6) {
+          m.park.phase = 'стоит';
+          m.speed = 0;
+        }
       } else if (m.park.phase === 'стоит') {
         m.park.left -= dt;
         m.speed = 0;
         m.reason = 'стоит в кармане';
-        if (m.park.left <= 0 && laneClear(world, movers, m)) m.park.phase = 'выезжает';
+        if (m.park.left <= 0 && laneClear(world, net, movers, m)) m.park.phase = 'выезжает';
         const want = wantAcross(world, net, m);
         m.across += Math.max(-0.9 * dt, Math.min(0.9 * dt, want - m.across));
         return;
@@ -1086,9 +1292,9 @@ export function moveTraffic(
          * решения: пока машина выползает, сзади успевает подъехать другая,
          * и они оказываются в одном месте.
          */
-        const lane = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+        const lane = laneMid(net, m);
         if (Math.abs(m.across - lane) < 0.15) { net.bays[m.park.bay].taken = -1; m.park = null; }
-        else if (!laneClear(world, movers, m)) {
+        else if (!laneClear(world, net, movers, m)) {
           m.speed = 0;
           m.reason = 'выезжает, ждёт';
           return;
@@ -1129,14 +1335,15 @@ export function moveTraffic(
      * на ту дорогу, на которую собирались, с тем же остатком метров.
      */
     if (m.route !== null) {
-      const path = crossPath(world, net, m.shape, m.dir, m.route);
+      const path = crossPath(world, net, m.shape, m.dir, m.lane, m.route);
       const at = inside(world, net, m);
       if (at >= path.len) {
         const r = m.route;
         m.shape = r.shape;
         m.dir = r.dir;
         m.s = mouthAt(world, r.shape, r.s, -r.dir) + r.dir * (at - path.len);
-        m.across = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+        m.lane = r.lane;
+        m.across = laneMid(net, m);
         m.route = null;
         m.wait = 0;
       }
@@ -1156,16 +1363,31 @@ export function moveTraffic(
       else {
         m.dir = back;
         m.s = Math.max(3, Math.min(tail - 3, m.s + m.dir * 2));
-        // развернулись — значит и полоса теперь другая. Без этой строки
-        // машина ехала по встречной, пока смещение плавно переползало
-        // через середину дороги
-        m.across = m.dir * world.shapes[m.shape].halfWidth * 0.5;
+        // развернулись — значит и полоса теперь другая, правая по новому ходу.
+        // Без этой строки машина ехала по встречной, пока смещение плавно
+        // переползало через середину дороги
+        m.lane = 0;
+        m.across = laneMid(net, m);
       }
     }
 
-    // боковое смещение догоняет желаемое: съезд в карман и выезд из него
+    /**
+     * ── БОКОВОЕ ДВИЖЕНИЕ. Единственное место, где машина едет вбок, —
+     * значит и проверка «а там свободно?» должна быть тут одна на всё.
+     * Раньше её имело только перестроение, а парковка нет: машина съезжала
+     * в карман сквозь того, кто в этот миг перестраивался мимо. Теперь
+     * причина смещения не важна — вбок нельзя в занятое, и точка.
+     */
     const wantSide = wantAcross(world, net, m);
-    m.across += Math.max(-0.9 * dt, Math.min(0.9 * dt, wantSide - m.across));
+    const step = Math.max(-0.9 * dt, Math.min(0.9 * dt, wantSide - m.across));
+    if (step !== 0) {
+      const blocker = sideBlocker(movers, m);
+      // если рядом никого — едем; если есть, разрешён только шаг ПРОЧЬ от него,
+      // иначе застрявшие бок о бок не смогли бы разъехаться никогда
+      const away = blocker === null
+        || Math.abs(m.across + step - blocker) > Math.abs(m.across - blocker);
+      if (away) m.across += step;
+    }
 
     // курс догоняет дорогу, а не прыгает вместе с ней
     const want = poseOf(world, net, m).yaw;
