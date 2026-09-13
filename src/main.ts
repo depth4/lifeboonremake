@@ -13,6 +13,10 @@ import { SETUPS, VIPER } from './car/passport.ts';
 import { P_ZERO } from './car/tyre.ts';
 import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.ts';
 import { createDriver } from './car/controls.ts';
+import { createAim } from './aim.ts';
+import {
+  type Person, createPerson, eyes as eyesOf, look, step as stepPerson,
+} from './person/person.ts';
 import { type Mover, type Network, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf } from './city/traffic.ts';
 import { judge, newWatchdog, tally } from './city/offence.ts';
 import { laneAcross } from './city/lanes.ts';
@@ -321,8 +325,62 @@ let car: Car | null = null;
 /** Машина остаётся в мире, когда из неё вышли: просто перестаёт считаться. */
 let driving = false;
 const spinAngle = [0, 0, 0, 0];
-const driver = createDriver(canvas ?? document.body);
+/**
+ * Мышь одна на всех: и руль, и взгляд спрашивают один и тот же захват.
+ * Два захвата на одном холсте передрались бы за указатель.
+ */
+const aim = createAim(canvas ?? document.body);
+const driver = createDriver(canvas ?? document.body, aim);
+
+/** Человек на своих двоих. null — сейчас не пешком. */
+let walker: Person | null = null;
+/** Клавиши ходьбы. Руль их не видит, ходьба не видит руля. */
+const afootKeys = new Set<string>();
+/** Пикселей мыши на радиан поворота взгляда. */
+const LOOK_TRAVEL = 1200;
+
+aim.onMove((dx, dy) => { if (walker !== null) look(walker, dx, dy, LOOK_TRAVEL); });
+/**
+ * Поворот взгляда на заданный угол — для снимков и проверок из терминала.
+ * Мышь под захватом присылает встречные скачки, и снимок с ней получается
+ * случайным; а спросить «повернись на 70°» можно ровно.
+ */
+(window as unknown as { __turn?: (deg: number) => void }).__turn = (degrees) => {
+  if (walker !== null) look(walker, (degrees * Math.PI) / 180 * LOOK_TRAVEL, 0, LOOK_TRAVEL);
+};
+addEventListener('keydown', (e) => { if (walker !== null) afootKeys.add(e.code); });
+addEventListener('keyup', (e) => { afootKeys.delete(e.code); });
+
+const grabWalk = (): void => { aim.take(); };
+
+/**
+ * Выйти из машины и пойти пешком — или сесть обратно.
+ * Человек ставится у левой двери и смотрит туда же, куда смотрела машина.
+ */
+function afoot(on: boolean): void {
+  if (on) {
+    if (driving) seat(false);
+    const from = car ?? { x: 0, z: 0, yaw: 0 };
+    walker = createPerson(
+      from.x - Math.sin(from.yaw) * 1.7,
+      from.z + Math.cos(from.yaw) * 1.7,
+      ground, from.yaw,
+    );
+    canvas?.addEventListener('mousedown', grabWalk);
+    aim.take();
+  } else {
+    walker = null;
+    afootKeys.clear();
+    canvas?.removeEventListener('mousedown', grabWalk);
+    aim.give();
+    viewer.setWalk(null);
+    if (lidsTop) lidsTop.style.setProperty('--shut', '0');
+  }
+  drivePanel();
+}
 const dash = document.getElementById('dash');
+/** Веки. Моргание — две тёмные полосы, дешевле присутствия не бывает. */
+const lidsTop = document.getElementById('lids');
 
 /**
  * Поставить машину на первую дорогу сцены, носом вдоль неё, на трети пути —
@@ -370,6 +428,7 @@ function drivePanel(): void {
   if (!panel) return;
   panel.innerHTML =
     `<button type="button" data-drive="seat" aria-pressed="${driving}">за руль</button>` +
+    `<button type="button" data-drive="afoot" aria-pressed="${walker !== null}">пешком</button>` +
     `<button type="button" class="plain" data-drive="assist" aria-pressed="${driver.assist}">помощь рулю</button>` +
     `<button type="button" class="plain" data-drive="setup">подвеска: ${VIPER.suspension.label}</button>` +
     `<button type="button" class="plain" data-drive="traffic" aria-pressed="${traffic.length > 0}">трафик</button>` +
@@ -390,6 +449,7 @@ el('drive')?.addEventListener('click', (event) => {
   if (!button) return;
   const what = button.dataset.drive;
   if (what === 'seat') seat(!driving);
+  else if (what === 'afoot') afoot(walker === null);
   else if (what === 'park') { car = null; driving = false; viewer.setCar(null); viewer.setChase(false); if (dash) dash.hidden = true; drivePanel(); }
   else if (what === 'assist') {
     driver.assist = !driver.assist;
@@ -426,6 +486,7 @@ el('drive')?.addEventListener('click', (event) => {
  * настройку на ходу.
  */
 addEventListener('keydown', (event) => {
+  if (event.code === 'Enter' && walker !== null) { afoot(false); return; }
   if (event.code === 'Enter' && dash !== null) { seat(!driving); return; }
   if (car === null || !driving) return;
   if (event.code === 'KeyG') { driver.assist = !driver.assist; drivePanel(); }
@@ -530,6 +591,16 @@ viewer.onFrame((dt) => {
         blink: lights.blink, brake: lights.brake,
       };
     }));
+  }
+  if (walker !== null) {
+    const wish = {
+      forward: (afootKeys.has('KeyW') ? 1 : 0) - (afootKeys.has('KeyS') ? 1 : 0),
+      side: (afootKeys.has('KeyD') ? 1 : 0) - (afootKeys.has('KeyA') ? 1 : 0),
+      run: afootKeys.has('ShiftLeft') || afootKeys.has('ShiftRight'),
+    };
+    stepPerson(walker, ground, wish, Math.min(dt, 0.1));
+    viewer.setWalk(eyesOf(walker));
+    if (lidsTop) lidsTop.style.setProperty('--shut', walker.lids.toFixed(3));
   }
   if (car === null) return;
   const speed = forwardSpeed(car);

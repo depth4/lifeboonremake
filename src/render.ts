@@ -172,6 +172,14 @@ export interface Viewer {
   setChase(on: boolean): void;
   /** Откуда смотреть за рулём: сзади или с места водителя. */
   setEye(from: 'сзади' | 'из салона'): void;
+  /**
+   * Пешком: камера становится ГЛАЗАМИ, положение и поворот которых уже
+   * посчитал человек. Здесь ничего не додумывается — ни тряски, ни поворота:
+   * иначе у камеры завелась бы своя жизнь отдельно от тела.
+   */
+  setWalk(eye: {
+    x: number; y: number; z: number; yaw: number; pitch: number; roll: number;
+  } | null): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -369,7 +377,10 @@ export function show(surface: Surface, startView: string, custom: View | null = 
 
   let flight: { from: THREE.Vector3; to: THREE.Vector3; look: THREE.Vector3; at: THREE.Vector3; fog: number; t: number } | null = null;
 
+  /** Дымка последнего ракурса: пешеход ставит свою и обязан вернуть эту. */
+  let viewFog = 480;
   const apply = (view: View, instant: boolean): void => {
+    viewFog = view.fog;
     const to = new THREE.Vector3(...view.from);
     const at = new THREE.Vector3(...view.at);
     if (instant) {
@@ -397,6 +408,8 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let onFrameCb: ((dt: number) => void) | null = null;
   let chase = false;
   let eye: 'сзади' | 'из салона' = 'сзади';
+  /** Глаза пешехода. Пока они есть, камера — это они, и больше ничего. */
+  let walkEye: { x: number; y: number; z: number; yaw: number; pitch: number; roll: number } | null = null;
   const chaseEye = new THREE.Vector3();
   const chaseAim = new THREE.Vector3();
   let chaseReady = false;
@@ -405,6 +418,20 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(0.1, clock.getDelta());
     if (onFrameCb) onFrameCb(dt);
+    if (walkEye) {
+      camera.up.set(0, 1, 0);
+      camera.position.set(walkEye.x, walkEye.y, walkEye.z);
+      const cp = Math.cos(walkEye.pitch);
+      camera.lookAt(
+        walkEye.x + Math.cos(walkEye.yaw) * cp,
+        walkEye.y + Math.sin(walkEye.pitch),
+        walkEye.z + Math.sin(walkEye.yaw) * cp,
+      );
+      // крен на шаге — последним, поверх взгляда: качается голова, не мир
+      camera.rotateZ(walkEye.roll);
+      renderer.render(scene, camera);
+      return;
+    }
     if (chase && carGroup.visible && eye === 'из салона') {
       /**
        * Из салона. Точка взгляда берётся ИЗ САМОГО КУЗОВА: он уже наклонён
@@ -725,6 +752,18 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       });
       walkerMesh.instanceMatrix.needsUpdate = true;
       if (walkerMesh.instanceColor) walkerMesh.instanceColor.needsUpdate = true;
+    },
+    setWalk(next) {
+      walkEye = next;
+      /**
+       * Пешком воздух гуще. Не для красоты: с высоты глаз видно, что земля
+       * кончается, и этот обрыв читается как «декорация». Дымка съедает край
+       * раньше, чем он попадёт в кадр, и заодно даёт глубину — дальнее
+       * выцветает, ближнее нет, и мозг достраивает расстояние сам.
+       * Как вернуться к машине — вернуть дымку ракурса.
+       */
+      if (next) { fog.near = 25; fog.far = 165; }
+      else { fog.far = viewFog; fog.near = viewFog * 0.42; }
     },
     setEye(from) {
       eye = from;

@@ -260,9 +260,23 @@
       .grips { display: grid; grid-template-columns: 12px 12px; gap: 4px; }
       .grips i { width: 12px; height: 16px; background: rgba(233, 236, 233, 0.16); display: block; }
       .dash .tip { margin: 0; max-width: 240px; font-size: 11px; line-height: 1.45; color: var(--muted); }
+      /**
+       * Веки. Моргание — самое дешёвое присутствие: две тёмные полосы
+       * на четверть секунды. Без него взгляд стеклянный, и это замечают все,
+       * хотя само моргание не замечает никто.
+       */
+      #lids { position: fixed; inset: 0; pointer-events: none; z-index: 40; --shut: 0; }
+      #lids::before, #lids::after {
+        content: ''; position: absolute; left: 0; right: 0; height: 52%;
+        background: #05070a;
+        transform: scaleY(var(--shut)); will-change: transform;
+      }
+      #lids::before { top: 0; transform-origin: top; }
+      #lids::after { bottom: 0; transform-origin: bottom; }
     </style>
   </head>
   <body>
+    <div id="lids"></div>
     <div class="layer">
       <div class="top">
         <div class="mark">lifeboonremake<span id="build">сборка не отмечена</span></div>
