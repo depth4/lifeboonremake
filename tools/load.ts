@@ -110,6 +110,67 @@ for (const сколько of [10_000, 100_000, 1_000_000]) {
   );
 }
 
+console.log('\nЧАСТЬ 3. Сохранить ВЕСЬ город, а не только встреченных\n');
+
+/**
+ * Состояние жителя — то, чего из номера не выведешь: что с ним случилось.
+ * Лежит не объектами, а полосами чисел: у миллиона объектов один только
+ * заголовок съел бы больше, чем все данные.
+ */
+function городНаПамять(сколько: number) {
+  return {
+    дом: new Uint32Array(сколько),
+    работа: new Uint32Array(сколько),
+    машина: new Uint32Array(сколько),
+    деньги: new Int32Array(сколько),
+    виденВМинуту: new Uint32Array(сколько),
+    профессия: new Uint8Array(сколько),
+    здоровье: new Uint8Array(сколько),
+    состояние: new Uint8Array(сколько),
+    знакомство: new Uint8Array(сколько),
+  };
+}
+
+for (const сколько of [1_000_000, 10_000_000]) {
+  global.gc?.();
+  const доПамяти = process.memoryUsage().heapUsed + process.memoryUsage().external;
+  const началиЗапись = performance.now();
+  const город = городНаПамять(сколько);
+  for (let i = 0; i < сколько; i++) {
+    const ж = житель(ГОРОД, i);
+    город.дом[i] = ж.дом;
+    город.работа[i] = ж.работа;
+    город.машина[i] = ж.машина;
+    город.деньги[i] = 30000;
+    город.здоровье[i] = 100;
+  }
+  const запись = performance.now() - началиЗапись;
+  const памяти = process.memoryUsage().heapUsed + process.memoryUsage().external - доПамяти;
+
+  const началиСохранение = performance.now();
+  const куски = Object.values(город).map((п) => Buffer.from(п.buffer, п.byteOffset, п.byteLength));
+  const файл = Buffer.concat(куски);
+  const сохранение = performance.now() - началиСохранение;
+
+  const началиЧтение = performance.now();
+  const обратно = new Uint32Array(файл.buffer, файл.byteOffset, сколько);
+  let сверка = 0;
+  for (let i = 0; i < сколько; i += 1000) сверка += обратно[i];
+  const чтение = performance.now() - началиЧтение;
+
+  console.log(
+    `  ${сколько.toLocaleString('ru-RU').padStart(10)} жителей: ` +
+    `${(памяти / 1048576).toFixed(0).padStart(5)} МБ в памяти, ` +
+    `файл ${(файл.byteLength / 1048576).toFixed(0).padStart(4)} МБ, ` +
+    `собрать ${запись.toFixed(0)} мс, сохранить ${сохранение.toFixed(0)} мс, ` +
+    `прочитать ${чтение.toFixed(0)} мс — разбирать нечего, это те же байты` +
+    `${сверка === 0 ? ' (?! сверка пуста)' : ''}`,
+  );
+}
+
+console.log('\n  На одного жителя выходит 24 байта: дом, работа, машина, деньги, здоровье,');
+console.log('  профессия, состояние, знакомство с игроком и когда его видели в последний раз.');
+
 const сВопросом = performance.now();
 const он = житель(ГОРОД, 573291);
 const ответ = performance.now() - сВопросом;
