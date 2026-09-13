@@ -233,46 +233,53 @@ await page.mouse.click(800, 500);             // взять руль
  * назад. Это повторяемо и проверяет ровно то, что нужно: удар посчитан
  * на живой странице, а не только в терминале.
  */
-const behind = async () => {
+/**
+ * Ищем, во что въехать: любую чужую машину впереди, на моей линии.
+ * Ждать, пока кто-то подъедет к стоящему игроку, было лотереей — трафик
+ * теперь ездит по полосам и объезжает его по соседней. Поэтому игрок
+ * едет сам и догоняет очередь у красного: у каждого перекрёстка она есть.
+ */
+const targetAhead = async () => {
   const now = await page.evaluate(() => ({ car: window.__car(), traffic: window.__traffic() }));
   if (now.car === null) return null;
-  const bx = Math.cos(now.car.yaw), bz = Math.sin(now.car.yaw);
+  const fx = Math.cos(now.car.yaw), fz = Math.sin(now.car.yaw);
   let best = null;
   for (const m of now.traffic) {
     const dx = m.x - now.car.x, dz = m.z - now.car.z;
-    const along = dx * bx + dz * bz, across = -dx * bz + dz * bx;
-    if (along > -1 || along < -16 || Math.abs(across) > 3) continue;
-    if (best === null || along > best) best = along;
+    const ahead = dx * fx + dz * fz, side = -dx * fz + dz * fx;
+    if (ahead < 0 || ahead > 40 || Math.abs(side) > 2.4) continue;
+    if (best === null || ahead < best) best = ahead;
   }
   return best;
 };
-/**
- * Ждём ДОЛГО. Безголовый браузер считает примерно втрое медленнее часов,
- * а один цикл светофора — двадцать шесть секунд модельного времени. Прежние
- * 24 секунды по часам давали меньше десяти секунд в городе: очередь просто
- * не успевала собраться, и проверка падала не по делу.
- */
+
+await page.keyboard.down('w');
 let queued = null;
-for (let tick = 0; tick < 220 && queued === null; tick++) {
-  await page.waitForTimeout(400);
-  queued = await behind();
-}
 let crash = { count: 0, force: 0 };
 let beforeCrash = await page.evaluate(() => window.__car());
-// тормоз в пол на месте включает задний ход, дальше он же — газ назад
-await page.keyboard.down('s');
-for (let tick = 0; tick < 45 && crash.count === 0; tick++) {
-  await page.waitForTimeout(200);
+for (let tick = 0; tick < 150 && crash.count === 0; tick++) {
+  await page.waitForTimeout(300);
+  const found = await targetAhead();
+  if (found !== null && (queued === null || found < queued)) queued = found;
   const now = await page.evaluate(() => ({
     crash: window.__crash(), car: window.__car(), traffic: window.__traffic(),
   }));
   if (now.crash.count === 0 && Math.abs(now.car.speed) > Math.abs(beforeCrash.speed)) beforeCrash = now.car;
   crash = now.crash;
   if (crash.count > 0) crash.knocked = now.traffic.filter((m) => m.knocked).length;
+  // уехали с квартала — разворачиваемся и едем обратно, к перекрёсткам
+  if (now.car !== null && Math.hypot(now.car.x, now.car.z) > 300) {
+    await page.keyboard.up('w');
+    for (let i = 0; i < 12; i++) await page.mouse.move(800 + i * 90, 500);
+    await page.waitForTimeout(2500);
+    for (let i = 0; i < 12; i++) await page.mouse.move(800 - i * 90, 500);
+    await page.keyboard.down('w');
+  }
 }
-await page.keyboard.up('s');
-await page.waitForTimeout(800);
+await page.keyboard.up('w');
+await page.waitForTimeout(600);
 const afterCrash = await page.evaluate(() => window.__car());
+
 // снимок удара — сразу, пока камера за рулём стоит там, где он случился
 await shot('ride-10-удар');
 
@@ -281,19 +288,22 @@ await shot('ride-10-удар');
  * влево до упора. Город обязан это назвать — и назвать ОДИН раз, а не
  * шестьсот, по разу на кадр.
  */
-await page.keyboard.press('r');               // руль в ноль после заднего хода
+await page.keyboard.press('r');               // руль в ноль
 await page.keyboard.down('w');
-await page.waitForTimeout(900);               // тронуться вперёд
-for (let i = 0; i < 12; i++) await page.mouse.move(800 - i * 90, 500);
+await page.waitForTimeout(1200);              // тронуться вперёд
 /**
- * Держим руль дольше, чем раньше: машина теперь стоит в правой полосе
- * четырёхполосной улицы, и до встречной ей девять метров поперёк,
- * а не четыре, как было с осевой.
+ * Выезжаем на встречную ПЕРЕНОСОМ ВБОК, а не разворотом. Полный выворот
+ * разворачивает машину больше чем на 90°, и тогда «в какую сторону она едет
+ * по дороге» переворачивается вместе с нарушением: город честно перестаёт
+ * видеть встречную, потому что встречная у неё теперь другая. Живой выезд
+ * на встречную выглядит не так: руль вполоборота, перенос, и обратно прямо.
  */
-await page.waitForTimeout(4000);
+for (let i = 0; i < 5; i++) await page.mouse.move(800 - i * 90, 500);
+await page.waitForTimeout(2600);
+for (let i = 0; i < 5; i++) await page.mouse.move(800 + i * 90, 500);
+await page.waitForTimeout(1500);
 await page.keyboard.up('w');
-for (let i = 0; i < 12; i++) await page.mouse.move(800 + i * 90, 500);
-await page.waitForTimeout(600);
+await page.waitForTimeout(400);
 const offences = await page.evaluate(() => window.__offences());
 
 // а этот — про приборку: на ней написано, что именно город засчитал
@@ -350,17 +360,25 @@ const checks = [
   ['чужие машины поехали',
     trafficAfter.length > 0 && trafficAfter.some((c, i) => Math.abs(c.s - trafficBefore[i].s) > 3 || c.shape !== trafficBefore[i].shape),
     `${trafficAfter.length} штук, самая быстрая ${(Math.max(...trafficAfter.map((c) => c.speed)) * 3.6).toFixed(0)} км/ч`],
-  ['за машиной игрока собралась очередь', queued !== null,
-    queued === null ? 'никто не встал сзади за 88 с' : `ближайший в ${(-queued).toFixed(1)} м позади`],
+  ['догнал чужую машину', queued !== null,
+    queued === null ? 'за 45 с никого не встретил впереди' : `подъехал на ${queued.toFixed(1)} м`],
   ['въехал в чужую машину', crash.count > 0,
     crash.count > 0
       ? `${crash.count} удар(ов), последний на ${crash.force.toFixed(1)} м/с, сбито ${crash.knocked ?? 0}`
-      : 'сдавал назад 9 с и никого не задел'],
+      : 'догонял, но не задел'],
   ['город назвал выезд на встречную', offences.some((o) => o.what.includes('встречную')),
     offences.length === 0 ? 'не заметил ничего'
       : offences.map((o) => o.what).join(', ')],
-  ['одно нарушение — одна запись', offences.filter((o) => o.what.includes('встречную')).length <= 2,
-    `${offences.filter((o) => o.what.includes('встречную')).length} записей о встречной`],
+  /**
+   * Проверяется НЕ «ровно одна запись»: игрок теперь ездит по городу
+   * три четверти минуты, гоняется за очередью и разворачивается — он честно
+   * выезжает на встречную несколько раз, и каждый раз это отдельное
+   * нарушение. Проверяется то, ради чего всё писалось: нарушение —
+   * это СОБЫТИЕ, а не состояние. Будь оно состоянием, записей было бы
+   * по одной на кадр, то есть тысячи.
+   */
+  ['нарушения записаны событиями, а не кадрами', offences.length > 0 && offences.length < 30,
+    `${offences.length} записей за ${(offences.length ? offences[offences.length - 1].at - offences[0].at : 0).toFixed(0)} с городской жизни`],
   ['удар отнял у машины скорость', crash.count === 0
     || Math.abs(afterCrash.speed) < Math.abs(beforeCrash.speed),
     `${(Math.abs(beforeCrash.speed) * 3.6).toFixed(0)} → ${(Math.abs(afterCrash.speed) * 3.6).toFixed(0)} км/ч`],
