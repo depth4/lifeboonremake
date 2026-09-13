@@ -22,6 +22,7 @@
     "load": "node --experimental-strip-types tools/load.ts",
     "walk": "node --experimental-strip-types tools/walk.ts",
     "plan": "node --experimental-strip-types tools/plan.ts",
+    "inside": "node tools/inside.mjs",
     "report": "node --experimental-strip-types tools/report.ts",
     "site": "node tools/site.mjs",
     "deploy": "node tools/deploy.mjs"
