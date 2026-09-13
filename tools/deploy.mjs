@@ -20,27 +20,43 @@ const FILES = [
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
 
-for (const [from] of FILES) {
-  if (!existsSync(from)) {
-    console.log(`нет файла ${from} — сначала npm run site и npm run page`);
-    process.exit(1);
-  }
+/**
+ * Живой мир обязателен. Страницу сравнения, если её сейчас не пересобирали,
+ * берём ту, что уже выложена: выкладка не должна СТИРАТЬ то, чего она просто
+ * не трогала.
+ */
+if (!existsSync(FILES[0][0])) {
+  console.log(`нет файла ${FILES[0][0]} — сначала npm run site`);
+  process.exit(1);
 }
 
 // .nojekyll выключает сборщик блогов, который GitHub иначе прогоняет по файлам
 const empty = execFileSync('git', ['hash-object', '-w', '--stdin'], { input: '', encoding: 'utf8' }).trim();
 const entries = [`100644 blob ${empty}\t.nojekyll`];
-for (const [from, to] of FILES) entries.push(`100644 blob ${git('hash-object', '-w', from)}\t${to}`);
+let carried = null;
+try {
+  git('fetch', 'origin', BRANCH);
+  carried = git('rev-parse', 'FETCH_HEAD');
+} catch {
+  carried = null;
+}
+for (const [from, to] of FILES) {
+  if (existsSync(from)) {
+    entries.push(`100644 blob ${git('hash-object', '-w', from)}\t${to}`);
+    continue;
+  }
+  if (carried === null) continue;
+  try {
+    entries.push(`100644 blob ${git('rev-parse', `${carried}:${to}`)}\t${to}`);
+    console.log(`${to} не пересобирали — оставляю ту, что уже выложена`);
+  } catch {
+    console.log(`${to} не пересобирали и на сайте её нет — пропускаю`);
+  }
+}
 
 const tree = execFileSync('git', ['mktree'], { input: entries.join('\n') + '\n', encoding: 'utf8' }).trim();
 
-let parent = null;
-try {
-  git('fetch', 'origin', BRANCH);
-  parent = git('rev-parse', 'FETCH_HEAD');
-} catch {
-  parent = null;
-}
+const parent = carried;
 
 const stamp = new Date().toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 const message = `Сайт: сборка ${stamp} из ${git('rev-parse', '--short', 'HEAD')}`;

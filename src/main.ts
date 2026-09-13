@@ -37,7 +37,7 @@ let sim: Sim = newSim(world, traffic);
 let showTraffic = query.get('traffic') === '1';
 
 /** Сколько машин держим в городе. ?cars=0 — выключить движение совсем. */
-let wantCars = Number(query.get('cars') ?? 0);
+let wantCars = Number(query.get('cars') ?? 30);
 if (!Number.isFinite(wantCars) || wantCars < 0) wantCars = 0;
 let rebuildMs = 0;
 let lastGood: Road[] = [...roads];

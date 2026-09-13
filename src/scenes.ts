@@ -140,5 +140,11 @@ export const SCENES: Record<string, Road[]> = {
   ],
 };
 
-export const DEFAULT_SCENE = 'крест';
-export const DEMO_ROADS: Road[] = SCENES[DEFAULT_SCENE];
+/** Что открывается по умолчанию: город, потому что он и есть цель. */
+export const DEFAULT_SCENE = 'город';
+/**
+ * На чём гоняется одиночная проверка поверхности. Намеренно НЕ сцена по
+ * умолчанию: у проверки должна быть своя постоянная мишень, иначе её цифры
+ * начнут прыгать каждый раз, когда мы поменяем стартовый экран.
+ */
+export const DEMO_ROADS: Road[] = SCENES['крест'];
