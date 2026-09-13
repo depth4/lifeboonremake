@@ -101,6 +101,9 @@ function rebuild(): void {
   rebuildMs = performance.now() - started;
   ground = new GroundIndex(surface);
   network = buildNetwork(world);
+  // дороги стали другими — знаки тоже: старые относились к прежним улицам
+  signsShown = false;
+  viewer?.setSigns([]);
   if (traffic.length > 0) {
     traffic = placeTraffic(world, network, TRAFFIC_COUNT);
     walkers = placeWalkers(world, network, WALKER_COUNT);
@@ -395,6 +398,8 @@ el('drive')?.addEventListener('click', (event) => {
     const on = traffic.length === 0;
     // город заново — и счёт нарушений заново: прошлый был про прошлый город
     dog = newWatchdog();
+    signsShown = false;
+    if (!on) viewer.setSigns([]);
     traffic = on ? placeTraffic(world, network, TRAFFIC_COUNT) : [];
     walkers = on ? placeWalkers(world, network, WALKER_COUNT) : [];
     viewer.setTraffic([]);
@@ -447,6 +452,8 @@ let crashes = 0;
 let lastCrash = 0;
 /** Что игрок нарушил. Считается только пока город жив: без трафика светофоры стоят. */
 let dog = newWatchdog();
+/** Знаки расставлены? Они не меняются, и перекладывать их каждый кадр незачем. */
+let signsShown = false;
 /**
  * Когда физика впервые увидела газ и когда впервые набрала сотню — по её
  * собственным часам. Проверка снаружи опрашивает страницу редко и неровно,
@@ -489,6 +496,26 @@ viewer.onFrame((dt) => {
       }
     }
     viewer.setSignals(lamps);
+
+    /**
+     * Знаки. Ставятся раз и навсегда, пока город тот же: они не мигают
+     * и не двигаются. Место берётся из самой дороги — знак стоит справа
+     * по ходу того, кому он адресован, как в жизни.
+     */
+    if (!signsShown) {
+      signsShown = true;
+      viewer.setSigns(network.signs.all.map((sg) => {
+        const at = along(world, sg.shape, sg.s);
+        const side = world.shapes[sg.shape].outerHalf + 0.8;
+        const fx = at.fx * sg.dir, fz = at.fz * sg.dir;
+        const x = at.x - fz * side, z = at.z + fx * side;
+        return {
+          x, y: ground.sample(x, z).height, z,
+          yaw: Math.atan2(fz, fx) + Math.PI,
+          kind: sg.kind, value: sg.value,
+        };
+      }));
+    }
     // ── ПДД для игрока: те же правила, которыми живёт трафик
     if (driving && car !== null) {
       judge(world, network, dog, {

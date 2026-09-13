@@ -186,6 +186,10 @@ export interface Viewer {
   setSignals(lamps: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
   /** Пешеходы. */
   setWalkers(people: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
+  /** Дорожные знаки: где стоят, куда смотрят, какие. */
+  setSigns(signs: readonly {
+    x: number; y: number; z: number; yaw: number; kind: string; value: number;
+  }[]): void;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -342,6 +346,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let signalPoles: THREE.InstancedMesh | null = null;
   let signalHeads: THREE.InstancedMesh | null = null;
   let walkerMesh: THREE.InstancedMesh | null = null;
+  let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
   const sun = new THREE.DirectionalLight(0xfff3dd, 2.1);
@@ -612,6 +617,88 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       signalPoles.instanceMatrix.needsUpdate = true;
       (signalHeads as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
       if (signalHeads?.instanceColor) signalHeads.instanceColor.needsUpdate = true;
+    },
+    setSigns(signs) {
+      /**
+       * Знаки рисуются НЕ пачкой одинаковых: у каждого своя картинка,
+       * а картинка — это и есть смысл знака. Их немного (десятки на город),
+       * поэтому каждый строится отдельно, без ухищрений.
+       *
+       * Лицо знака рисуется на холсте и натягивается на кружок или щит.
+       * Так знак выходит настоящим, с цифрой и каймой, а не цветным пятном.
+       */
+      if (signGroup !== null) {
+        scene.remove(signGroup);
+        signGroup.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (m.geometry) m.geometry.dispose();
+        });
+        signGroup = null;
+      }
+      if (signs.length === 0) return;
+
+      const faces = new Map<string, THREE.Texture>();
+      const faceFor = (kind: string, value: number): THREE.Texture => {
+        const key = `${kind}:${value}`;
+        const had = faces.get(key);
+        if (had !== undefined) return had;
+        const size = 128;
+        const cv = document.createElement('canvas');
+        cv.width = size; cv.height = size;
+        const g = cv.getContext('2d') as CanvasRenderingContext2D;
+        g.clearRect(0, 0, size, size);
+        if (kind === '3.24') {
+          // круг: белое поле, красная кайма, чёрная цифра
+          g.fillStyle = '#c9302c';
+          g.beginPath(); g.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2); g.fill();
+          g.fillStyle = '#f4f2ed';
+          g.beginPath(); g.arc(size / 2, size / 2, size * 0.36, 0, Math.PI * 2); g.fill();
+          g.fillStyle = '#15181c';
+          g.font = 'bold 58px system-ui, sans-serif';
+          g.textAlign = 'center'; g.textBaseline = 'middle';
+          g.fillText(String(value), size / 2, size / 2 + 3);
+        } else if (kind === '2.1') {
+          // главная дорога: жёлтый ромб в белой кайме
+          g.fillStyle = '#f4f2ed';
+          g.beginPath();
+          g.moveTo(size / 2, 2); g.lineTo(size - 2, size / 2);
+          g.lineTo(size / 2, size - 2); g.lineTo(2, size / 2); g.closePath(); g.fill();
+          g.fillStyle = '#f0c419';
+          g.beginPath();
+          g.moveTo(size / 2, 22); g.lineTo(size - 22, size / 2);
+          g.lineTo(size / 2, size - 22); g.lineTo(22, size / 2); g.closePath(); g.fill();
+        } else {
+          // уступите дорогу: белый треугольник вершиной вниз, красная кайма
+          g.fillStyle = '#c9302c';
+          g.beginPath();
+          g.moveTo(4, 14); g.lineTo(size - 4, 14); g.lineTo(size / 2, size - 6); g.closePath(); g.fill();
+          g.fillStyle = '#f4f2ed';
+          g.beginPath();
+          g.moveTo(22, 28); g.lineTo(size - 22, 28); g.lineTo(size / 2, size - 24); g.closePath(); g.fill();
+        }
+        const tex = new THREE.CanvasTexture(cv);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        faces.set(key, tex);
+        return tex;
+      };
+
+      signGroup = new THREE.Group();
+      const poleGeo = new THREE.CylinderGeometry(0.05, 0.06, 2.4, 6);
+      poleGeo.translate(0, 1.2, 0);
+      const poleMat = new THREE.MeshStandardMaterial({ color: 0x8d949b, roughness: 0.6 });
+      const plateGeo = new THREE.PlaneGeometry(0.72, 0.72);
+      for (const sg of signs) {
+        const pole = new THREE.Mesh(poleGeo, poleMat);
+        pole.position.set(sg.x, sg.y, sg.z);
+        pole.castShadow = true;
+        const plate = new THREE.Mesh(plateGeo, new THREE.MeshBasicMaterial({
+          map: faceFor(sg.kind, sg.value), transparent: true, side: THREE.DoubleSide,
+        }));
+        plate.position.set(sg.x, sg.y + 2.2, sg.z);
+        plate.rotation.set(0, -sg.yaw + Math.PI / 2, 0);
+        signGroup.add(pole, plate);
+      }
+      scene.add(signGroup);
     },
     setWalkers(people) {
       if (walkerMesh !== null && walkerMesh.count !== people.length) {
