@@ -120,6 +120,13 @@ export interface Crossing {
 export interface Sim {
   readonly cars: Car[];
   readonly crossings: Crossing[];
+  /**
+   * Где на полосе стоп-линия. Это НЕ конец полосы: если у полосы есть
+   * пешеходный переход, стоять надо перед ним, а не на нём. Пока стоп-линией
+   * считался конец полосы, машины на красный останавливались ровно поперёк
+   * перехода — модель противоречила сама себе, и на картинке это было видно.
+   */
+  readonly stopLine: Float64Array;
   time: number;
   /** сколько машин уехало за край мира и сколько родилось */
   left: number;
@@ -268,9 +275,16 @@ export function buildCrossings(world: World, traffic: Traffic): Crossing[] {
 }
 
 export function newSim(world: World, traffic: Traffic): Sim {
+  const crossings = buildCrossings(world, traffic);
+  const stopLine = new Float64Array(traffic.lanes.length);
+  for (const lane of traffic.lanes) stopLine[lane.id] = lane.length;
+  for (const crossing of crossings) {
+    for (const stop of crossing.stops) stopLine[stop.lane] = Math.min(stopLine[stop.lane], stop.at);
+  }
   return {
     cars: [],
-    crossings: buildCrossings(world, traffic),
+    crossings,
+    stopLine,
     time: 0,
     left: 0,
     born: 0,
@@ -517,8 +531,9 @@ export function step(roads: Roads, sim: Sim, dt: number = STEP): void {
     if (ahead) barriers.push(ahead);
 
     if (car.link < 0) {
-      const lane = roads.traffic.lanes[car.lane];
-      const toEnd = lane.length - car.s;
+      // Стоим у стоп-линии, а не у края перекрёстка: если перед ним есть
+      // переход, вставать на нём нельзя.
+      const toEnd = Math.max(0, sim.stopLine[car.lane] - car.s);
 
       // пешеход на переходе — такая же помеха, как машина
       const at = blocked.get(car.lane);

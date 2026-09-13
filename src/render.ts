@@ -8,6 +8,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Material, Surface } from './surface/index.ts';
 import type { Point2 } from './world/road.ts';
 import type { Point3, Traffic, Turn } from './world/lanes.ts';
+import type { Rules } from './world/rules.ts';
+import type { Roads, Sim } from './world/drive.ts';
+import { lightOf } from './world/rules.ts';
+import { CAR_LENGTH, place } from './world/drive.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
@@ -100,8 +104,11 @@ class Ribbons {
   readonly xyz: number[] = [];
   readonly rgb: number[] = [];
 
+  /** Поднимать ли точки над асфальтом: разметке движения нужно, машинам нет. */
+  lift = LIFT;
+
   private point(x: number, y: number, z: number, c: [number, number, number]): void {
-    this.xyz.push(x, y + LIFT, z);
+    this.xyz.push(x, y + this.lift, z);
     this.rgb.push(c[0], c[1], c[2]);
   }
 
@@ -183,6 +190,98 @@ function trafficMesh(traffic: Traffic): { positions: Float32Array; colors: Float
   return { positions: new Float32Array(r.xyz), colors: new Float32Array(r.rgb) };
 }
 
+/** Цвета сигнала — те же, что на настоящем светофоре. */
+const LIGHT_COLOR: Record<string, [number, number, number]> = {
+  'зелёный': [0.24, 0.85, 0.36],
+  'жёлтый':  [1.00, 0.78, 0.10],
+  'красный': [0.95, 0.22, 0.18],
+};
+/** Ширина машины и на сколько она приподнята над асфальтом. */
+const CAR_WIDTH = 1.85;
+const CAR_HEIGHT = 1.45;
+/** Пешеход: размер столбика. */
+const WALKER = 0.55;
+/** Стойка светофора: где она стоит и какая высота. */
+const MAST = 4.6;
+
+/** Цвет кузова из числа, закреплённого за машиной: один и тот же навсегда. */
+function bodyColour(hue: number): [number, number, number] {
+  const h = hue * 6;
+  const i = Math.floor(h) % 6;
+  const f = h - Math.floor(h);
+  const v = 0.82, sat = 0.55;
+  const p = v * (1 - sat), q = v * (1 - sat * f), t = v * (1 - sat * (1 - f));
+  const table: [number, number, number][] = [[v, t, p], [q, v, p], [p, v, t], [p, q, v], [t, p, v], [v, p, q]];
+  return table[i];
+}
+
+/**
+ * Живой слой: машины, сигналы светофоров и пешеходы на переходах.
+ *
+ * Собирается заново каждый кадр — состояние движения меняется постоянно,
+ * и хранить его копию было бы вторым источником правды. Машин на экране
+ * столько же, сколько в модели, и стоят они там, где модель говорит:
+ * если на картинке машина едет по газону, значит по газону ведёт полоса.
+ */
+function livingMesh(roads: Roads, sim: Sim, rules: Rules): { positions: Float32Array; colors: Float32Array } {
+  const r = new Ribbons();
+  r.lift = 0.05;
+
+  /** Коробка на земле: машина сверху, борта по бокам. */
+  const box = (
+    x: number, y: number, z: number, ax: number, az: number,
+    half: number, wide: number, high: number, c: [number, number, number],
+  ): void => {
+    const bx = -az, bz = ax;
+    const corner = (a: number, b: number, up: number): Point3 => ({
+      x: x + ax * a + bx * b, y: y + up, z: z + az * a + bz * b,
+    });
+    const top = [corner(half, -wide, high), corner(half, wide, high), corner(-half, wide, high), corner(-half, -wide, high)];
+    r.triangle(top[0], top[1], top[2], c);
+    r.triangle(top[0], top[2], top[3], c);
+    const dark: [number, number, number] = [c[0] * 0.62, c[1] * 0.62, c[2] * 0.62];
+    const low = [corner(half, -wide, 0), corner(half, wide, 0), corner(-half, wide, 0), corner(-half, -wide, 0)];
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      r.triangle(low[i], low[j], top[j], dark);
+      r.triangle(low[i], top[j], top[i], dark);
+    }
+  };
+
+  for (const car of sim.cars) {
+    const at = place(roads, car);
+    box(at.x, at.y, at.z, at.ax, at.az, CAR_LENGTH / 2, CAR_WIDTH / 2, CAR_HEIGHT, bodyColour(car.hue));
+  }
+
+  // Сигнал светофора показывается там, где полоса упирается в перекрёсток:
+  // столбик у правого края, окрашенный в тот цвет, который сейчас горит.
+  for (const link of roads.traffic.links) {
+    if (rules.signalOf[link.id] < 0) continue;
+    const lane = roads.traffic.lanes[link.from];
+    if (lane.index !== 0) continue; // по одному столбику на полосу-хозяйку
+    const light = lightOf(rules, link.id, sim.time);
+    const c = LIGHT_COLOR[light] ?? LIGHT_COLOR['красный'];
+    const tip = lane.path[lane.path.length - 1];
+    const prev = lane.path[Math.max(0, lane.path.length - 2)];
+    const dx = tip.x - prev.x, dz = tip.z - prev.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const ax = dx / len, az = dz / len;
+    const side = 4.2;
+    const x = tip.x + -az * side, z = tip.z + ax * side;
+    box(x, tip.y, z, ax, az, 0.22, 0.22, MAST, [0.16, 0.18, 0.2]);
+    box(x, tip.y + MAST, z, ax, az, 0.45, 0.45, 0.9, c);
+  }
+
+  for (const crossing of sim.crossings) {
+    if (Number.isNaN(crossing.walk)) continue;
+    const x = crossing.x + crossing.nx * crossing.walk;
+    const z = crossing.z + crossing.nz * crossing.walk;
+    box(x, crossing.y, z, crossing.nx, crossing.nz, WALKER, WALKER, 1.7, [0.95, 0.93, 0.85]);
+  }
+
+  return { positions: new Float32Array(r.xyz), colors: new Float32Array(r.rgb) };
+}
+
 export interface View {
   readonly label: string;
   readonly from: [number, number, number];
@@ -213,6 +312,8 @@ export interface Viewer {
   wire(): boolean;
   /** Показать сеть движения: полосы и стрелки «откуда куда можно». */
   setTraffic(traffic: Traffic | null): void;
+  /** Показать живое движение: машины, сигналы, пешеходов. */
+  setLiving(roads: Roads | null, sim: Sim | null, rules: Rules | null): void;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -269,6 +370,16 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   paths.visible = false;
   paths.renderOrder = 3;
   scene.add(paths);
+
+  // Живое: машины, светофоры, пешеходы. Отдельным объектом, потому что
+  // меняется каждый кадр, а поверхность — раз в пересборку.
+  const living = new THREE.Mesh(
+    new THREE.BufferGeometry(),
+    new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }),
+  );
+  living.visible = false;
+  living.castShadow = true;
+  scene.add(living);
 
   let lastGeometry: THREE.BufferGeometry | null = null;
 
@@ -412,6 +523,21 @@ export function show(surface: Surface, startView: string, custom: View | null = 
     },
     wire() {
       return wireOn;
+    },
+    setLiving(roads, sim, rules) {
+      living.geometry.dispose();
+      if (!roads || !sim || !rules) {
+        living.geometry = new THREE.BufferGeometry();
+        living.visible = false;
+        return;
+      }
+      const { positions, colors } = livingMesh(roads, sim, rules);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geometry.computeVertexNormals();
+      living.geometry = geometry;
+      living.visible = positions.length > 0;
     },
     setTraffic(traffic) {
       paths.geometry.dispose();

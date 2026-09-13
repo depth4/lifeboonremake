@@ -6,6 +6,9 @@ import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
 import { buildTraffic } from './world/lanes.ts';
+import { buildRules } from './world/rules.ts';
+import { STEP, feed, newSim, prepare, step } from './world/drive.ts';
+import type { Roads, Sim } from './world/drive.ts';
 import { DEFAULT_VARIANT, VARIANTS, buildGhost, buildSurface } from './surface/index.ts';
 import { VIEWS, show, viewFromQuery } from './render.ts';
 import { createBuilder } from './build.ts';
@@ -28,7 +31,14 @@ if (!VARIANTS[variant]) variant = DEFAULT_VARIANT;
 let world = buildWorld(roads, terrainName);
 let surface = buildSurface(world, variant);
 let traffic = buildTraffic(world);
+let rules = buildRules(world, traffic);
+let net: Roads = prepare(world, traffic, rules);
+let sim: Sim = newSim(world, traffic);
 let showTraffic = query.get('traffic') === '1';
+
+/** Сколько машин держим в городе. ?cars=0 — выключить движение совсем. */
+let wantCars = Number(query.get('cars') ?? 0);
+if (!Number.isFinite(wantCars) || wantCars < 0) wantCars = 0;
 let rebuildMs = 0;
 let lastGood: Road[] = [...roads];
 let refusal = '';
@@ -94,6 +104,9 @@ function rebuild(): void {
   }
   rebuildMs = performance.now() - started;
   traffic = buildTraffic(world);
+  rules = buildRules(world, traffic);
+  net = prepare(world, traffic, rules);
+  sim = newSim(world, traffic);
   viewer.setSurface(surface);
   viewer.setTraffic(showTraffic ? traffic : null);
   readout();
@@ -121,6 +134,8 @@ function readout(): void {
       ['перекрёстков', String(world.junctions.length)],
       ['полос', String(traffic.lanes.length)],
       ['связей', `${traffic.links.length}, помех ${traffic.conflicts.length}`],
+      ['светофоров', `${rules.signals.length}, переходов ${sim.crossings.length}`],
+      ['машин', wantCars > 0 ? `${sim.cars.length}, уехало ${sim.left}` : 'выключены'],
       ['пересборка', `${rebuildMs.toFixed(0)} мс`],
       ['вариант', VARIANTS[variant].label],
     ];
@@ -227,6 +242,32 @@ if (trafficBox) {
   });
 }
 
+// --- кнопки «движение»: сколько машин пустить в город ---
+const livingBox = document.getElementById('living');
+if (livingBox) {
+  const sizes: [string, number][] = [['нет', 0], ['мало', 30], ['средне', 80], ['много', 160]];
+  livingBox.innerHTML = sizes
+    .map(([label, n]) => `<button type="button" data-cars="${n}">${label}</button>`)
+    .join('');
+  const paint = (): void => {
+    livingBox.querySelectorAll<HTMLButtonElement>('button[data-cars]').forEach((b) => {
+      b.setAttribute('aria-pressed', String(Number(b.dataset.cars) === wantCars));
+    });
+  };
+  paint();
+  livingBox.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-cars]');
+    if (!button) return;
+    wantCars = Number(button.dataset.cars ?? 0);
+    if (wantCars === 0) {
+      sim = newSim(world, traffic);
+      viewer.setLiving(null, null, null);
+    }
+    paint();
+    readout();
+  });
+}
+
 // --- кнопки варианта ---
 const variants = document.getElementById('variants');
 if (variants) {
@@ -303,6 +344,49 @@ hint();
 // она должна попадать мышью в места мира, а не в пиксели наугад.
 (window as unknown as { __project?: (x: number, z: number) => { x: number; y: number } }).__project =
   (x, z) => viewer.project(x, z);
+
+/**
+ * Прогрев: прокрутить модель на N секунд ДО первого кадра.
+ *
+ * Нужно для снимков: иначе снимок показывает первую секунду, когда машины
+ * ещё стоят у въездов. Прокрутка честная — те же шаги, что и в жизни, просто
+ * без рисования. Задаётся как `?warm=60`.
+ */
+const warm = Number(query.get('warm') ?? 0);
+if (wantCars > 0 && Number.isFinite(warm) && warm > 0) {
+  for (let i = 0; i < Math.round(Math.min(600, warm) / STEP); i++) {
+    feed(net, sim, wantCars);
+    step(net, sim);
+  }
+  viewer.setLiving(net, sim, rules);
+  readout();
+}
+
+/**
+ * Ход времени. Модель шагает ФИКСИРОВАННЫМ шагом, сколько бы кадров ни успел
+ * нарисовать экран: иначе поведение машин зависело бы от быстроты видеокарты,
+ * и на слабой машине они ездили бы иначе. Это то же требование, что и
+ * «мир не знает, что его рисуют», только про время.
+ */
+let carried = 0;
+let lastFrame = performance.now();
+function tick(): void {
+  requestAnimationFrame(tick);
+  const now = performance.now();
+  const dt = Math.min(0.25, (now - lastFrame) / 1000);
+  lastFrame = now;
+  if (wantCars <= 0) return;
+  carried += dt;
+  let guard = 0;
+  while (carried >= STEP && guard++ < 12) {
+    feed(net, sim, wantCars);
+    step(net, sim);
+    carried -= STEP;
+  }
+  viewer.setLiving(net, sim, rules);
+  if (Math.floor(sim.time * 2) % 4 === 0) readout();
+}
+tick();
 
 requestAnimationFrame(() => requestAnimationFrame(() => {
   (window as unknown as { __ready?: boolean }).__ready = true;

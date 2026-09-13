@@ -17,7 +17,8 @@
     "site": "node tools/site.mjs",
     "deploy": "node tools/deploy.mjs",
     "lanes": "node --experimental-strip-types tools/lanes.ts",
-    "drive": "node --experimental-strip-types tools/drive.ts"
+    "drive": "node --experimental-strip-types tools/drive.ts",
+    "test": "node tools/all.mjs"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",
