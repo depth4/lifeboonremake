@@ -16,7 +16,8 @@
     "report": "node --experimental-strip-types tools/report.ts",
     "site": "node tools/site.mjs",
     "deploy": "node tools/deploy.mjs",
-    "lanes": "node --experimental-strip-types tools/lanes.ts"
+    "lanes": "node --experimental-strip-types tools/lanes.ts",
+    "drive": "node --experimental-strip-types tools/drive.ts"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",

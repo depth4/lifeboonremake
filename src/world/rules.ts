@@ -93,6 +93,15 @@ const SIGNAL_RANK = 2;
 const CYCLE = 90;
 /** Короче этого зелёный не бывает: столько нужно, чтобы тронуться и проехать. */
 const MIN_GREEN = 7;
+/**
+ * Сколько места занимает одна машина в очереди и как часто очередь прирастает
+ * при полной загрузке. Из этих двух чисел считается, за сколько секунд красного
+ * очередь заполнит квартал. Это настоящие величины, а не подгонка:
+ * машина 4.4 м плюс полтора метра до бампера, и одна машина в две секунды —
+ * это и есть пропускная способность одной полосы.
+ */
+const QUEUE_SPACE = 6.0;
+const QUEUE_RATE = 2.0;
 /** Время реакции водителя на жёлтый, секунды. */
 const REACTION = 1.0;
 /** Комфортное замедление, м/с². */
@@ -291,7 +300,26 @@ function buildSignals(world: World, traffic: Traffic, yields: readonly Yield[]):
     // поделённое поровну. Если фаз много, каждой достаётся меньше, а круг
     // не разрастается.
     const overhead = groups.length * (yellow + allRed);
-    const green = Math.max(MIN_GREEN, Math.round((CYCLE - overhead) / groups.length));
+
+    // ГЛАВНОЕ ОГРАНИЧЕНИЕ: красный не может длиться дольше, чем очередь
+    // успевает заполнить квартал. Иначе хвост выходит за прошлый перекрёсток
+    // и запирает его — весь город встаёт из-за одного светофора. Измерено:
+    // при круге в 90 секунд на кварталах по 36 метров семьдесят процентов
+    // машин стояли, хотя дорога была почти пустая.
+    //
+    // Красный для одной фазы — это весь круг минус её зелёный. Отсюда предел
+    // на круг считается из самого короткого квартала, который в этот узел
+    // упирается. Ни одно число здесь не подобрано на глаз.
+    const block = links.reduce((m, l) => {
+      const lane = laneIndex(traffic).get(l.from);
+      return lane ? Math.min(m, lane.length) : m;
+    }, Infinity);
+    const redBudget = (block / QUEUE_SPACE) * QUEUE_RATE;
+    const byBlock = Number.isFinite(redBudget)
+      ? (redBudget * groups.length) / Math.max(1, groups.length - 1)
+      : CYCLE;
+    const budget = Math.max(MIN_GREEN * groups.length + overhead, Math.min(CYCLE, byBlock));
+    const green = Math.max(MIN_GREEN, Math.round((budget - overhead) / groups.length));
     const phases: Phase[] = groups.map((links2) => ({ links: links2, green, yellow, allRed }));
     const cycle = phases.reduce((sum, p) => sum + p.green + p.yellow + p.allRed, 0);
     signals.push({ node, phases, cycle });

@@ -54,6 +54,13 @@ export interface Lane {
   readonly to: number;
   /** смещение от осевой линии, метры: то самое `t` */
   readonly offset: number;
+  /**
+   * Место полосы поперёк дороги ПО ХОДУ ДВИЖЕНИЯ: чем меньше, тем левее.
+   * Не то же самое, что `offset`: у встречной полосы правая сторона —
+   * это отрицательные смещения. Нужно, чтобы «крайний левый ряд» было
+   * понятием, а не догадкой по знаку.
+   */
+  readonly lateral: number;
   /** путь по направлению движения */
   readonly path: readonly Point3[];
   readonly length: number;
@@ -167,6 +174,7 @@ function buildLanes(world: World): Lane[] {
         from: forwardLane ? shape.from : shape.to,
         to: forwardLane ? shape.to : shape.from,
         offset,
+        lateral: forwardLane ? offset : -offset,
         path,
         length,
       });
@@ -310,6 +318,27 @@ function turnOf(into: Point2, out: Point2, sameRoad: boolean): Turn {
   return deg > 0 ? 'направо' : 'налево';
 }
 
+/**
+ * Связи на перекрёстке.
+ *
+ * ГЛАВНОЕ ПРАВИЛО: связи одного манёвра НЕ ПЕРЕСЕКАЮТСЯ между собой.
+ *
+ * Первая версия соединяла каждую входящую полосу с каждой исходящей. На
+ * шестиполосном проспекте это давало девять дорожек «прямо» вместо трёх, и
+ * шесть из них шли наискось через остальные. Дальше всё честно: дорожки
+ * пересекаются — значит помеха; помеха — значит кто-то уступает. Машины,
+ * едущие в одну сторону по одной улице, начинали пропускать друг друга.
+ * Измерено: связь «прямо» уступала десяти другим «прямо» в своей же фазе,
+ * и проспект стоял при двадцати пяти машинах на весь город.
+ *
+ * Теперь полосы одного манёвра сшиваются ПО ПОРЯДКУ: крайняя левая с крайней
+ * левой, следующая со следующей. Порядок сохраняется, поэтому пересечься им
+ * нечем — не проверкой, а по построению.
+ *
+ * Второе правило, оттуда же: налево поворачивают из левого ряда, направо —
+ * из правого. Разворот — только из самого левого. Если после этого у полосы
+ * не остаётся ни одного выезда, ей возвращают все: полос в никуда не бывает.
+ */
 function buildLinks(world: World, lanes: readonly Lane[], handicap: Handicap): Link[] {
   const incoming = new Map<number, Lane[]>();
   const outgoing = new Map<number, Lane[]>();
@@ -326,23 +355,65 @@ function buildLinks(world: World, lanes: readonly Lane[], handicap: Handicap): L
   const links: Link[] = [];
   for (const [node, ins] of incoming) {
     const outs = outgoing.get(node) ?? [];
+    if (outs.length === 0) continue;
+    const elsewhere = outs.some((b) => b.road !== ins[0]?.road);
+
+    // 1. Какие манёвры вообще возможны: с какой дороги на какую и каким поворотом
+    const moves = new Map<string, { ins: Lane[]; outs: Lane[]; turn: Turn }>();
     for (const a of ins) {
       const into = endDirection(a);
-      // Разворот разрешаем только там, где деваться больше некуда: на тупике.
-      // Иначе он становится любимым манёвром и запирает перекрёсток —
-      // ровно то, на что жалуются в Cities: Skylines 2.
-      const elsewhere = outs.some((b) => b.road !== a.road);
       for (const b of outs) {
         const turn = turnOf(into, startDirection(b), b.road === a.road);
         if (turn === 'разворот' && elsewhere) continue;
         if (handicap.noLeft === true && turn === 'налево') continue;
+        const k = `${a.road}|${b.road}|${turn}`;
+        const move = moves.get(k);
+        if (move) {
+          if (!move.ins.includes(a)) move.ins.push(a);
+          if (!move.outs.includes(b)) move.outs.push(b);
+        } else {
+          moves.set(k, { ins: [a], outs: [b], turn });
+        }
+      }
+    }
+
+    // 2. Из какого ряда какой манёвр: налево — слева, направо — справа
+    const allowed = new Map<string, Lane[]>();
+    for (const [k, move] of moves) {
+      const sorted = [...move.ins].sort((p, q) => p.lateral - q.lateral);
+      if (sorted.length === 1 || move.turn === 'прямо') {
+        allowed.set(k, sorted);
+      } else if (move.turn === 'направо') {
+        allowed.set(k, [sorted[sorted.length - 1]]);
+      } else {
+        allowed.set(k, [sorted[0]]);
+      }
+    }
+    // полоса, у которой не осталось ни одного выезда, получает их все
+    const served = new Set<number>();
+    for (const list of allowed.values()) for (const lane of list) served.add(lane.id);
+    for (const a of ins) {
+      if (served.has(a.id)) continue;
+      for (const [k, move] of moves) {
+        if (!move.ins.includes(a)) continue;
+        allowed.get(k)?.push(a);
+      }
+    }
+
+    // 3. Сшиваем по порядку: пересечься нечем
+    for (const [k, move] of moves) {
+      const use = (allowed.get(k) ?? []).sort((p, q) => p.lateral - q.lateral);
+      const to = [...move.outs].sort((p, q) => p.lateral - q.lateral);
+      if (use.length === 0 || to.length === 0) continue;
+      for (const [a, b] of pairUp(use, to)) {
+        const into = endDirection(a);
         const path = arc(a.path[a.path.length - 1], into, b.path[0], startDirection(b));
         links.push({
           id: links.length,
           node,
           from: a.id,
           to: b.id,
-          turn,
+          turn: move.turn,
           path,
           length: pathLength(path),
         });
@@ -350,6 +421,29 @@ function buildLinks(world: World, lanes: readonly Lane[], handicap: Handicap): L
     }
   }
   return links;
+}
+
+/**
+ * Сшивает два ряда полос по порядку, не давая парам перекреститься.
+ *
+ * Если рядов поровну — один в один. Если нет — каждый слева получает
+ * ближайшего слева, и каждый справа получает ближайшего справа. Обе
+ * раскладки идут в одну сторону, поэтому и вместе не перекрещиваются.
+ */
+function pairUp(ins: readonly Lane[], outs: readonly Lane[]): [Lane, Lane][] {
+  const seen = new Set<string>();
+  const out: [Lane, Lane][] = [];
+  const put = (a: Lane, b: Lane): void => {
+    const k = `${a.id}>${b.id}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push([a, b]);
+  };
+  const at = (n: number, i: number, m: number): number =>
+    m <= 1 ? 0 : Math.round((i * (m - 1)) / Math.max(1, n - 1));
+  for (let i = 0; i < ins.length; i++) put(ins[i], outs[at(ins.length, i, outs.length)]);
+  for (let j = 0; j < outs.length; j++) put(ins[at(outs.length, j, ins.length)], outs[j]);
+  return out;
 }
 
 /**
