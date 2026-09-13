@@ -10,6 +10,7 @@ import { SCENES } from '../src/scenes.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
 import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { laneAcross, laneCount, sideOf } from '../src/city/lanes.ts';
+import { TOWN_LIMIT, priorityOf } from '../src/city/signs.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
 import { lightFor, walkLight } from '../src/city/signals.ts';
 import { judge, newWatchdog, tally } from '../src/city/offence.ts';
@@ -25,7 +26,7 @@ const movers = placeTraffic(world, net, 18);
 const walkers = placeWalkers(world, net, 26);
 const DT = 1 / 60;
 
-let offRoad = 0, worstOff = 0, tooFast = 0, fastest = 0, stuck = 0;
+let offRoad = 0, worstOff = 0, tooFast = 0, fastest = 0, stuck = 0, worstSpeeding = -99;
 const travelled = movers.map(() => 0);
 const reasons: Record<string, number> = {};
 /** Нарушения ПДД и столкновения — то, ради чего правила и писались. */
@@ -194,7 +195,15 @@ for (let t = 0; t < 120; t += DT) {
     const off = near === null ? 99 : near.distance - near.halfWidth;
     if (off > 0.1) { offRoad++; worstOff = Math.max(worstOff, off); }
     fastest = Math.max(fastest, m.speed);
-    if (m.speed > 17) tooFast++;
+    /**
+     * «Быстро» меряется от ЗНАКА, а не от общей цифры. Превышение мы
+     * моделируем нарочно: по ГИБДД две трети всех нарушений — это
+     * 20–40 км/ч сверх знака, и машина, едущая 64 там, где 60, ведёт себя
+     * правильно. Неправильно — это 20–40 превратившиеся в сто.
+     */
+    const overBy = m.speed * 3.6 - net.signs.limit[m.shape];
+    if (overBy > worstSpeeding) worstSpeeding = overBy;
+    if (overBy > 45) tooFast++;
   }
   /**
    * Теснота меряется ГАБАРИТАМИ по всем парам сразу: вдоль дороги её больше
@@ -404,6 +413,40 @@ function offenceScene(naughty: boolean): { red: number; wrong: number; total: nu
 const naughty = offenceScene(true);
 const lawful = offenceScene(false);
 
+/**
+ * ГЛАВНАЯ И ВТОРОСТЕПЕННАЯ. Сцена «бритва» — единственная с перекрёстком
+ * без светофора, где дороги разной ширины. ПДД 13.9: едущий по второстепенной
+ * уступает всем, кто на главной, независимо от направления.
+ *
+ * Меряем не намерение, а дело: кто сколько времени стоял и уступал.
+ */
+function priorityScene(): { signs: number; mainWaits: number; sideWaits: number; name: string } {
+  const scene = 'бритва';
+  const w2 = buildWorld(SCENES[scene], 'plain');
+  const n2 = buildNetwork(w2);
+  const cars = placeTraffic(w2, n2, 14);
+  const junction = w2.junctions.findIndex((_, j) => n2.atJunction[j].length >= 3
+    && !n2.signals.some((sg) => sg.junction === j));
+  let mainWaits = 0, sideWaits = 0;
+  for (let t = 0; t < 120; t += DT) {
+    moveTraffic(w2, n2, cars, DT, t, {});
+    if (junction < 0) continue;
+    for (const m of cars) {
+      if (m.route?.junction !== junction || m.reason !== 'уступает') continue;
+      if (priorityOf(n2.signs, junction, m.shape) === 'главная') mainWaits++;
+      if (priorityOf(n2.signs, junction, m.shape) === 'второстепенная') sideWaits++;
+    }
+  }
+  return { signs: n2.signs.all.filter((g) => g.kind !== '3.24').length, mainWaits, sideWaits, name: scene };
+}
+
+const priority = priorityScene();
+
+/** Как разошлись желаемые скорости по потоку: превышает ли кто и насколько. */
+const wanted = movers.map((m) => ({ kmh: m.cruise * 3.6, limit: net.signs.limit[m.shape] }));
+const over = wanted.filter((x) => x.kmh > x.limit + 0.5).length;
+const worstOver = Math.max(0, ...wanted.map((x) => x.kmh - x.limit));
+
 const crash = crashScene(false);
 const through = crashScene(true);
 
@@ -425,7 +468,8 @@ for (const [why, n] of Object.entries(reasons).sort((a, b) => b[1] - a[1]))
 
 const checks: [string, boolean, string][] = [
   ['никто не съехал с проезжей части', offRoad === 0, `${offRoad} случаев, худший ${worstOff.toFixed(2)} м`],
-  ['никто не гонит быстрее 60 км/ч', tooFast === 0, `${(fastest * 3.6).toFixed(0)} км/ч`],
+  ['превышают на 20–40, а не втрое', tooFast === 0,
+    `самое быстрое ${(fastest * 3.6).toFixed(0)} км/ч, это +${worstSpeeding.toFixed(0)} к знаку`],
   ['никто не встал намертво', stuck === 0, `${stuck} проехали меньше 30 м`],
   ['габариты нигде не наложились', closest > 1, `самое тесное ${(closest * 100).toFixed(0)}% от касания`],
   ['кто-то свернул на перекрёстке', world.junctions.length === 0 || turns > 0, `${turns} поворотов`],
@@ -443,6 +487,17 @@ const checks: [string, boolean, string][] = [
     `подъехал на ${sees.approached.toFixed(1)} м, ближе всего ${(sees.closest * 100).toFixed(0)}% от касания`],
   ['вслепую — обязан задеть', blind.hit > 0,
     blind.hit > 0 ? `задел ${(blind.hit / 60).toFixed(1)} с, проверка ловит` : 'НЕ ЗАДЕЛ — проверка ничего не проверяет'],
+  ['знак 3.24 ставится там, где 40, и нигде больше',
+    net.signs.all.filter((g) => g.kind === '3.24').every((g) => g.value < TOWN_LIMIT),
+    `${net.signs.all.filter((g) => g.kind === '3.24').length} знаков ограничения`],
+  ['превышают не все, а меньшинство', over > 0 && over <= Math.ceil(movers.length * 0.35),
+    `${over} из ${movers.length} едут быстрее знака`],
+  ['превышают типично, а не втрое', worstOver <= 40.5,
+    `самый лихой на ${worstOver.toFixed(0)} км/ч выше знака`],
+  ['знаки приоритета расставлены там, где нет светофора', priority.signs > 0,
+    `${priority.signs} знаков на сцене «${priority.name}»`],
+  ['второстепенная уступает, а главная нет', priority.sideWaits > 0 && priority.mainWaits === 0,
+    `второстепенная ждала ${(priority.sideWaits / 60).toFixed(1)} с, главная ${(priority.mainWaits / 60).toFixed(1)} с`],
   ['машины держатся середины полосы', betweenLanes / Math.max(1, betweenLanes + inLane) < 0.15,
     `${((betweenLanes / Math.max(1, betweenLanes + inLane)) * 100).toFixed(1)}% времени между полос, дальше всего ${worstStray.toFixed(2)} м`],
   ['кто-то кого-то обогнал', overtakes > 0, `${overtakes} обгонов за две минуты`],

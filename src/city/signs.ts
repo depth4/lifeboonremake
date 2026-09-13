@@ -1,0 +1,142 @@
+/**
+ * ЗНАКИ И ПРИОРИТЕТ ДОРОГ.
+ *
+ * По стандарту дорожных карт (OpenDRIVE) знак живёт НА ДОРОГЕ: его место —
+ * это «столько-то метров от начала дороги и столько-то вбок», а не точка
+ * на карте. Подвинули дорогу — знак переехал вместе с ней, потому что своих
+ * координат на карте он не знает. Мы делаем так же.
+ *
+ * Что здесь есть и почему именно это. По ГОСТ Р 52290-2004 знаков восемь
+ * групп, но на движение влияют считанные штуки:
+ *
+ *   2.1  главная дорога      — приоритет на ближайшем перекрёстке
+ *   2.4  уступите дорогу     — его отсутствие, с той же стороны
+ *   3.24 ограничение скорости — своё число вместо 60 из ПДД 10.2
+ *
+ * Остальное — украшение, пока по улице никто не едет.
+ *
+ * ЗАЧЕМ ЭТО НУЖНО ПРЯМО СЕЙЧАС. Без главной дороги все нерегулируемые
+ * перекрёстки равнозначны, и разъезд идёт по помехе справа — от чего
+ * четверо встают навсегда, каждый уступая соседу. В городе так не бывает:
+ * улицы делятся на главные и второстепенные, и ПДД 13.9 говорит прямо —
+ * едущий по второстепенной уступает всем, кто на главной, независимо
+ * от направления их дальнейшего движения.
+ *
+ * Про экран этот файл не знает ничего.
+ */
+
+import type { World } from '../world/world.ts';
+
+/** Номер знака по ГОСТ Р 52290-2004. */
+export type SignKind = '2.1' | '2.4' | '3.24';
+
+/** Один знак на дороге. */
+export interface Sign {
+  readonly kind: SignKind;
+  readonly shape: number;
+  /** Метр дороги, на котором он стоит. */
+  readonly s: number;
+  /** Кому он виден: тем, кто едет в эту сторону по s. */
+  readonly dir: 1 | -1;
+  /** Число на знаке. Для 3.24 — км/ч; у остальных ноль. */
+  readonly value: number;
+}
+
+/**
+ * Скорость по умолчанию в населённом пункте, км/ч. ПДД 10.2.
+ * Это не подобранное число, а закон.
+ */
+export const TOWN_LIMIT = 60;
+
+/**
+ * Сколько ставим на узких улицах, км/ч. Здесь мы уже не цитируем закон,
+ * а моделируем: ПДД разрешает 60 везде в городе, но на однополосной жилой
+ * улице знак 3.24 с сорока — обычное дело. Число названо вслух как наше
+ * решение, а не выдано за норму.
+ */
+export const QUIET_LIMIT = 40;
+
+/** Уже какой дороги считаем её тихой улицей: одна полоса в сторону. */
+const QUIET_LANES = 1;
+
+/** Главная, второстепенная или равнозначная — для одного подъезда к узлу. */
+export type Priority = 'главная' | 'второстепенная' | 'равнозначная';
+
+export interface Signs {
+  /** Все знаки города: для показа и для проверок. */
+  readonly all: readonly Sign[];
+  /** Ограничение на дороге, км/ч. */
+  readonly limit: readonly number[];
+  /** Приоритет: по узлу, потом по дороге. */
+  readonly rank: ReadonlyMap<string, Priority>;
+}
+
+/**
+ * Разбор мира на знаки. Считается один раз, из самой дороги — никаких
+ * ручных расстановок: их некому делать, редактора знаков нет.
+ *
+ * ГЛАВНАЯ ВЫБИРАЕТСЯ ПО ШИРИНЕ. Это не выдумка: главной в городе делают
+ * ту улицу, где больше движения, а у нас больше движения там, где больше
+ * полос. Так же поступают и генераторы дорожных сетей.
+ */
+export function buildSigns(
+  world: World,
+  atJunction: readonly { shape: number; s: number }[][],
+  signalled: ReadonlySet<number>,
+  lanesPerSide: (shape: number) => number,
+): Signs {
+  const all: Sign[] = [];
+  const rank = new Map<string, Priority>();
+
+  // ── ограничение скорости: 60 по ПДД, 40 на тихих улицах со знаком
+  const limit = world.shapes.map((_, si) => {
+    const quiet = lanesPerSide(si) <= QUIET_LANES;
+    return quiet ? QUIET_LIMIT : TOWN_LIMIT;
+  });
+  world.shapes.forEach((shape, si) => {
+    if (limit[si] === TOWN_LIMIT) return;
+    // знак стоит в начале участка, с обеих сторон — как в жизни
+    const total = shape.stations.at(-1)?.s ?? 0;
+    if (total < 20) return;
+    all.push({ kind: '3.24', shape: si, s: 6, dir: 1, value: limit[si] });
+    all.push({ kind: '3.24', shape: si, s: total - 6, dir: -1, value: limit[si] });
+  });
+
+  /**
+   * ── приоритет. Только там, где нет светофора: под светофором знаки
+   * приоритета не работают вовсе (ПДД 13.3 — регулируемый перекрёсток
+   * проезжается по сигналам, а не по знакам).
+   */
+  atJunction.forEach((roads, ji) => {
+    if (signalled.has(ji) || roads.length < 3) return;
+    let best = -1, bestLanes = -1, bestWidth = -1;
+    for (const link of roads) {
+      const n = lanesPerSide(link.shape);
+      const w = world.shapes[link.shape].halfWidth;
+      if (n > bestLanes || (n === bestLanes && w > bestWidth)) {
+        best = link.shape; bestLanes = n; bestWidth = w;
+      }
+    }
+    // все дороги одинаковые — перекрёсток равнозначный, и знаков тут нет
+    const same = roads.every((l) => lanesPerSide(l.shape) === bestLanes
+      && Math.abs(world.shapes[l.shape].halfWidth - bestWidth) < 0.01);
+    for (const link of roads) {
+      const kind: Priority = same ? 'равнозначная'
+        : link.shape === best ? 'главная' : 'второстепенная';
+      rank.set(`${ji}:${link.shape}`, kind);
+      if (kind === 'равнозначная') continue;
+      const total = world.shapes[link.shape].stations.at(-1)?.s ?? 0;
+      // знак смотрит на подъезжающих к узлу: ставим его перед узлом
+      const toward: 1 | -1 = link.s > total / 2 ? 1 : -1;
+      const at = toward > 0 ? Math.max(0, link.s - 12) : Math.min(total, link.s + 12);
+      all.push({ kind: kind === 'главная' ? '2.1' : '2.4', shape: link.shape, s: at, dir: toward, value: 0 });
+    }
+  });
+
+  return { all, limit, rank };
+}
+
+/** Кто здесь главный. Неизвестный узел — значит равнозначный. */
+export function priorityOf(signs: Signs, junction: number, shape: number): Priority {
+  return signs.rank.get(`${junction}:${shape}`) ?? 'равнозначная';
+}

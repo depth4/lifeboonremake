@@ -16,8 +16,9 @@
  */
 
 import type { World } from '../world/world.ts';
-import { type Signal, buildSignals, lightFor, stopLine } from './signals.ts';
+import { type Signal, buildSignals, junctionReach, lightFor, stopLine } from './signals.ts';
 import { type Lanes, buildLanes, laneAcross, laneAt, laneCount } from './lanes.ts';
+import { type Signs, buildSigns, priorityOf } from './signs.ts';
 
 const G = 9.80665;
 /** С какой боковой перегрузкой ездит обычный водитель. */
@@ -67,7 +68,17 @@ export interface Mover {
   speed: number;
   yaw: number;
   colour: number;
-  /** Своя крейсерская скорость: одни торопятся, другие нет. */
+  /**
+   * Кто этот водитель по торопливости: 0 — самый смирный, 1 — самый лихой.
+   * Это ЕГО место в потоке, а не скорость: скорость получается из него
+   * и из ограничения на дороге. Личная черта, не меняется.
+   */
+  haste: number;
+  /**
+   * Скорость, которую он считает своей на нынешней дороге, м/с. Не отдельная
+   * правда, а следствие: пересчитывается из `haste` и знака каждый раз,
+   * когда машина попадает на другую дорогу.
+   */
   cruise: number;
   /**
    * Сколько метров вправо от осевой линии. Это НАСТОЯЩЕЕ положение кузова
@@ -174,6 +185,10 @@ export interface Network {
   readonly bays: Bay[];
   /** Полосы: где именно по каждой дороге можно ехать. */
   readonly lanes: Lanes;
+  /** Знаки: ограничения скорости и приоритет дорог. */
+  readonly signs: Signs;
+  /** Насколько каждый перекрёсток простирается от своей середины, м. */
+  readonly reach: readonly number[];
 }
 
 export function buildNetwork(world: World): Network {
@@ -196,7 +211,12 @@ export function buildNetwork(world: World): Network {
   });
   for (const list of nodes) list.sort((a, b) => a.s - b.s);
 
-  const signals = buildSignals(world);
+  /**
+   * Размер каждого перекрёстка: по самой широкой из сходящихся дорог.
+   * От него, а не от своей ширины, отсчитываются все стоп-линии.
+   */
+  const reach = world.junctions.map((_, ji) => junctionReach(world, atJunction[ji]));
+  const signals = buildSignals(world, reach);
   const ends: (End | null)[][] = world.shapes.map(() => [null, null]);
   world.shapes.forEach((shape, si) => {
     const total = length[si];
@@ -242,7 +262,11 @@ export function buildNetwork(world: World): Network {
     }
   });
 
-  return { length, atJunction, nodes, signals, ends, bays, lanes };
+  const signalled = new Set(signals.map((sg) => sg.junction));
+  const signs = buildSigns(world, atJunction, signalled,
+    (si) => Math.max(lanes[si].forward.length, lanes[si].backward.length));
+
+  return { length, atJunction, nodes, signals, ends, bays, lanes, signs, reach };
 }
 
 /** Где дорога в этом месте и куда она смотрит. */
@@ -331,7 +355,8 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
       park: null,
       route: null,
       knocked: null,
-      cruise: CRUISE * (0.6 + next() * 0.4),
+      haste: next(),
+      cruise: CRUISE,
       yaw: Math.atan2(spot.fz * dir, spot.fx * dir),
       colour: COLOURS[Math.floor(next() * COLOURS.length) % COLOURS.length],
     });
@@ -341,6 +366,7 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
     const count = laneCount(net.lanes, shape, dir as 1 | -1);
     last.lane = count <= 1 ? 0 : Math.floor(next() * count) % count;
     last.across = laneAcross(net.lanes, shape, dir as 1 | -1, last.lane);
+    retune(net, last);
   }
   return movers;
 }
@@ -369,13 +395,18 @@ function lanePoint(world: World, net: Network, shape: number, s: number, dir: nu
 }
 
 /** Метр, на котором дорога кончается и начинается перекрёсток. */
-function mouthAt(world: World, shape: number, s: number, dir: number): number {
-  return stopLine(world.shapes[shape].halfWidth, s, dir);
+function mouthAt(net: Network, junction: number, shape: number, s: number, dir: number): number {
+  void shape;
+  return stopLine(net.reach[junction], s, dir);
 }
 
 /** Свой въезд в перекрёсток: метр, за которым машина уже внутри. */
 function myMouth(world: World, net: Network, m: Mover): number {
-  return mouthAt(world, m.shape, m.dir > 0 ? net.length[m.shape] : 0, m.dir);
+  void world;
+  const slot = m.dir > 0 ? 1 : 0;
+  const end = net.ends[m.shape][slot];
+  if (end === null) return m.dir > 0 ? net.length[m.shape] : 0;
+  return mouthAt(net, end.junction, m.shape, m.dir > 0 ? net.length[m.shape] : 0, m.dir);
 }
 
 /** Сколько метров пути через перекрёсток уже позади. Меньше нуля — ещё не въехал. */
@@ -409,14 +440,21 @@ const STEPS = 12;
 export function crossPath(
   world: World, net: Network, shape: number, dir: number, lane: number, r: Route,
 ): Path {
-  const a = lanePoint(world, net, shape, mouthAt(world, shape, dir > 0 ? net.length[shape] : 0, dir), dir, lane);
-  const b = lanePoint(world, net, r.shape, mouthAt(world, r.shape, r.s, -r.dir), r.dir, r.lane);
+  const a = lanePoint(world, net, shape, mouthAt(net, r.junction, shape, dir > 0 ? net.length[shape] : 0, dir), dir, lane);
+  const b = lanePoint(world, net, r.shape, mouthAt(net, r.junction, r.shape, r.s, -r.dir), r.dir, r.lane);
   // точка схода касательных: где продолжение въезда встречает продолжение выезда
   const det = a.fx * b.fz - a.fz * b.fx;
   let cx = (a.x + b.x) / 2, cz = (a.z + b.z) / 2;
   if (Math.abs(det) > 1e-4) {
     const t = ((b.x - a.x) * b.fz - (b.z - a.z) * b.fx) / det;
-    if (t > 0 && t < 60) { cx = a.x + a.fx * t; cz = a.z + a.fz * t; }
+    /**
+     * Точку схода касательных держим В ПРЕДЕЛАХ САМОГО УЗЛА. При пологом
+     * угле встречи она уезжает далеко, кривая раздувается и выходит за
+     * асфальт: машина поворачивает по газону. Дальше размера перекрёстка
+     * ей быть негде — там уже не перекрёсток.
+     */
+    const far = net.reach[r.junction] * 1.6;
+    if (t > 0 && t < far) { cx = a.x + a.fx * t; cz = a.z + a.fz * t; }
   }
   const pts: { x: number; z: number }[] = [];
   for (let i = 0; i <= STEPS; i++) {
@@ -437,9 +475,9 @@ export function crossPath(
  * построена, и выбрать по нему полосу выезда.
  */
 function turnOf(world: World, net: Network, shape: number, dir: number, r: Route): number {
-  const inS = mouthAt(world, shape, dir > 0 ? net.length[shape] : 0, dir);
+  const inS = mouthAt(net, r.junction, shape, dir > 0 ? net.length[shape] : 0, dir);
   const a = along(world, shape, inS);
-  const b = along(world, r.shape, mouthAt(world, r.shape, r.s, -r.dir));
+  const b = along(world, r.shape, mouthAt(net, r.junction, r.shape, r.s, -r.dir));
   return wrap(Math.atan2(b.fz * r.dir, b.fx * r.dir) - Math.atan2(a.fz * dir, a.fx * dir));
 }
 
@@ -551,13 +589,48 @@ function blockAt(path: Path, body: Box): { at: number; centre: number } {
  * геометрически не пересекаются, но машины по ним столкнутся.
  */
 function nearest(a: Path, b: Path): { at: number; foe: number; gap: number } {
+  /**
+   * Берётся ПЕРВОЕ опасное место по ходу, а не самое тесное. Раньше бралось
+   * самое тесное — и это врало там, где два пути не пересекаются в точке,
+   * а сходятся на длинном куске: на многополосном узле «самое тесное»
+   * оказывается в конце схождения, машины считают, что встретятся позже,
+   * чем встречаются, и въезжают друг в друга по дороге туда.
+   */
+  let first: { at: number; foe: number; gap: number } | null = null;
   let best = { at: 0, foe: 0, gap: Infinity };
   for (let i = 0; i < a.pts.length; i++)
     for (let k = 0; k < b.pts.length; k++) {
       const d = Math.hypot(a.pts[i].x - b.pts[k].x, a.pts[i].z - b.pts[k].z);
       if (d < best.gap) best = { at: a.mark[i], foe: b.mark[k], gap: d };
+      if (d < RUB && (first === null || a.mark[i] < first.at))
+        first = { at: a.mark[i], foe: b.mark[k], gap: d };
     }
-  return best;
+  return first ?? best;
+}
+
+/**
+ * Какую скорость этот водитель считает своей там, где на знаке столько-то.
+ *
+ * Числа не подобраны, а взяты из того, как ездят на самом деле:
+ *  — ограничения ставят по 85-му процентилю, то есть ПО ПОСТРОЕНИЮ около 15%
+ *    потока едет быстрее знака, и это норма, а не эпидемия;
+ *  — из тех, кто превышает, подавляющее большинство превышает ТИПИЧНО:
+ *    по ГИБДД за 2024 год 66,7% всех постановлений — превышение на 20–40 км/ч.
+ *
+ * Поэтому лихач у нас едет 80–100 там, где знак 60, а не 200. Отдельного
+ * «этот водитель нарушитель» в правилах нет: нарушитель — это хвост
+ * распределения, и он получается сам.
+ */
+function desiredSpeed(haste: number, limitKmh: number): number {
+  const kmh = haste < 0.85
+    ? limitKmh * (0.8 + (0.2 * haste) / 0.85)          // 80–100% от знака
+    : limitKmh + 20 + (20 * (haste - 0.85)) / 0.15;    // +20…+40 сверх знака
+  return kmh / 3.6;
+}
+
+/** Пересчитать желаемую скорость под дорогу, на которой машина оказалась. */
+function retune(net: Network, m: Mover): void {
+  m.cruise = desiredSpeed(m.haste, net.signs.limit[m.shape]);
 }
 
 /** Сколько метров впереди смотрят, решая, не пора ли перестроиться. */
@@ -633,6 +706,14 @@ function sideBlocker(movers: readonly Mover[], m: Mover): number | null {
 function wantLane(world: World, net: Network, movers: readonly Mover[], m: Mover): number {
   const count = laneCount(net.lanes, m.shape, m.dir as 1 | -1);
   if (count <= 1) return 0;
+  /**
+   * В очереди на месте не перестраиваются. Не запрет ради запрета: пока
+   * машина еле ползёт, соседи вокруг неё двигаются быстрее, чем она успевает
+   * переехать вбок, и проверка «там свободно» устаревает прямо посреди
+   * манёвра. Живые водители в пробке тоже стоят в своей полосе.
+   */
+  if (m.speed < 2 && m.lane !== 0) return m.lane;
+  if (m.speed < 2) return 0;
   const left = count - 1;
 
   // 8.5: поворот выполняется из крайней полосы, и решение принимается заранее
@@ -759,7 +840,7 @@ export function nextJunction(world: World, net: Network, m: OnRoad):
   const end = net.ends[m.shape][slot];
   if (end === null) return null;
   const atS = slot === 1 ? net.length[m.shape] : 0;
-  const stopS = stopLine(world.shapes[m.shape].halfWidth, atS, m.dir);
+  const stopS = stopLine(net.reach[end.junction], atS, m.dir);
   return { end, stopGap: (stopS - m.s) * m.dir, centreGap: (atS - m.s) * m.dir };
 }
 
@@ -1022,6 +1103,38 @@ export function moveTraffic(
   const paths = movers.map((m) => m.route === null ? null : crossPath(world, net, m.shape, m.dir, m.lane, m.route));
   const entered = movers.map((m) => m.route === null ? -Infinity : inside(world, net, m));
 
+  /**
+   * КТО ВЪЕЗЖАЕТ В ЭТОТ ШАГ. Перекрёсток занимают ПУТИ, а не машины: два
+   * непересекающихся пути проезжаются вместе — ради этого всё и строилось, —
+   * а два пересекающихся ждут друг друга.
+   *
+   * Решается ДО того, как кто-либо тронулся, и в твёрдом порядке: ближе
+   * к своей стоп-линии — раньше очередь. Иначе двое въезжают в один шаг,
+   * каждый видя другого ещё снаружи, и запирают узел; а следом набегает
+   * замкнутый круг «A ждёт B, B ждёт C, C ждёт A», из которого уже никто
+   * никогда не выедет, потому что у неподвижного кузова нет терпения.
+   */
+  const blocked = movers.map(() => false);
+  {
+    const busy: { path: Path; at: number }[] = [];
+    movers.forEach((m, i) => {
+      if (paths[i] !== null && entered[i] > 0) busy.push({ path: paths[i] as Path, at: entered[i] });
+    });
+    const waiting = movers
+      .map((m, i) => ({ i, gap: targets[i]?.stopGap ?? Infinity }))
+      .filter(({ i, gap }) => paths[i] !== null && entered[i] <= 0 && gap < 30 && !onRed[i])
+      .sort((a, b) => a.gap - b.gap);
+    for (const { i } of waiting) {
+      const mine = paths[i] as Path;
+      const clash = busy.some((b) => {
+        const meet = nearest(mine, b.path);
+        return meet.gap <= RUB && meet.foe - b.at > -HALF;
+      });
+      if (clash) blocked[i] = true;
+      else busy.push({ path: mine, at: 0 });
+    }
+  }
+
   movers.forEach((m, index) => {
     // сбитая машина правилам не подчиняется: она уже не участник, а тело
     if (m.knocked !== null) { rollKnocked(world, net, m, dt); return; }
@@ -1056,7 +1169,17 @@ export function moveTraffic(
          * и номер про неё врёт. Полосы разнесены на 3.5 м, кузов 1.95 —
          * порога 2.2 хватает, чтобы соседняя полоса не держала, а своя держала.
          */
-        if (Math.abs(other.across - m.across) > (stray ? 3.4 : 2.2)) continue;
+        /**
+         * Пока машина между полос, она едет по ДВУМ линиям сразу: по той,
+         * где кузов, и по той, куда он переезжает. Дистанцию надо держать
+         * до обеих — иначе она честно тормозит за своей полосой и въезжает
+         * боком в очередь на соседней.
+         */
+        const near = Math.min(
+          Math.abs(other.across - m.across),
+          Math.abs(other.across - laneMid(net, m)),
+        );
+        if (near > (stray ? 3.4 : 2.2)) continue;
         const gap = (other.s - m.s) * m.dir - LENGTH;
         /**
          * Зазор меньше нуля — это уже НАЛОЖЕНИЕ, а не «лидера нет». Раньше
@@ -1096,6 +1219,12 @@ export function moveTraffic(
     const mine = paths[index];
     let yielded = false;
     if (rules && ahead !== null && mine !== null && ahead.stopGap < 70) {
+      // путь через узел занят чужим — стоим до линии, а не въезжаем и стоим внутри
+      if (blocked[index] && ahead.stopGap > -0.5) {
+        holds.push({ gap: Math.max(0.4, ahead.stopGap), speed: 0, why: 'путь занят' });
+        yielded = true;
+      }
+
       // красный свет: стоим ДО линии. Проехал линию — доезжай, не замирай в узле
       if (onRed[index] && ahead.stopGap > -0.5) {
         holds.push({ gap: Math.max(0.4, ahead.stopGap), speed: 0, why: 'красный' });
@@ -1107,7 +1236,7 @@ export function moveTraffic(
        * встать внутри. Смотрим ровно на ту дорогу, на которую сами едем.
        */
       const r = m.route as Route;
-      const outMouth = mouthAt(world, r.shape, r.s, -r.dir);
+      const outMouth = mouthAt(net, r.junction, r.shape, r.s, -r.dir);
       const jam = movers.some((o) => o !== m && o.shape === r.shape && o.dir === r.dir
         && o.speed < 1.5 && (o.s - outMouth) * r.dir < LENGTH + GAP0
         && (o.s - outMouth) * r.dir > -LENGTH);
@@ -1146,10 +1275,28 @@ export function moveTraffic(
       for (let k = 0; k < movers.length; k++) {
         const o = movers[k];
         if (o === m) continue;
-        // сбитая машина — препятствие всегда и везде, она уже не по правилам
+        /**
+         * Телом на моём пути считается тот, кто УЖЕ В ПЕРЕКРЁСТКЕ, и сбитый
+         * где угодно. Ждущий у своей стоп-линии сюда не входит намеренно:
+         * он вне узла, его разбирают правила очереди и приоритета, у которых
+         * есть терпение.
+         *
+         * Одно время сюда брали всех, кто рядом с узлом, — чтобы прикрыть
+         * ждущего на красном, который стоял на чужом пути. Но стоял он там
+         * не поэтому, а потому что стоп-линия отмерялась от ширины СВОЕЙ
+         * дороги и на узкой улице оказывалась внутри широкой. Это починено
+         * в самой геометрии, и расширение стало не нужно — а вредно: у тела
+         * нет терпения, и четверо вокруг узла вставали навсегда, каждый
+         * перед чужим неподвижным кузовом.
+         */
         const stray = o.knocked !== null;
         if (!stray && (entered[k] <= 0 || o.route?.junction !== r.junction)) continue;
-        bodies.push({ ...poses[k], speed: stray ? 0 : o.speed, why: stray ? 'сбитая машина' : 'машина в перекрёстке' });
+        const still = o.speed < 0.5;
+        bodies.push({
+          ...poses[k],
+          speed: stray || still ? 0 : o.speed,
+          why: stray ? 'сбитая машина' : still ? 'стоящая машина' : 'машина в перекрёстке',
+        });
       }
       // машина игрока: куда он поедет, город не знает — значит он такое же тело
       if (you !== null) bodies.push({ x: you.x, z: you.z, yaw: you.yaw, speed: you.speed, why: 'игрок' });
@@ -1194,8 +1341,25 @@ export function moveTraffic(
         const delta = wrap(his.inYaw - mine.inYaw);
         const rank = (t: number): number => Math.abs(t) < 0.6 ? 0 : t > 0 ? 1 : 2;
         const onc = Math.abs(delta) > 2.36;
-        const iYield = onc ? rank(mine.turn) > rank(his.turn) : delta < -0.79 && delta > -2.36;
-        const heYields = onc ? rank(his.turn) > rank(mine.turn) : delta > 0.79 && delta < 2.36;
+
+        /**
+         * 13.9: едущий по ВТОРОСТЕПЕННОЙ уступает всем, кто на главной,
+         * независимо от направления их дальнейшего движения. Это сильнее
+         * и помехи справа, и правил про поворот налево — поэтому спрашивается
+         * первым. Под светофором знаки приоритета не действуют вовсе (13.3),
+         * и там `priorityOf` вернёт «равнозначная» просто потому, что
+         * знаков на регулируемом узле не расставлено.
+         */
+        const myRank = priorityOf(net.signs, r.junction, m.shape);
+        const hisRank = priorityOf(net.signs, r.junction, o.shape);
+        const byRoad = myRank !== hisRank
+          ? (myRank === 'второстепенная' || hisRank === 'главная')
+          : null;
+
+        const iYield = byRoad !== null ? byRoad
+          : onc ? rank(mine.turn) > rank(his.turn) : delta < -0.79 && delta > -2.36;
+        const heYields = byRoad !== null ? !byRoad
+          : onc ? rank(his.turn) > rank(mine.turn) : delta > 0.79 && delta < 2.36;
         const tie = !iYield && !heYields && (toPoint > foeToPoint + 0.5
           || (Math.abs(toPoint - foeToPoint) <= 0.5 && index > k));
         if (!iYield && !tie) continue;
@@ -1341,11 +1505,12 @@ export function moveTraffic(
         const r = m.route;
         m.shape = r.shape;
         m.dir = r.dir;
-        m.s = mouthAt(world, r.shape, r.s, -r.dir) + r.dir * (at - path.len);
+        m.s = mouthAt(net, r.junction, r.shape, r.s, -r.dir) + r.dir * (at - path.len);
         m.lane = r.lane;
         m.across = laneMid(net, m);
         m.route = null;
         m.wait = 0;
+        retune(net, m);   // другая дорога — другой знак
       }
     }
 

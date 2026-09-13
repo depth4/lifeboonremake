@@ -49,6 +49,22 @@ export function stopLine(halfWidth: number, s: number, dir: number): number {
   return s - dir * (halfWidth + 2.5);
 }
 
+/**
+ * Насколько перекрёсток простирается от своей середины.
+ *
+ * Это полуширина САМОЙ ШИРОКОЙ из сходящихся дорог, а не той, по которой
+ * ты подъезжаешь. Иначе выходит вот что: на «решётке» широкая улица
+ * (полуширина 8.16) пересекает узкую (3.58), стоп-линия узкой встаёт
+ * в 6.08 м от середины узла — и машина, честно ждущая своей очереди,
+ * стоит на два метра ВНУТРИ проезжей части широкой. Мимо неё не проехать,
+ * а она не уедет, пока ей не дадут: взаимный тупик на ровном месте.
+ */
+export function junctionReach(world: World, roads: readonly { shape: number }[]): number {
+  let most = 0;
+  for (const r of roads) most = Math.max(most, world.shapes[r.shape].halfWidth);
+  return most;
+}
+
 /** Длительности одной фазы, секунды. */
 export const GREEN = 14;
 export const YELLOW = 4;
@@ -60,7 +76,7 @@ const CYCLE = PHASE * 2;
  * Разбор сети на светофоры. Считается один раз по геометрии: у мира графа
  * развязок нет, есть точки узлов и дороги, которые в них упираются.
  */
-export function buildSignals(world: World): Signal[] {
+export function buildSignals(world: World, reach: readonly number[]): Signal[] {
   const signals: Signal[] = [];
 
   world.junctions.forEach((j, ji) => {
@@ -80,7 +96,8 @@ export function buildSignals(world: World): Signal[] {
           dir,
           heading,
           group: Math.abs(Math.cos(heading)) > Math.abs(Math.sin(heading)) ? 0 : 1,
-          stopS: stopLine(shape.halfWidth, station.s, dir),
+          // стоп-линия ставится по размеру ПЕРЕКРЁСТКА, а не своей дороги
+          stopS: stopLine(reach[ji], station.s, dir),
         });
       }
     });
