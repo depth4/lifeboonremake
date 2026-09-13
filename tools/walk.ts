@@ -54,6 +54,35 @@ const say = (name: string, ok: boolean, note: string): void => { checks.push([na
     `через кадр ещё ${justAfter.toFixed(2)} м/с, встал за ${stoppedAfter.toFixed(2)} с`);
 }
 
+// ── Идти вбок: тело не разворачивается, взгляд стоит на месте.
+{
+  const p = createPerson(0, 0, ground);
+  const body0 = p.body, gaze0 = gaze(p).yaw;
+  const SIDE = { forward: 0, side: 1, run: false };
+  for (let i = 0; i < 240; i++) step(p, ground, SIDE, DT, OPTIONS);
+  say('идёт вбок, не разворачиваясь',
+    Math.abs(deg(p.body - body0)) < 10 && Math.abs(deg(gaze(p).yaw - gaze0)) < 10,
+    `тело ушло на ${deg(p.body - body0).toFixed(0)}°, взгляд на ${deg(gaze(p).yaw - gaze0).toFixed(0)}°`);
+}
+
+// ── Ступенька под ногами: ноги её гасят, голова не прыгает.
+{
+  // бордюр 15 см ровно на пути: земля ниже нуля до x=1, выше после
+  const curb: typeof ground = {
+    sample: (x: number) => ({ height: x < 1 ? 0 : 0.15, nx: 0, ny: 1, nz: 0 }),
+  } as typeof ground;
+  const p = createPerson(0, 0, curb);
+  let jump = 0, was = eyes(p).y;
+  for (let i = 0; i < 180; i++) {
+    step(p, curb, AHEAD, DT, OPTIONS);
+    const now = eyes(p).y;
+    jump = Math.max(jump, Math.abs(now - was));
+    was = now;
+  }
+  say('бордюр гасится ногами, а не бьёт по голове', jump < 0.03,
+    `самый резкий скачок головы ${(jump * 1000).toFixed(0)} мм за кадр`);
+}
+
 // ── Шея: малый поворот берёт голова, тело стоит.
 {
   const p = createPerson(0, 0, ground);
@@ -86,19 +115,36 @@ const say = (name: string, ok: boolean, note: string): void => { checks.push([na
     `тело развернулось на ${turned.toFixed(0)}° из 360`);
 }
 
-// ── Глаза ведут, голова догоняет.
+// ── Три звена по очереди: сначала глаза, потом шея, тело стоит.
 {
   const p = createPerson(0, 0, ground);
-  look(p, 40, 0, 40 / (Math.PI / 6)); // рывок на 30°
+  look(p, 40, 0, 40 / (Math.PI / 6)); // рывок мышью на 30°
+  for (let i = 0; i < 9; i++) step(p, ground, STILL, DT, OPTIONS); // 0.15 с
+  const eyeEarly = Math.abs(deg(p.eyeYaw));
+  const neckEarly = Math.abs(deg(p.neck));
+  for (let i = 0; i < 51; i++) step(p, ground, STILL, DT, OPTIONS); // ещё 0.85 с
+  const eyeLate = Math.abs(deg(p.eyeYaw));
+  const neckLate = Math.abs(deg(p.neck));
+  say('сначала глаза, потом шея, тело на месте',
+    eyeEarly > neckEarly && eyeLate < 2 && neckLate > 25 && Math.abs(deg(p.body)) < 1,
+    `через 0.15 с: глаза ${eyeEarly.toFixed(0)}°, шея ${neckEarly.toFixed(0)}°; ` +
+    `через секунду: глаза ${eyeLate.toFixed(1)}°, шея ${neckLate.toFixed(0)}°`);
+}
+
+// ── Мышь сглажена: один рывок не швыряет взгляд за кадр.
+{
+  const p = createPerson(0, 0, ground);
+  look(p, 600, 0, 1200); // резкий бросок мыши на полрадиана
   step(p, ground, STILL, DT, OPTIONS);
-  const eyeFirst = Math.abs(deg(p.eyeYaw));
-  const gazeFirst = Math.abs(deg(gaze(p).yaw));
-  for (let i = 0; i < 45; i++) step(p, ground, STILL, DT, OPTIONS);
-  const eyeLater = Math.abs(deg(p.eyeYaw));
-  say('глаза прыгают первыми, голова догоняет',
-    eyeFirst > 10 && gazeFirst > 20 && eyeLater < 2 && Math.abs(deg(p.neck)) > 25,
-    `сразу: глаза ${eyeFirst.toFixed(0)}°, взгляд уже ${gazeFirst.toFixed(0)}°; ` +
-    `через 0.75 с: глаза ${eyeLater.toFixed(1)}°, шея ${deg(p.neck).toFixed(0)}°`);
+  const first = Math.abs(deg(gaze(p).yaw));
+  let worst = 0, was = gaze(p).yaw;
+  for (let i = 0; i < 120; i++) {
+    step(p, ground, STILL, DT, OPTIONS);
+    worst = Math.max(worst, Math.abs(deg(gaze(p).yaw - was)) / DT);
+    was = gaze(p).yaw;
+  }
+  say('мышь сглажена: взгляд не швыряет', first < 6 && worst < 400 && Math.abs(deg(gaze(p).yaw)) > 25,
+    `за первый кадр ${first.toFixed(1)}°, быстрее всего ${worst.toFixed(0)}°/с, дошёл до ${deg(gaze(p).yaw).toFixed(0)}°`);
 }
 
 // ── Тряска: на ходу есть, но маленькая; на месте её нет.
@@ -117,7 +163,7 @@ const say = (name: string, ok: boolean, note: string): void => { checks.push([na
     `размах ${(swing * 100).toFixed(1)} см`);
 }
 
-// ── Моргание: 15–20 раз в минуту, по четверти секунды.
+// ── Моргание символическое: реже и короче человеческого — вкус Алекса.
 {
   const p = createPerson(0, 0, ground);
   let blinks = 0, closed = 0;
@@ -129,7 +175,7 @@ const say = (name: string, ok: boolean, note: string): void => { checks.push([na
     was = p.lids;
   }
   const perBlink = (closed / Math.max(1, blinks)) * 1000;
-  say('моргает по-человечески', blinks >= 13 && blinks <= 25 && perBlink > 200 && perBlink < 400,
+  say('моргает символически, а не мигает', blinks >= 4 && blinks <= 10 && perBlink > 80 && perBlink < 220,
     `${blinks} раз за минуту, по ${perBlink.toFixed(0)} мс`);
 }
 

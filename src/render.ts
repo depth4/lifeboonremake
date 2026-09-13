@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Material, Surface } from './surface/index.ts';
 import type { Point2 } from './world/road.ts';
+import { type Sight, createSight } from './person/sight.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
@@ -178,8 +179,11 @@ export interface Viewer {
    * иначе у камеры завелась бы своя жизнь отдельно от тела.
    */
   setWalk(eye: {
-    x: number; y: number; z: number; yaw: number; pitch: number; roll: number;
+    x: number; y: number; z: number; yaw: number; pitch: number; roll: number; headRate: number;
   } | null): void;
+  /** Глаз пешехода: наводка, смаз, свечение, края. Выключается для сравнения. */
+  setSight(on: boolean): void;
+  sight(): boolean;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -396,6 +400,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   apply(custom ?? VIEWS[startView] ?? VIEWS.road, true);
 
   addEventListener('resize', () => {
+    sight?.resize(innerWidth, innerHeight);
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
@@ -409,7 +414,33 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let chase = false;
   let eye: 'сзади' | 'из салона' = 'сзади';
   /** Глаза пешехода. Пока они есть, камера — это они, и больше ничего. */
-  let walkEye: { x: number; y: number; z: number; yaw: number; pitch: number; roll: number } | null = null;
+  let walkEye:
+    { x: number; y: number; z: number; yaw: number; pitch: number; roll: number; headRate: number }
+    | null = null;
+  /** Глаз: наводка, смаз, свечение, мягкие края. Заводится, когда пошли пешком. */
+  let sight: Sight | null = null;
+  /** Глаз выключается целиком — чтобы было с чем сравнить. */
+  let sightOn = true;
+  /**
+   * Земля до горизонта. Мир — плита в полкилометра, и с высоты глаз видно, где
+   * он кончается. Раньше это пряталось дымкой — но дымки на пятистах метрах
+   * в природе нет, и она читалась как ложь. Теперь земля просто продолжается
+   * до горизонта, как ей и положено, а обрыв смотреть перестало быть на что.
+   */
+  const horizon = new THREE.Mesh(
+    // мир — квадрат 240 м; кольцо начинается внутри него и уходит за горизонт
+    // мир — квадрат 240 м; кольцо начинается внутри него и уходит за горизонт.
+    // Дальше полутора километров не растягиваем: с большой дальностью камеры
+    // рушится точность глубины, и наводка на резкость начинает мылить всё
+    // подряд — поймано снимком, а не рассуждением.
+    new THREE.RingGeometry(90, 1400, 64),
+    new THREE.MeshLambertMaterial({ color: COLORS.grass, side: THREE.DoubleSide }),
+  );
+  horizon.rotation.x = -Math.PI / 2;
+  horizon.position.y = -0.35;
+  horizon.visible = false;
+  horizon.name = 'горизонт';
+  scene.add(horizon);
   const chaseEye = new THREE.Vector3();
   const chaseAim = new THREE.Vector3();
   let chaseReady = false;
@@ -429,7 +460,8 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       );
       // крен на шаге — последним, поверх взгляда: качается голова, не мир
       camera.rotateZ(walkEye.roll);
-      renderer.render(scene, camera);
+      if (sight && sightOn) sight.render(walkEye.headRate, dt);
+      else renderer.render(scene, camera);
       return;
     }
     if (chase && carGroup.visible && eye === 'из салона') {
@@ -753,17 +785,32 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       walkerMesh.instanceMatrix.needsUpdate = true;
       if (walkerMesh.instanceColor) walkerMesh.instanceColor.needsUpdate = true;
     },
+    setSight(on) { sightOn = on; },
+    sight() { return sightOn; },
     setWalk(next) {
+      const wasWalking = walkEye !== null;
       walkEye = next;
-      /**
-       * Пешком воздух гуще. Не для красоты: с высоты глаз видно, что земля
-       * кончается, и этот обрыв читается как «декорация». Дымка съедает край
-       * раньше, чем он попадёт в кадр, и заодно даёт глубину — дальнее
-       * выцветает, ближнее нет, и мозг достраивает расстояние сам.
-       * Как вернуться к машине — вернуть дымку ракурса.
-       */
-      if (next) { fog.near = 25; fog.far = 165; }
-      else { fog.far = viewFog; fog.near = viewFog * 0.42; }
+      horizon.visible = next !== null;
+      if (next !== null && !wasWalking) {
+        // пешком воздуха нет: на пятистах метрах его не видно и в жизни
+        fog.near = 2200;
+        fog.far = 6000;
+        // поле зрения шире: у человека оно шире объектива
+        camera.fov = 76;
+        // земля до горизонта не влезает в дальность ракурсов — раздвигаем,
+        // но умеренно: дальше начинает врать глубина, и глаз мылит весь кадр
+        camera.far = 1500;
+        camera.updateProjectionMatrix();
+        sight ??= createSight(renderer, scene, camera);
+        sight.resize(innerWidth, innerHeight);
+      }
+      if (next === null && wasWalking) {
+        fog.far = viewFog;
+        fog.near = viewFog * 0.42;
+        camera.fov = 48;
+        camera.far = 1400;
+        camera.updateProjectionMatrix();
+      }
     },
     setEye(from) {
       eye = from;

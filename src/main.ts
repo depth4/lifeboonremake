@@ -435,6 +435,7 @@ function drivePanel(): void {
   panel.innerHTML =
     `<button type="button" data-drive="seat" aria-pressed="${driving}">за руль</button>` +
     `<button type="button" data-drive="afoot" aria-pressed="${walker !== null}">пешком</button>` +
+    (walker === null ? '' : `<button type="button" class="plain" data-drive="sight" aria-pressed="${viewer.sight()}">глаз</button>`) +
     `<button type="button" class="plain" data-drive="assist" aria-pressed="${driver.assist}">помощь рулю</button>` +
     `<button type="button" class="plain" data-drive="setup">подвеска: ${VIPER.suspension.label}</button>` +
     `<button type="button" class="plain" data-drive="traffic" aria-pressed="${traffic.length > 0}">трафик</button>` +
@@ -456,6 +457,7 @@ el('drive')?.addEventListener('click', (event) => {
   const what = button.dataset.drive;
   if (what === 'seat') seat(!driving);
   else if (what === 'afoot') afoot(walker === null);
+  else if (what === 'sight') { viewer.setSight(!viewer.sight()); drivePanel(); }
   else if (what === 'park') { car = null; driving = false; viewer.setCar(null); viewer.setChase(false); if (dash) dash.hidden = true; drivePanel(); }
   else if (what === 'assist') {
     driver.assist = !driver.assist;
@@ -492,6 +494,7 @@ el('drive')?.addEventListener('click', (event) => {
  * настройку на ходу.
  */
 addEventListener('keydown', (event) => {
+  if (event.code === 'KeyO' && walker !== null) { viewer.setSight(!viewer.sight()); drivePanel(); return; }
   if (event.code === 'Enter' && walker !== null) { afoot(false); return; }
   if (event.code === 'Enter' && dash !== null) { seat(!driving); return; }
   if (car === null || !driving) return;

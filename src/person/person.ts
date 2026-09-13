@@ -39,6 +39,8 @@ export interface Person {
   z: number;
   /** Высота земли под ногами, м. */
   ground: number;
+  /** На какой высоте стоит голова: ноги гасят ступеньки, и это их работа. */
+  stand: number;
   /** Скорость по земле, м/с. */
   vx: number;
   vz: number;
@@ -51,9 +53,16 @@ export interface Person {
   /** Глаза в глазнице относительно головы, радианы. Быстрые и малые. */
   eyeYaw: number;
   eyePitch: number;
-  /** Куда просят смотреть — накопленное движение мыши, радианы. */
+  /** Куда просят смотреть — сглаженное движение мыши, радианы. */
   wantYaw: number;
   wantPitch: number;
+  /** Мышь уже дёрнулась, а взгляд ещё не забрал: сырое движение ждёт здесь. */
+  pendingYaw: number;
+  pendingPitch: number;
+  /** С какой скоростью сейчас поворачивается ТЕЛО, рад/с. У него есть разгон. */
+  bodyRate: number;
+  /** Скорость поворота ГОЛОВЫ (тело + шея), рад/с. По ней считается смаз. */
+  headRate: number;
   /** Фаза шага, 0..1 по кругу. */
   stride: number;
   /** Сколько прошли ногами, м — по ней и считается шаг. */
@@ -80,19 +89,45 @@ const STEP = 0.75;
 const NECK = 1.4;
 /** Предел отклонения глаз в глазнице, радианы (30°). */
 const EYES = 0.52;
-/** За сколько голова догоняет взгляд, с. */
-const HEAD_LAG = 0.12;
-/** Как быстро доворачивается тело, рад/с. */
-const BODY_TURN = 2.8;
+/**
+ * Сглаживание мыши, с. Сырое движение мыши рваное: браузер присылает его
+ * кусками, а под захватом указателя ещё и скачками. Без сглаживания взгляд
+ * дёргается на каждый кусок — это и читается как «слишком резко».
+ */
+const MOUSE_SMOOTH = 0.07;
+/** За сколько ГЛАЗ доходит до того, куда просят. Быстро, но не мгновенно. */
+const EYE_LAG = 0.045;
+/** За сколько ШЕЯ догоняет глаза, с. */
+const HEAD_LAG = 0.16;
+/**
+ * Тело. У него есть разгон и торможение: живое тело не начинает и не
+ * прекращает поворот мгновенно, и именно это читается как вес.
+ */
+const BODY_MAX = 1.9;
+const BODY_ACC = 5.5;
+/** За сколько тело хочет закрыть оставшийся угол, с. */
+const BODY_CLOSE = 0.42;
+/** Как быстро тело подтягивается к взгляду на ходу, рад/с. Медленно. */
+const ALIGN = 0.9;
+/** За сколько ноги гасят ступеньку под ногами, с. */
+const ABSORB = 0.11;
 /** Наклон головы вверх-вниз, предел. */
 const PITCH_LIMIT = 1.3;
 /** Тряска шага: вверх-вниз, вбок, крен. Меньше «настоящего» — иначе укачивает. */
 const BOB_UP = 0.022;
 const BOB_SIDE = 0.014;
 const BOB_ROLL = 0.012;
-/** Моргание: всё целиком и та его часть, пока веко падает, с. */
-const BLINK = 0.28;
-const BLINK_SHUT = 0.1;
+/**
+ * Моргание СИМВОЛИЧЕСКОЕ — так просил Алекс, и это его вкус, а не замер.
+ * У человека 15–20 раз в минуту по 285 мс, но на экране такое читается как
+ * мигающий свет: в жизни своё моргание не видишь, а тут оно чужое.
+ * Поэтому реже и вдвое короче — намёк, а не затвор.
+ */
+const BLINK = 0.15;
+const BLINK_SHUT = 0.06;
+/** Между морганиями, с. */
+const BLINK_GAP = 7;
+const BLINK_SPREAD = 4;
 
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
 
@@ -100,13 +135,16 @@ export function createPerson(x: number, z: number, ground: Footing, facing = 0):
   return {
     x, z,
     ground: ground.sample(x, z).height,
+    stand: ground.sample(x, z).height,
     vx: 0, vz: 0,
     body: facing,
     neck: 0, headPitch: 0,
     eyeYaw: 0, eyePitch: 0,
     wantYaw: facing, wantPitch: 0,
+    pendingYaw: 0, pendingPitch: 0,
+    bodyRate: 0, headRate: 0,
     stride: 0, walked: 0,
-    lids: 0, blinking: 0, toBlink: 3,
+    lids: 0, blinking: 0, toBlink: BLINK_GAP,
   };
 }
 
@@ -116,8 +154,9 @@ export function createPerson(x: number, z: number, ground: Footing, facing = 0):
  * между «повернул голову» и «камера повернулась».
  */
 export function look(person: Person, dx: number, dy: number, perRadian: number): void {
-  person.wantYaw += dx / perRadian;
-  person.wantPitch = clamp(person.wantPitch - dy / perRadian, -PITCH_LIMIT, PITCH_LIMIT);
+  // движение не попадает во взгляд сразу: оно копится и разбирается плавно
+  person.pendingYaw += dx / perRadian;
+  person.pendingPitch -= dy / perRadian;
 }
 
 /** Куда человек смотрит на самом деле: тело + шея + глаза. */
@@ -133,7 +172,7 @@ export function gaze(person: Person): { yaw: number; pitch: number } {
  * Тряска живёт ЗДЕСЬ, а не в камере: трясётся голова человека, а не мир.
  */
 export function eyes(person: Person): {
-  x: number; y: number; z: number; yaw: number; pitch: number; roll: number;
+  x: number; y: number; z: number; yaw: number; pitch: number; roll: number; headRate: number;
 } {
   const speed = Math.hypot(person.vx, person.vz);
   // качка затухает на месте и не растёт бесконечно на бегу
@@ -142,8 +181,9 @@ export function eyes(person: Person): {
   const side = Math.sin(person.stride * 2 * Math.PI) * BOB_SIDE * swing;
   const g = gaze(person);
   return {
+    headRate: person.headRate,
     x: person.x + Math.cos(g.yaw + Math.PI / 2) * side,
-    y: person.ground + EYE_HEIGHT + up,
+    y: person.stand + EYE_HEIGHT + up,
     z: person.z + Math.sin(g.yaw + Math.PI / 2) * side,
     yaw: g.yaw,
     pitch: g.pitch,
@@ -157,20 +197,37 @@ export function step(
   options: { neck?: boolean } = {},
 ): void {
   const limit = options.neck === false ? Math.PI : NECK;
-  // ── ВЗГЛЯД. Глаза прыгают сразу, голова тянется следом, глаза возвращаются.
-  const wantNeck = person.wantYaw - person.body;
-  // Тело доворачивается, только когда шея упёрлась: вот это и есть «на 360°
-  // не повернуться, не переставив ног».
-  if (wantNeck > limit) person.body += Math.min(wantNeck - limit, BODY_TURN * dt);
-  if (wantNeck < -limit) person.body -= Math.min(-limit - wantNeck, BODY_TURN * dt);
+  const headWas = person.body + person.neck;
 
+  // ── МЫШЬ. Сырое движение разбирается постепенно, а не залпом.
+  const take = 1 - Math.exp(-dt / MOUSE_SMOOTH);
+  person.wantYaw += person.pendingYaw * take;
+  person.pendingYaw *= 1 - take;
+  person.wantPitch = clamp(person.wantPitch + person.pendingPitch * take, -PITCH_LIMIT, PITCH_LIMIT);
+  person.pendingPitch *= 1 - take;
+
+  // ── ТЕЛО. Поворачивается, когда шея упёрлась, — с разгоном и торможением.
+  const beyond = person.wantYaw - person.body;
+  const over = beyond > limit ? beyond - limit : beyond < -limit ? beyond + limit : 0;
+  const wantRate = clamp(over / BODY_CLOSE, -BODY_MAX, BODY_MAX);
+  person.bodyRate += clamp(wantRate - person.bodyRate, -BODY_ACC * dt, BODY_ACC * dt);
+  person.body += person.bodyRate * dt;
+
+  // ── ШЕЯ. Догоняет взгляд, дальше предела не идёт.
   const neckWant = clamp(person.wantYaw - person.body, -limit, limit);
   const k = 1 - Math.exp(-dt / HEAD_LAG);
   person.neck += (neckWant - person.neck) * k;
   person.headPitch += (person.wantPitch - person.headPitch) * k;
-  // глаза — это разница между «куда просят» и «куда уже смотрит голова»
-  person.eyeYaw = clamp(person.wantYaw - person.body - person.neck, -EYES, EYES);
-  person.eyePitch = clamp(person.wantPitch - person.headPitch, -EYES, EYES);
+
+  // ── ГЛАЗА. Быстрые и малые: доходят за 45 мс и возвращаются, когда шея дошла.
+  const eyeWant = clamp(person.wantYaw - person.body - person.neck, -EYES, EYES);
+  const eyeK = 1 - Math.exp(-dt / EYE_LAG);
+  person.eyeYaw += (eyeWant - person.eyeYaw) * eyeK;
+  const eyePitchWant = clamp(person.wantPitch - person.headPitch, -EYES, EYES);
+  person.eyePitch += (eyePitchWant - person.eyePitch) * eyeK;
+
+  // смаз считается от ГОЛОВЫ и только от неё: глаз при скачке не смазывает
+  person.headRate = Math.abs(person.body + person.neck - headWas) / Math.max(dt, 1e-4);
 
   // ── НОГИ. Идут туда, куда смотрят, а тело доворачивается по ходу.
   const g = gaze(person);
@@ -182,12 +239,20 @@ export function step(
     const right = { x: -ahead.z, z: ahead.x };
     wx = (ahead.x * wish.forward + right.x * wish.side) / want * speedWant;
     wz = (ahead.z * wish.forward + right.z * wish.side) / want * speedWant;
-    // идём — тело разворачивается по ходу движения, шея отдаёт поворот телу
-    const course = Math.atan2(wz, wx);
-    let turn = course - person.body;
+    /**
+     * На ходу тело подтягивается К ВЗГЛЯДУ, а НЕ к направлению шага.
+     *
+     * Первая редакция разворачивала тело по ходу движения — и это была петля:
+     * шаг считается от взгляда, взгляд считается от тела, тело гналось за
+     * шагом. Шаг вбок разворачивал тело на 83° за полсекунды, хотя игрок
+     * мышь не трогал. Идти боком — нормальная человеческая вещь: тело смотрит
+     * туда же, куда голова, ноги приставляются вбок.
+     */
+    let turn = person.wantYaw - person.body;
     while (turn > Math.PI) turn -= 2 * Math.PI;
     while (turn < -Math.PI) turn += 2 * Math.PI;
-    person.body += clamp(turn, -BODY_TURN * dt, BODY_TURN * dt);
+    person.body += clamp(turn, -ALIGN * dt, ALIGN * dt);
+    person.neck = clamp(person.wantYaw - person.body, -limit, limit);
   }
 
   // разгон и гашение: мгновенная остановка читается как отсутствие веса
@@ -198,6 +263,12 @@ export function step(
   person.x += person.vx * dt;
   person.z += person.vz * dt;
   person.ground = ground.sample(person.x, person.z).height;
+  /**
+   * Ноги гасят ступеньку. Бордюр — это 15 см за один кадр; если посадить
+   * голову прямо на землю, он бьёт по глазам ударом, которого в жизни нет:
+   * колено складывается, и голова проходит ступеньку плавно.
+   */
+  person.stand += (person.ground - person.stand) * (1 - Math.exp(-dt / ABSORB));
 
   // ── ШАГ. Считается пройденным путём, а не временем: стоя не шагаем.
   const moved = Math.hypot(person.vx, person.vz) * dt;
@@ -209,7 +280,7 @@ export function step(
   person.toBlink -= dt;
   if (person.toBlink <= 0 && person.blinking <= 0) {
     person.blinking = BLINK;
-    person.toBlink = 2.5 + Math.random() * 2;
+    person.toBlink = BLINK_GAP + Math.random() * BLINK_SPREAD;
   }
   if (person.blinking > 0) {
     person.blinking = Math.max(0, person.blinking - dt);
