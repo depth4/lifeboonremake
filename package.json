@@ -21,6 +21,7 @@
     "where": "node --experimental-strip-types tools/where.ts",
     "load": "node --experimental-strip-types tools/load.ts",
     "walk": "node --experimental-strip-types tools/walk.ts",
+    "plan": "node --experimental-strip-types tools/plan.ts",
     "report": "node --experimental-strip-types tools/report.ts",
     "site": "node tools/site.mjs",
     "deploy": "node tools/deploy.mjs"

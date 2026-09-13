@@ -2,6 +2,8 @@
 
 import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, SCENES } from './scenes.ts';
+import { ЗАСТРОЙКА, type Назначение, РАЗМЕР } from './city/norms.ts';
+import { ПОСЁЛКИ } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
@@ -87,6 +89,46 @@ const canvas = document.querySelector('canvas');
  * откатываем последнее действие и говорим об этом. Кривой мир на экран
  * не попадает никогда — в этом и смысл отказа.
  */
+/** Цвет дома по назначению. Назначение видно с улицы — как в жизни. */
+const ЦВЕТ: Record<Назначение, number> = {
+  жильё: 0xbfae95,
+  сад: 0xe0c060,
+  школа: 0xb06a4a,
+  магазин: 0x6d93b8,
+  поликлиника: 0xe6e6e0,
+};
+/** Высота этажа, м. */
+const ЭТАЖ = 3;
+
+/**
+ * Застройка посёлка. Дом ставится НА УЧАСТОК, а участок нарезан от улицы, —
+ * поэтому «дом посреди поля» или «дом на проезжей части» невыразимы: их
+ * негде было бы записать.
+ */
+function застройка(): void {
+  const посёлок = ПОСЁЛКИ[sceneName];
+  if (!посёлок || !viewer) { viewer?.setBuildings([]); return; }
+  const вид = sceneName === 'деревня' ? 'деревня' : 'город';
+  viewer.setBuildings(посёлок.участки.map((у) => {
+    const дом = у.что === 'жильё'
+      ? { глубина: ЗАСТРОЙКА[вид].глубинаДома, этажей: ЗАСТРОЙКА[вид].этажей }
+      : { глубина: РАЗМЕР[у.что].глубина, этажей: РАЗМЕР[у.что].этажей };
+    // дом прижат к улице, а не болтается в середине участка
+    const вглубь = (у.глубина - дом.глубина) / 2;
+    const x = у.x - Math.cos(у.курс) * вглубь;
+    const z = у.z - Math.sin(у.курс) * вглубь;
+    return {
+      x, z,
+      низ: ground.sample(x, z).height,
+      yaw: у.курс,
+      ширина: у.вдольX ? у.фронт - 2 : дом.глубина,
+      глубина: у.вдольX ? дом.глубина : у.фронт - 2,
+      высота: дом.этажей * ЭТАЖ,
+      цвет: ЦВЕТ[у.что],
+    };
+  }));
+}
+
 function rebuild(): void {
   const started = performance.now();
   try {
@@ -108,6 +150,9 @@ function rebuild(): void {
   // дороги стали другими — знаки тоже: старые относились к прежним улицам
   signsShown = false;
   viewer?.setSigns([]);
+  // застройка ставится после того, как заведена опора: дом стоит НА земле,
+  // и её высоту надо у кого-то спросить
+  if (опораГотова) застройка();
   if (traffic.length > 0) {
     traffic = placeTraffic(world, network, TRAFFIC_COUNT);
     walkers = placeWalkers(world, network, WALKER_COUNT);
@@ -312,6 +357,8 @@ let eye: 'сзади' | 'из салона' = 'сзади';
 
 /** Опора под колесом. Те же треугольники, что нарисованы на экране. */
 let ground = new GroundIndex(surface);
+/** Опора заведена: до этого мига спрашивать высоту земли не у кого. */
+const опораГотова = true;
 
 // ── трафик: чужие машины, которые едут сами
 let network: Network = buildNetwork(world);
@@ -745,3 +792,6 @@ viewer.onFrame((dt) => {
   lost: car.wheels.some((w) => w.y < -100),
   gasFrom, hundredAt,
 });
+
+// первая застройка: мир собран, опора заведена, смотрелка есть
+застройка();

@@ -184,6 +184,14 @@ export interface Viewer {
   /** Глаз пешехода: наводка, смаз, свечение, края. Выключается для сравнения. */
   setSight(on: boolean): void;
   sight(): boolean;
+  /**
+   * Дома посёлка. Один вызов ставит весь город: дома не двигаются, и
+   * пересобирать их каждый кадр незачем. Пустой список — убрать застройку.
+   */
+  setBuildings(дома: readonly {
+    x: number; z: number; низ: number; yaw: number;
+    ширина: number; глубина: number; высота: number; цвет: number;
+  }[]): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -358,6 +366,8 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let signalPoles: THREE.InstancedMesh | null = null;
   let signalHeads: THREE.InstancedMesh | null = null;
   let walkerMesh: THREE.InstancedMesh | null = null;
+  /** Вся застройка посёлка одним мешем. */
+  let домаМеш: THREE.InstancedMesh | null = null;
   let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
@@ -758,6 +768,37 @@ export function show(surface: Surface, startView: string, custom: View | null = 
         signGroup.add(pole, plate);
       }
       scene.add(signGroup);
+    },
+    setBuildings(дома) {
+      if (домаМеш !== null) { scene.remove(домаМеш); домаМеш.dispose(); домаМеш = null; }
+      if (дома.length === 0) return;
+      /**
+       * Все дома — один меш на весь город. Коробка с единичными сторонами,
+       * а размер задаётся масштабом каждого экземпляра: так тысяча домов
+       * стоит один вызов отрисовки вместо тысячи.
+       */
+      const коробка = new THREE.BoxGeometry(1, 1, 1);
+      коробка.translate(0, 0.5, 0); // ставим на землю, а не серединой в неё
+      домаМеш = new THREE.InstancedMesh(
+        коробка, new THREE.MeshStandardMaterial({ roughness: 0.9 }), дома.length,
+      );
+      домаМеш.castShadow = true;
+      домаМеш.receiveShadow = true;
+      const m = new THREE.Matrix4();
+      const q = new THREE.Quaternion();
+      const тон = new THREE.Color();
+      дома.forEach((д, i) => {
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -д.yaw);
+        m.compose(
+          new THREE.Vector3(д.x, д.низ, д.z), q,
+          new THREE.Vector3(д.ширина, д.высота, д.глубина),
+        );
+        (домаМеш as THREE.InstancedMesh).setMatrixAt(i, m);
+        (домаМеш as THREE.InstancedMesh).setColorAt(i, тон.setHex(д.цвет));
+      });
+      домаМеш.instanceMatrix.needsUpdate = true;
+      if (домаМеш.instanceColor) домаМеш.instanceColor.needsUpdate = true;
+      scene.add(домаМеш);
     },
     setWalkers(people) {
       if (walkerMesh !== null && walkerMesh.count !== people.length) {
