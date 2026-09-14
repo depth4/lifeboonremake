@@ -11,15 +11,14 @@
  * Запуск: npm run play
  */
 
-import { createServer } from 'vite';
+import { сервер } from './serve.mjs';
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 
 const PORT = 5199;
 mkdirSync('shots', { recursive: true });
 
-const server = await createServer({ server: { port: PORT, strictPort: true }, logLevel: 'warn' });
-await server.listen();
+const server = await сервер(PORT);
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 const errors = [];

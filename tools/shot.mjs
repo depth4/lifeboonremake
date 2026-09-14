@@ -9,7 +9,7 @@
  * уходит несколько секунд, а не минута.
  */
 
-import { createServer } from 'vite';
+import { сервер } from './serve.mjs';
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { SCENES, кусок } from '../src/scenes.ts';
@@ -140,8 +140,7 @@ mkdirSync('shots', { recursive: true });
  */
 const OPTIONAL = /fonts\.(googleapis|gstatic)\.com/;
 
-const server = await createServer({ server: { port: PORT, strictPort: true }, logLevel: 'warn' });
-await server.listen();
+const server = await сервер(PORT);
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });

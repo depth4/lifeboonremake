@@ -13,7 +13,7 @@
  *   npm run ride -- горка горы  — сцена и рельеф
  */
 
-import { createServer } from 'vite';
+import { сервер } from './serve.mjs';
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { VIPER } from '../src/car/passport.ts';
@@ -51,8 +51,7 @@ const terrain = process.argv[3] ?? 'plain';
 const OPTIONAL = /fonts\.(googleapis|gstatic)\.com/;
 
 mkdirSync('shots', { recursive: true });
-const server = await createServer({ server: { port: PORT, strictPort: true }, logLevel: 'warn' });
-await server.listen();
+const server = await сервер(PORT);
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });

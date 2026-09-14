@@ -14,7 +14,7 @@
  * Запуск: npm run inside
  */
 
-import { createServer } from 'vite';
+import { сервер } from './serve.mjs';
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';
 
@@ -146,11 +146,7 @@ requestAnimationFrame(кадр);
 
 writeFileSync('build/стенд-интерьера.html', СТЕНД);
 
-const server = await createServer({
-  server: { port: 5220, strictPort: true }, logLevel: 'warn',
-  resolve: { alias: {} },
-});
-await server.listen();
+const server = await сервер(5220, { resolve: { alias: {} } });
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 page.on('pageerror', (e) => console.log('ОШИБКА:', String(e).split('\n')[0]));
