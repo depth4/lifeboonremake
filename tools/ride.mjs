@@ -65,6 +65,26 @@ const problems = [];
 page.on('pageerror', (e) => problems.push('ошибка в коде: ' + String(e).split('\n')[0]));
 page.on('requestfailed', (r) => { if (!OPTIONAL.test(r.url())) problems.push('не загрузилось: ' + r.url()); });
 
+/**
+ * Спросить страницу — СО СРОКОМ.
+ *
+ * `page.evaluate` в Playwright срока не имеет вообще: если страница застряла
+ * (а в контейнере WebGL сваливается на программный отрисовщик прямо посреди
+ * прогона), ожидание висит вечно. Мой цикл ожидания «времени мира» на этом
+ * и повис — проверка шла двадцать пять минут и не собиралась кончаться.
+ *
+ * Теперь у каждого вопроса есть срок. Не ответила — считаем, что ответа нет,
+ * и идём дальше: наверху стоят свои сроки, они и решат, провалилась проверка
+ * или нет.
+ */
+const спросить = async (сколько = 6000) => {
+  let таймер;
+  const срок = new Promise((готово) => { таймер = setTimeout(() => готово(null), сколько); });
+  try {
+    return await Promise.race([page.evaluate(() => window.__car()), срок]);
+  } catch { return null; } finally { clearTimeout(таймер); }
+};
+
 const car = () => page.evaluate(() => window.__car());
 
 /**
@@ -104,12 +124,12 @@ const тихо = async (что, действие) => {
  * мир вообще встал.
  */
 async function мир(секунд, потолокМс = 40000) {
-  const начало = (await page.evaluate(() => window.__car()))?.sim ?? null;
+  const начало = (await спросить())?.sim ?? null;
   if (начало === null) { await page.waitForTimeout(секунд * 1000); return; }
   const дедлайн = Date.now() + потолокМс;
   for (;;) {
     await page.waitForTimeout(80);
-    const сейчас = (await page.evaluate(() => window.__car()))?.sim ?? начало;
+    const сейчас = (await спросить())?.sim ?? начало;
     if (сейчас - начало >= секунд || Date.now() > дедлайн) return;
   }
 }
@@ -295,8 +315,11 @@ await page.mouse.click(800, 500);             // взять руль
  * едет сам и догоняет очередь у красного: у каждого перекрёстка она есть.
  */
 const targetAhead = async () => {
-  const now = await page.evaluate(() => ({ car: window.__car(), traffic: window.__traffic() }));
-  if (now.car === null) return null;
+  const now = await Promise.race([
+    page.evaluate(() => ({ car: window.__car(), traffic: window.__traffic() })),
+    new Promise((готово) => setTimeout(() => готово(null), 6000)),
+  ]);
+  if (now === null || now.car === null) return null;
   const fx = Math.cos(now.car.yaw), fz = Math.sin(now.car.yaw);
   let best = null;
   for (const m of now.traffic) {
@@ -349,9 +372,12 @@ for (let tick = 0; tick < 900 && crash.count <= ударовБыло && мирП
   await page.waitForTimeout(300);
   const found = await targetAhead();
   if (found !== null && (queued === null || found < queued)) queued = found;
-  const now = await page.evaluate(() => ({
-    crash: window.__crash(), car: window.__car(), traffic: window.__traffic(),
-  }));
+  const now = await Promise.race([
+    page.evaluate(() => ({
+      crash: window.__crash(), car: window.__car(), traffic: window.__traffic(),
+    })),
+    new Promise((готово) => setTimeout(() => готово(null), 6000)),
+  ]) ?? { crash, car: beforeCrash, traffic: [] };
   if (now.crash.count <= ударовБыло && Math.abs(now.car.speed) > Math.abs(beforeCrash.speed)) beforeCrash = now.car;
   crash = now.crash;
   мирПрожил = (now.car?.sim ?? simНачало) - simНачало;
