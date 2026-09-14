@@ -12,19 +12,94 @@
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
-import { SCENES } from '../src/scenes.ts';
+import { SCENES, кусок } from '../src/scenes.ts';
+import { ЗАСТРОЙКА, ДОМ } from '../src/city/norms.ts';
+import { buildWorld } from '../src/world/world.ts';
+import { buildSurface } from '../src/surface/index.ts';
+import { GroundIndex } from '../src/car/ground.ts';
 
 const PORT = 5199;
 const args = process.argv.slice(2);
-const all = args[0] === 'all';
-const view = (all ? args[1] : args[0]) ?? 'road';
-const terrain = (all ? args[2] : args[2]) ?? 'plateau';
-const scene = all ? null : args[1];
+let all = args[0] === 'all';
+let view = (all ? args[1] : args[0]) ?? 'road';
+let terrain = (all ? args[2] : args[2]) ?? 'plateau';
+let scene = all ? null : args[1];
 
 // наводка: npm run shot -- наводка крест холмы from=x,y,z at=x,y,z
 const aim = Object.fromEntries(
   args.filter((a) => a.includes('=')).map((a) => a.split('=')),
 );
+
+/**
+ * Прицел ОТ ОБЪЕКТА: `npm run shot -- перед магазин город`.
+ *
+ * Считать координаты камеры руками — это каждый раз лотерея: дважды
+ * подряд камера оказывалась внутри дома, и оба снимка пришлось выкинуть.
+ * Здесь она встаёт туда, где стоит человек: на тротуар своей улицы,
+ * лицом к фасаду, на высоте глаз.
+ *
+ *   перед <назначение> [сцена]  — смотреть на объект с тротуара
+ *   вдоль <назначение> [сцена]  — встать там же и смотреть ВДОЛЬ улицы
+ */
+const ГЛАЗ = 1.65;
+if (args[0] === 'перед' || args[0] === 'вдоль') {
+  const что = args[1] ?? 'магазин';
+  const имя = args[2] ?? 'город';
+  const к = кусок(имя);
+  const о = к.объекты.find((o) => o.что === что);
+  if (!о) {
+    console.log(`в окне сцены «${имя}» нет объекта «${что}»`);
+    process.exit(1);
+  }
+  /**
+   * Высота глаз — ОТ ЗЕМЛИ, а не от нуля. «Плато» это не плоскость в нуле:
+   * под посёлком там 2.7 м, и камера, поставленная на 1.65 абсолютных,
+   * оказывается в грунте. Снимок получился «дом висит в синеве», и я чуть
+   * не пошёл искать поломку в домах.
+   */
+  const земля = new GroundIndex(buildSurface(buildWorld(SCENES[имя], 'plateau'), 'A'));
+  const улица = к.улицы[о.улица];
+  const вдольX = улица.a.z === улица.b.z;
+  const ось = вдольX ? улица.a.z : улица.a.x;
+  const отступДома = ЗАСТРОЙКА[имя].отступДома;
+  // середина дома: пятно сдвинуто к улице на отступ, остальное участка — двор
+  const вглубь = о.участокГлубина / 2 - о.глубина / 2 - отступДома;
+  const дx = о.x + о.нx * вглубь;
+  const дz = о.z + о.нz * вглубь;
+  // фасад — передняя плоскость дома
+  const фx = дx + о.нx * (о.глубина / 2);
+  const фz = дz + о.нz * (о.глубина / 2);
+  /**
+   * Встаём на ТРОТУАР, а не на проезжую часть: полуширина проезжей части
+   * плюс метр. Иначе человек на снимке стоит посреди четырёхполосной
+   * магистрали, и это видно.
+   */
+  const полуширина = улица.полосВСторону * 3.5 + 1.2;
+  const доОси = Math.abs((вдольX ? фz : фx) - ось);
+  const шаг = доОси - (полуширина + 1.2);
+  const кx = фx + о.нx * шаг;
+  const кz = фz + о.нz * шаг;
+  const высота = о.этажей * (что === 'жильё' ? ДОМ.этаж.жилой : ДОМ.этаж.общественный);
+  const подНогами = (x, z) => земля.sample(x, z).height;
+  if (args[0] === 'перед') {
+    aim.from = `${кx.toFixed(1)},${(подНогами(кx, кz) + ГЛАЗ).toFixed(2)},${кz.toFixed(1)}`;
+    aim.at = `${фx.toFixed(1)},${(подНогами(фx, фz) + высота * 0.4).toFixed(2)},${фz.toFixed(1)}`;
+  } else {
+    // вдоль улицы: смотрим в сторону, перпендикулярную «наружу»
+    const вx = -о.нz, вz = о.нx;
+    const сx = кx - вx * 55, сz = кz - вz * 55;
+    const цx = кx + вx * 60, цz = кz + вz * 60;
+    aim.from = `${сx.toFixed(1)},${(подНогами(сx, сz) + ГЛАЗ).toFixed(2)},${сz.toFixed(1)}`;
+    aim.at = `${цx.toFixed(1)},${(подНогами(цx, цz) + 4).toFixed(2)},${цz.toFixed(1)}`;
+  }
+  aim.fog ??= '300';
+  aim.bare ??= '1';
+  // прицел готов — дальше работает обычная «наводка»
+  all = false;
+  view = 'наводка';
+  scene = имя;
+  terrain = 'plateau';
+}
 
 const suffix = aim.variant ? `-${aim.variant}` : '';
 

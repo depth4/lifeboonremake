@@ -193,7 +193,7 @@ export interface Viewer {
    * Геометрию считает `src/city/house.ts` без всякого экрана, сюда приходят
    * массивы чисел. Пустое — убрать застройку.
    */
-  setBuildings(з: { стены: Сетка; стёкла: Сетка } | null): void;
+  setBuildings(з: { стены: Сетка; стёкла: Сетка; свет: Сетка } | null): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -371,6 +371,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   /** Вся застройка посёлка одним мешем. */
   let домаМеш: THREE.Mesh | null = null;
   let стёклаМеш: THREE.Mesh | null = null;
+  let светМеш: THREE.Mesh | null = null;
   let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
@@ -782,7 +783,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       scene.add(signGroup);
     },
     setBuildings(з) {
-      for (const м of [домаМеш, стёклаМеш]) {
+      for (const м of [домаМеш, стёклаМеш, светМеш]) {
         if (м === null) continue;
         scene.remove(м);
         м.geometry.dispose();
@@ -790,6 +791,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       }
       домаМеш = null;
       стёклаМеш = null;
+      светМеш = null;
       if (з === null || з.стены.индексы.length === 0) return;
 
       const вМеш = (с: Сетка, материал: THREE.Material): THREE.Mesh => {
@@ -818,10 +820,20 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       домаМеш.receiveShadow = true;
       scene.add(домаМеш);
 
+      /**
+       * Светящееся: потолок торгового зала. Материал БЕЗ СВЕТА — он и есть
+       * источник. Настоящих ламп в каждом магазине было бы по десятку на
+       * квартал, и это цена, которой мы платить не собираемся.
+       */
+      if (з.свет.индексы.length > 0) {
+        светМеш = вМеш(з.свет, new THREE.MeshBasicMaterial({ vertexColors: true }));
+        scene.add(светМеш);
+      }
+
       if (з.стёкла.индексы.length > 0) {
         стёклаМеш = вМеш(з.стёкла, new THREE.MeshStandardMaterial({
-          vertexColors: true, roughness: 0.08, metalness: 0.35,
-          transparent: true, opacity: 0.62, side: THREE.DoubleSide,
+          vertexColors: true, roughness: 0.10, metalness: 0.20,
+          transparent: true, opacity: 0.42, side: THREE.DoubleSide,
         }));
         scene.add(стёклаМеш);
       }
