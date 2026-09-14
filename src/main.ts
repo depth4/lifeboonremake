@@ -4,6 +4,7 @@ import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, SCENES, СЦЕНА_САЙТА } from './scenes.ts';
 import { построитьДома, type Дом } from './city/house.ts';
 import { обстановка } from './city/street.ts';
+import { type Преграда, преграды, пройти } from './city/walls.ts';
 import { слить } from './city/mesh.ts';
 import { кусок } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
@@ -88,6 +89,8 @@ const viewer = show(surface, startView, viewFromQuery(query));
 let дома: readonly Дом[] = [];
 /** Что стоит на улице: деревья, фонари, машины. Тоже идёт в подпись. */
 let наУлице: Record<string, number> = {};
+/** Стены как преграда: те же дома, только с точки зрения ног. */
+let стены: readonly Преграда[] = [];
 const canvas = document.querySelector('canvas');
 
 /**
@@ -106,6 +109,7 @@ const canvas = document.querySelector('canvas');
 function застройка(): void {
   if ((sceneName !== 'город' && sceneName !== 'деревня') || !viewer) {
     viewer?.setBuildings(null);
+    стены = [];
     return;
   }
   const посёлок = кусок(sceneName);
@@ -114,6 +118,8 @@ function застройка(): void {
   const улица = обстановка(посёлок, sceneName, собрано.дома, земля, посёлок.посёлок.сид);
   дома = собрано.дома;
   наУлице = улица.счёт;
+  // преграды собираются из ТЕХ ЖЕ домов, которые нарисованы: разойтись нечему
+  стены = преграды(собрано.дома);
   // дома и обстановка сливаются в один кусок: цена показа — вызовы отрисовки
   viewer.setBuildings({
     стены: слить([собрано.стены, улица.стены]),
@@ -360,6 +366,9 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
 // ─────────────────────────── ЗА РУЛЁМ ───────────────────────────
 // Склейка: мир даёт опору, водитель — четыре числа, машина — новое состояние,
 // показ — картинку. Ни одна из четырёх частей не знает про три остальные.
+
+/** Полуширина человека, м: на столько он не подходит к стене вплотную. */
+const ПЛЕЧО = 0.28;
 
 /** Откуда смотрит игрок за рулём. */
 let eye: 'сзади' | 'из салона' = 'сзади';
@@ -666,7 +675,9 @@ viewer.onFrame((dt) => {
       side: (afootKeys.has('KeyD') ? 1 : 0) - (afootKeys.has('KeyA') ? 1 : 0),
       run: afootKeys.has('ShiftLeft') || afootKeys.has('ShiftRight'),
     };
-    stepPerson(walker, ground, wish, Math.min(dt, 0.1));
+    stepPerson(walker, ground, wish, Math.min(dt, 0.1), {
+    путь: (x0, z0, x1, z1) => пройти(стены, x0, z0, x1, z1, ПЛЕЧО),
+  });
     viewer.setWalk(eyesOf(walker));
     if (lidsTop) lidsTop.style.setProperty('--shut', walker.lids.toFixed(3));
   }

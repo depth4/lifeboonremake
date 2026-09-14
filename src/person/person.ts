@@ -193,8 +193,19 @@ export function eyes(person: Person): {
 
 export function step(
   person: Person, ground: Footing, wish: Wish, dt: number,
-  /** `neck: false` — снять предел шеи. Заведомо сломанный вариант для проверки. */
-  options: { neck?: boolean } = {},
+  options: {
+    /** `neck: false` — снять предел шеи. Заведомо сломанный вариант. */
+    neck?: boolean;
+    /**
+     * Куда человек НА САМОМ ДЕЛЕ дойдёт из точки в точку.
+     *
+     * Человек не знает, что такое стена, — и не должен: стены это город,
+     * а он на своих двоих. Ему передают функцию «вот отсюда сюда — куда
+     * получилось», и всё. Поэтому здесь нельзя написать ни одного правила
+     * вида «если дом, то…»: их негде было бы написать.
+     */
+    путь?: (x0: number, z0: number, x1: number, z1: number) => { x: number; z: number };
+  } = {},
 ): void {
   const limit = options.neck === false ? Math.PI : NECK;
   const headWas = person.body + person.neck;
@@ -260,8 +271,19 @@ export function step(
   person.vx += clamp(wx - person.vx, -rate, rate);
   person.vz += clamp(wz - person.vz, -rate, rate);
 
-  person.x += person.vx * dt;
-  person.z += person.vz * dt;
+  /**
+   * Идём — и спрашиваем, куда пришли. Скорость после этого берётся из
+   * ПРОЙДЕННОГО, а не из задуманного: упёршись в стену, человек перестаёт
+   * в неё ехать, а не копит скорость, чтобы потом выстрелить сквозь угол.
+   * Заодно шаг перестаёт считаться: топтаться на месте у стены он не будет.
+   */
+  const цx = person.x + person.vx * dt;
+  const цz = person.z + person.vz * dt;
+  const пришёл = options.путь ? options.путь(person.x, person.z, цx, цz) : { x: цx, z: цz };
+  person.vx = (пришёл.x - person.x) / Math.max(dt, 1e-6);
+  person.vz = (пришёл.z - person.z) / Math.max(dt, 1e-6);
+  person.x = пришёл.x;
+  person.z = пришёл.z;
   person.ground = ground.sample(person.x, person.z).height;
   /**
    * Ноги гасят ступеньку. Бордюр — это 15 см за один кадр; если посадить

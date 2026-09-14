@@ -826,7 +826,14 @@ export function show(surface: Surface, startView: string, custom: View | null = 
        * квартал, и это цена, которой мы платить не собираемся.
        */
       if (з.свет.индексы.length > 0) {
-        светМеш = вМеш(з.свет, new THREE.MeshBasicMaterial({ vertexColors: true }));
+        /**
+         * ДВУСТОРОННИЙ. Потолок торгового зала смотрит вниз, и односторонний
+         * материал его отбрасывал: стоя в магазине, игрок видел над собой
+         * чёрную дыру вместо горящих панелей.
+         */
+        светМеш = вМеш(з.свет, new THREE.MeshBasicMaterial({
+          vertexColors: true, side: THREE.DoubleSide,
+        }));
         scene.add(светМеш);
       }
 
