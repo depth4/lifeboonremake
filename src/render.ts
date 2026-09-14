@@ -193,7 +193,14 @@ export interface Viewer {
    * Геометрию считает `src/city/house.ts` без всякого экрана, сюда приходят
    * массивы чисел. Пустое — убрать застройку.
    */
-  setBuildings(з: { стены: Сетка; стёкла: Сетка; свет: Сетка } | null): void;
+  setBuildings(з: { стены: Сетка; стёкла: Сетка; окна: Сетка; свет: Сетка } | null): void;
+  /**
+   * Внутренность дома, в который вошли. `null` — вышли, и её больше нет.
+   *
+   * Отдельно от застройки, потому что живёт она по-другому: застройка
+   * ставится раз на сцену, а эта появляется и исчезает по ходу.
+   */
+  setInterior(в: { стены: Сетка; свет: Сетка } | null): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -372,6 +379,8 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let домаМеш: THREE.Mesh | null = null;
   let стёклаМеш: THREE.Mesh | null = null;
   let светМеш: THREE.Mesh | null = null;
+  let окнаМеш: THREE.Mesh | null = null;
+  let нутроМеш: THREE.Mesh[] = [];
   let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
@@ -783,7 +792,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       scene.add(signGroup);
     },
     setBuildings(з) {
-      for (const м of [домаМеш, стёклаМеш, светМеш]) {
+      for (const м of [домаМеш, стёклаМеш, светМеш, окнаМеш]) {
         if (м === null) continue;
         scene.remove(м);
         м.geometry.dispose();
@@ -792,6 +801,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       домаМеш = null;
       стёклаМеш = null;
       светМеш = null;
+      окнаМеш = null;
       if (з === null || з.стены.индексы.length === 0) return;
 
       const вМеш = (с: Сетка, материал: THREE.Material): THREE.Mesh => {
@@ -821,6 +831,30 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       scene.add(домаМеш);
 
       /**
+       * Окна квартир — ОДНОСТОРОННИЕ и непрозрачные.
+       *
+       * Снаружи это зеркало: днём в стекле отражается небо, и в квартиру
+       * не видно. Изнутри лицевой стороны нет, грань отсекается — и улица
+       * видна насквозь. Одна плоскость делает обе вещи сразу, и внутренность
+       * жилого дома снаружи не показывается никогда.
+       */
+      if (з.окна.индексы.length > 0) {
+        /**
+         * Металл БЕЗ отражений чернеет: в сцене нет карты окружения, и
+         * зеркальному материалу нечего отражать. При `metalness: 0.55` окна
+         * получались чёрными дырами вместо стекла. Отражение здесь рисует
+         * не материал, а цвет вершин — он и есть отражённое небо; материалу
+         * остаётся только блик от солнца, за него отвечает шероховатость.
+         */
+        окнаМеш = вМеш(з.окна, new THREE.MeshStandardMaterial({
+          vertexColors: true, roughness: 0.12, metalness: 0.0,
+          side: THREE.FrontSide,
+        }));
+        окнаМеш.receiveShadow = true;
+        scene.add(окнаМеш);
+      }
+
+      /**
        * Светящееся: потолок торгового зала. Материал БЕЗ СВЕТА — он и есть
        * источник. Настоящих ламп в каждом магазине было бы по десятку на
        * квартал, и это цена, которой мы платить не собираемся.
@@ -843,6 +877,38 @@ export function show(surface: Surface, startView: string, custom: View | null = 
           transparent: true, opacity: 0.42, side: THREE.DoubleSide,
         }));
         scene.add(стёклаМеш);
+      }
+    },
+    setInterior(в) {
+      for (const м of нутроМеш) {
+        scene.remove(м);
+        м.geometry.dispose();
+        (м.material as THREE.Material).dispose();
+      }
+      нутроМеш = [];
+      if (в === null) return;
+      const вМеш2 = (с: Сетка, материал: THREE.Material): THREE.Mesh => {
+        const г = new THREE.BufferGeometry();
+        г.setAttribute('position', new THREE.BufferAttribute(с.позиции, 3));
+        г.setAttribute('normal', new THREE.BufferAttribute(с.нормали, 3));
+        г.setAttribute('color', new THREE.BufferAttribute(с.цвета, 3));
+        г.setIndex(new THREE.BufferAttribute(с.индексы, 1));
+        г.computeBoundingSphere();
+        return new THREE.Mesh(г, материал);
+      };
+      if (в.стены.индексы.length > 0) {
+        const м = вМеш2(в.стены, new THREE.MeshStandardMaterial({
+          vertexColors: true, roughness: 0.9, side: THREE.DoubleSide,
+        }));
+        нутроМеш.push(м);
+        scene.add(м);
+      }
+      if (в.свет.индексы.length > 0) {
+        const м = вМеш2(в.свет, new THREE.MeshBasicMaterial({
+          vertexColors: true, side: THREE.DoubleSide,
+        }));
+        нутроМеш.push(м);
+        scene.add(м);
       }
     },
     setWalkers(people) {

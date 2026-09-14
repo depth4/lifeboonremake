@@ -2,9 +2,9 @@
 
 import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, SCENES, СЦЕНА_САЙТА } from './scenes.ts';
-import { построитьДома, type Дом } from './city/house.ts';
+import { внутренность, построитьДома, type Дом } from './city/house.ts';
 import { обстановка } from './city/street.ts';
-import { type Преграда, преграды, пройти } from './city/walls.ts';
+import { type Преграда, вКаком, преграды, пройти } from './city/walls.ts';
 import { слить } from './city/mesh.ts';
 import { кусок } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
@@ -91,6 +91,13 @@ let дома: readonly Дом[] = [];
 let наУлице: Record<string, number> = {};
 /** Стены как преграда: те же дома, только с точки зрения ног. */
 let стены: readonly Преграда[] = [];
+/**
+ * В каком доме сейчас игрок. −1 — на улице.
+ *
+ * По этому числу внутренность дома появляется и исчезает: снаружи её
+ * не существует, потому что снаружи её не видно — стекло отражает.
+ */
+let вДоме = -1;
 const canvas = document.querySelector('canvas');
 
 /**
@@ -120,10 +127,13 @@ function застройка(): void {
   наУлице = улица.счёт;
   // преграды собираются из ТЕХ ЖЕ домов, которые нарисованы: разойтись нечему
   стены = преграды(собрано.дома);
+  вДоме = -1;
+  viewer.setInterior(null);
   // дома и обстановка сливаются в один кусок: цена показа — вызовы отрисовки
   viewer.setBuildings({
     стены: слить([собрано.стены, улица.стены]),
     стёкла: собрано.стёкла,
+    окна: собрано.окна,
     свет: слить([собрано.свет, улица.свет]),
   });
 }
@@ -678,6 +688,16 @@ viewer.onFrame((dt) => {
     stepPerson(walker, ground, wish, Math.min(dt, 0.1), {
     путь: (x0, z0, x1, z1) => пройти(стены, x0, z0, x1, z1, ПЛЕЧО),
   });
+  /**
+   * Вошёл или вышел — собрать или выбросить внутренность. Считается по тому
+   * же списку преград, по которому он не проходит сквозь стены: «войти»
+   * и «оказаться внутри» — одно событие.
+   */
+  const теперь = вКаком(стены, walker.x, walker.z);
+  if (теперь !== вДоме) {
+    вДоме = теперь;
+    viewer.setInterior(теперь < 0 ? null : внутренность(дома[теперь]));
+  }
     viewer.setWalk(eyesOf(walker));
     if (lidsTop) lidsTop.style.setProperty('--shut', walker.lids.toFixed(3));
   }
