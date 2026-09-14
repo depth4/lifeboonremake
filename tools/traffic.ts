@@ -264,8 +264,18 @@ for (const m of movers) {
  * Сцена гоняется дважды: как есть и «вслепую» (игрока не передали). Слепой
  * прогон обязан задеть машину — иначе проверка ничего не проверяет.
  */
-function playerScene(blind: boolean): { held: number; hit: number; closest: number; approached: number } {
-  const cars = placeTraffic(world, net, 18, 7);
+function playerScene(blind: boolean): {
+  held: number; hit: number; closest: number; approached: number; объехал: boolean;
+} {
+  /**
+   * В опыте ДВОЕ: игрок и одна машина. Раньше их было восемнадцать, и на
+   * «решётке» это сходило с рук, а на городе — нет: между подъезжающей
+   * машиной и игроком вставал чужой затор, машина всю сцену стояла с поводом
+   * «машина впереди» и до игрока не доезжала. Проверка при этом говорила
+   * «город не видит игрока», хотя город его прекрасно видел — просто
+   * не успевал доехать. Один вопрос — один опыт.
+   */
+  const cars = placeTraffic(world, net, 1, 7);
   // самый длинный кусок дороги без перекрёстков: там никто никуда не свернёт
   let road = 0, lo = 0, hi = 0;
   world.shapes.forEach((_, si) => {
@@ -286,6 +296,21 @@ function playerScene(blind: boolean): { held: number; hit: number; closest: numb
   test.speed = 11; test.park = null; test.route = null; test.cruise = 14;
 
   let held = 0, hit = 0, closest = Infinity, approached = Infinity;
+  /**
+   * «Увидел» — это НЕ обязательно «поплёлся сзади».
+   *
+   * Проверка родилась на «решётке», где полоса в сторону одна и объехать
+   * стоящего нельзя: там единственная возможная реакция — сбросить скорость
+   * и держаться. На сгенерированном городе магистральная улица двухполосная,
+   * и машина делает то, что сделал бы живой водитель: перестраивается и
+   * объезжает. Проверка считала это «город игрока не видит» и валилась
+   * на правильном поведении — то есть врал инструмент, а не город.
+   *
+   * Поэтому реакцией считается любое из двух: держался за игроком или
+   * ушёл с его полосы, пока он был впереди. Заведомо слепой вариант не
+   * делает ни того ни другого — этим проверка и доказана.
+   */
+  let объехал = false;
   for (let t = 0; t < 25; t += DT) {
     moveTraffic(world, net, cars, DT, t, { player: blind ? null : me });
     if (test.reason === 'игрок') held++;
@@ -295,8 +320,22 @@ function playerScene(blind: boolean): { held: number; hit: number; closest: numb
     closest = Math.min(closest, overlap);
     approached = Math.min(approached, (at - test.s) - 4.4);
     if (overlap < 1) hit++;
+    /**
+     * Объезд — это уход с полосы игрока НА ТОЙ ЖЕ дороге и В ТУ ЖЕ сторону.
+     * Без этих двух условий за объезд засчитывался разворот на перекрёстке:
+     * слепая машина уезжала обратно, её `across` становился отрицательным
+     * (это полоса встречного направления), и проверка считала, что слепой
+     * «среагировал».
+     */
+    if (test.shape === road && test.dir === 1 && test.s < at
+      && Math.abs(test.across - lane) > 2.0) объехал = true;
   }
-  return { held, hit, closest, approached };
+  if (process.env.DEBUG_PLAYER) {
+    console.log(`  [отладка] ${blind ? 'слепой' : 'зрячий'}: держался ${held}, объехал ${объехал}, `
+      + `полоса игрока ${lane.toFixed(2)}, полоса его ${test.across.toFixed(2)}, `
+      + `s ${test.s.toFixed(1)} при цели ${at.toFixed(1)}, повод «${test.reason}»`);
+  }
+  return { held, hit, closest, approached, объехал };
 }
 
 /**
@@ -451,6 +490,7 @@ const crash = crashScene(false);
 const through = crashScene(true);
 
 const sees = playerScene(false);
+/** Тот же опыт с выключенным зрением: без него проверка «город видит» пустая. */
 const blind = playerScene(true);
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(38, '.')} ${value}`);
@@ -482,7 +522,12 @@ const checks: [string, boolean, string][] = [
   ['пешеходы вообще переходят дорогу', crossings > 3, `${crossings} за две минуты`],
   ['кто-то припарковался и уехал', parkedEver > 0 && leftEver > 0, `${parkedEver} парковок, ${leftEver} выездов`],
   ['пешеходы дошли хоть куда-то', walked.every((d) => d > 20), `самый ленивый ${Math.min(...walked).toFixed(0)} м`],
-  ['город видит машину игрока', sees.held > 0, `${(sees.held / 60).toFixed(1)} с держался за неё`],
+  ['город видит машину игрока', sees.held > 0 || sees.объехал,
+    sees.held > 0 ? `${(sees.held / 60).toFixed(1)} с держался за неё`
+      : 'ушёл с его полосы и объехал'],
+  ['вслепую город игрока НЕ видит — иначе проверка пустая',
+    !(blind.held > 0 || blind.объехал),
+    blind.held > 0 || blind.объехал ? 'слепой всё равно среагировал' : 'слепой не реагирует'],
   ['трафик не проехал сквозь игрока', sees.hit === 0,
     `подъехал на ${sees.approached.toFixed(1)} м, ближе всего ${(sees.closest * 100).toFixed(0)}% от касания`],
   ['вслепую — обязан задеть', blind.hit > 0,
