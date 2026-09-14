@@ -2,7 +2,7 @@
 
 import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, SCENES } from './scenes.ts';
-import { ЗАСТРОЙКА, type Назначение } from './city/norms.ts';
+import { построитьДома, type Дом } from './city/house.ts';
 import { кусок } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
@@ -82,6 +82,8 @@ if (news && newsList && changes.length > 0 && query.get('bare') !== '1') {
 }
 
 const viewer = show(surface, startView, viewFromQuery(query));
+/** Что построено на сцене: нужно и для показа, и для подписи под кадром. */
+let дома: readonly Дом[] = [];
 const canvas = document.querySelector('canvas');
 
 /**
@@ -89,51 +91,27 @@ const canvas = document.querySelector('canvas');
  * откатываем последнее действие и говорим об этом. Кривой мир на экран
  * не попадает никогда — в этом и смысл отказа.
  */
-/** Цвет дома по назначению. Назначение видно с улицы — как в жизни. */
-const ЦВЕТ: Record<Назначение, number> = {
-  жильё: 0xbfae95,
-  сад: 0xe0c060,
-  школа: 0xb06a4a,
-  магазин: 0x6d93b8,
-  супермаркет: 0x4f7fa8,
-  поликлиника: 0xe6e6e0,
-};
-/** Высота этажа, м. */
-const ЭТАЖ = 3;
-
 /**
- * Застройка посёлка. Дом ставится НА ПЯТНО, а пятно нарезано от улицы, —
- * поэтому «дом посреди поля» или «дом на проезжей части» невыразимы: их
- * негде было бы записать.
+ * Застройка посёлка. Геометрию домов считает `src/city/house.ts` — без
+ * экрана, из плана и норм. Здесь только передача: что построено, на какой
+ * земле стоит и каким сидом разбавлено.
  *
- * Направление дома берётся ВЕКТОРОМ наружу, а не углом. Угол здесь читался
- * двояко, и все дома стояли развёрнутыми на 90°: школа длиной 70 м смотрела
- * на улицу торцом. С вектором перепутать нечего.
+ * «Дом посреди поля» и «дом на проезжей части» невыразимы: дом строится
+ * от пятна, а пятно нарезано от улицы.
  */
 function застройка(): void {
   if ((sceneName !== 'город' && sceneName !== 'деревня') || !viewer) {
-    viewer?.setBuildings([]);
+    viewer?.setBuildings(null);
     return;
   }
-  const вид = sceneName;
-  const посёлок = кусок(вид);
-  const отступ = ЗАСТРОЙКА[вид].отступДома;
-  viewer.setBuildings(посёлок.объекты.map((о) => {
-    // фасад отодвинут от красной линии на отступ, остальное — двор за домом
-    const вглубь = о.участокГлубина / 2 - о.глубина / 2 - отступ;
-    const x = о.x + о.нx * вглубь;
-    const z = о.z + о.нz * вглубь;
-    return {
-      x, z,
-      низ: ground.sample(x, z).height,
-      // местная ось X дома идёт по фронту улицы: это перпендикуляр к «наружу»
-      yaw: Math.atan2(о.нx, -о.нz),
-      ширина: о.фронт,
-      глубина: о.глубина,
-      высота: о.этажей * ЭТАЖ,
-      цвет: ЦВЕТ[о.что],
-    };
-  }));
+  const посёлок = кусок(sceneName);
+  const собрано = построитьДома(
+    посёлок.объекты, sceneName,
+    (x, z) => ground.sample(x, z).height,
+    посёлок.посёлок.сид,
+  );
+  дома = собрано.дома;
+  viewer.setBuildings(собрано);
 }
 
 function rebuild(): void {
@@ -160,6 +138,7 @@ function rebuild(): void {
   // застройка ставится после того, как заведена опора: дом стоит НА земле,
   // и её высоту надо у кого-то спросить
   if (опораГотова) застройка();
+  // подпись знает про застройку, поэтому считается после неё, а не до
   if (traffic.length > 0) {
     traffic = placeTraffic(world, network, TRAFFIC_COUNT);
     walkers = placeWalkers(world, network, WALKER_COUNT);
@@ -176,9 +155,14 @@ function readout(): void {
   const widest = roads.reduce((w, r) => Math.max(w, roadWidth(r.type)), 0);
 
   if (name) {
+    // на посёлке подпись говорит о посёлке: сколько людей и что для них стоит
+    const посёлок = (sceneName === 'город' || sceneName === 'деревня')
+      ? кусок(sceneName).посёлок : null;
     name.textContent = roads.length === 0
       ? 'дорог нет'
-      : `дорог: ${roads.length}, перекрёстков: ${world.junctions.length}`;
+      : посёлок
+        ? `${sceneName}: ${посёлок.людей} жителей, ${дома.length} зданий в кадре`
+        : `дорог: ${roads.length}, перекрёстков: ${world.junctions.length}`;
   }
   if (facts) {
     const rows: [string, string][] = [
@@ -191,6 +175,14 @@ function readout(): void {
       ['пересборка', `${rebuildMs.toFixed(0)} мс`],
       ['вариант', VARIANTS[variant].label],
     ];
+    if (дома.length > 0) {
+      const этажей = дома.reduce((s2, д) => s2 + д.этажей, 0) / дома.length;
+      rows.splice(1, 0,
+        ['зданий', String(дома.length)],
+        ['этажей в среднем', этажей.toFixed(1)],
+        ['проёмов', String(дома.reduce((s2, д) => s2 + д.проёмы.length, 0))],
+      );
+    }
     facts.innerHTML = rows.map(([k, v]) => `<div>${k} <b>${v}</b></div>`).join('');
   }
 }
@@ -366,6 +358,9 @@ let eye: 'сзади' | 'из салона' = 'сзади';
 let ground = new GroundIndex(surface);
 /** Опора заведена: до этого мига спрашивать высоту земли не у кого. */
 const опораГотова = true;
+// первая застройка: до этой строки опоры не было и дом не на чем было поставить
+застройка();
+readout();
 
 // ── трафик: чужие машины, которые едут сами
 let network: Network = buildNetwork(world);

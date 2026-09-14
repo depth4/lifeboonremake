@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Material, Surface } from './surface/index.ts';
+import type { Сетка } from './city/house.ts';
 import type { Point2 } from './world/road.ts';
 import { type Sight, createSight } from './person/sight.ts';
 
@@ -185,13 +186,14 @@ export interface Viewer {
   setSight(on: boolean): void;
   sight(): boolean;
   /**
-   * Дома посёлка. Один вызов ставит весь город: дома не двигаются, и
-   * пересобирать их каждый кадр незачем. Пустой список — убрать застройку.
+   * Дома посёлка — ДВЕ готовые сетки: стены и стёкла.
+   *
+   * Не список коробок: дом с окнами, дверьми и крышей коробкой не выражается,
+   * а собирать его здесь значило бы, что проверить его можно только глазами.
+   * Геометрию считает `src/city/house.ts` без всякого экрана, сюда приходят
+   * массивы чисел. Пустое — убрать застройку.
    */
-  setBuildings(дома: readonly {
-    x: number; z: number; низ: number; yaw: number;
-    ширина: number; глубина: number; высота: number; цвет: number;
-  }[]): void;
+  setBuildings(з: { стены: Сетка; стёкла: Сетка } | null): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -367,7 +369,8 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let signalHeads: THREE.InstancedMesh | null = null;
   let walkerMesh: THREE.InstancedMesh | null = null;
   /** Вся застройка посёлка одним мешем. */
-  let домаМеш: THREE.InstancedMesh | null = null;
+  let домаМеш: THREE.Mesh | null = null;
+  let стёклаМеш: THREE.Mesh | null = null;
   let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
@@ -375,6 +378,15 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   sun.position.set(-90, 110, -60);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
+  /**
+   * Тень сама на себе даёт муар — рябь полосами по стене. Причина не в свете,
+   * а в том, что стена ДВУСТОРОННЯЯ: в карту глубины попадает та же самая
+   * поверхность, которую потом ею и затеняют, и они спорят на уровне
+   * последнего разряда. Сдвиг вдоль нормали убирает спор, не двигая тень:
+   * это стандартное лекарство, а не подкрученная константа.
+   */
+  sun.shadow.normalBias = 0.35;
+  sun.shadow.bias = -0.0006;
   const shadowBox = sun.shadow.camera;
   shadowBox.left = -170; shadowBox.right = 170; shadowBox.top = 170; shadowBox.bottom = -170;
   shadowBox.near = 1; shadowBox.far = 420;
@@ -769,36 +781,50 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       }
       scene.add(signGroup);
     },
-    setBuildings(дома) {
-      if (домаМеш !== null) { scene.remove(домаМеш); домаМеш.dispose(); домаМеш = null; }
-      if (дома.length === 0) return;
+    setBuildings(з) {
+      for (const м of [домаМеш, стёклаМеш]) {
+        if (м === null) continue;
+        scene.remove(м);
+        м.geometry.dispose();
+        (м.material as THREE.Material).dispose();
+      }
+      домаМеш = null;
+      стёклаМеш = null;
+      if (з === null || з.стены.индексы.length === 0) return;
+
+      const вМеш = (с: Сетка, материал: THREE.Material): THREE.Mesh => {
+        const г = new THREE.BufferGeometry();
+        г.setAttribute('position', new THREE.BufferAttribute(с.позиции, 3));
+        г.setAttribute('normal', new THREE.BufferAttribute(с.нормали, 3));
+        г.setAttribute('color', new THREE.BufferAttribute(с.цвета, 3));
+        г.setIndex(new THREE.BufferAttribute(с.индексы, 1));
+        г.computeBoundingSphere();
+        return new THREE.Mesh(г, материал);
+      };
+
       /**
-       * Все дома — один меш на весь город. Коробка с единичными сторонами,
-       * а размер задаётся масштабом каждого экземпляра: так тысяча домов
-       * стоит один вызов отрисовки вместо тысячи.
+       * Стены ДВУСТОРОННИЕ, и это не экономия, а устройство: у дома нет
+       * отдельной «внутренней модели». То, что видно с улицы через витрину,
+       * и то, что видно изнутри, — один и тот же треугольник, просто с другой
+       * стороны. Разойтись им негде.
        */
-      const коробка = new THREE.BoxGeometry(1, 1, 1);
-      коробка.translate(0, 0.5, 0); // ставим на землю, а не серединой в неё
-      домаМеш = new THREE.InstancedMesh(
-        коробка, new THREE.MeshStandardMaterial({ roughness: 0.9 }), дома.length,
-      );
+      const стеныМатериал = new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.92, side: THREE.DoubleSide,
+      });
+      // в карту глубины пишется изнанка: иначе стена затеняет сама себя
+      стеныМатериал.shadowSide = THREE.BackSide;
+      домаМеш = вМеш(з.стены, стеныМатериал);
       домаМеш.castShadow = true;
       домаМеш.receiveShadow = true;
-      const m = new THREE.Matrix4();
-      const q = new THREE.Quaternion();
-      const тон = new THREE.Color();
-      дома.forEach((д, i) => {
-        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -д.yaw);
-        m.compose(
-          new THREE.Vector3(д.x, д.низ, д.z), q,
-          new THREE.Vector3(д.ширина, д.высота, д.глубина),
-        );
-        (домаМеш as THREE.InstancedMesh).setMatrixAt(i, m);
-        (домаМеш as THREE.InstancedMesh).setColorAt(i, тон.setHex(д.цвет));
-      });
-      домаМеш.instanceMatrix.needsUpdate = true;
-      if (домаМеш.instanceColor) домаМеш.instanceColor.needsUpdate = true;
       scene.add(домаМеш);
+
+      if (з.стёкла.индексы.length > 0) {
+        стёклаМеш = вМеш(з.стёкла, new THREE.MeshStandardMaterial({
+          vertexColors: true, roughness: 0.08, metalness: 0.35,
+          transparent: true, opacity: 0.62, side: THREE.DoubleSide,
+        }));
+        scene.add(стёклаМеш);
+      }
     },
     setWalkers(people) {
       if (walkerMesh !== null && walkerMesh.count !== people.length) {
