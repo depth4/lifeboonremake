@@ -18,16 +18,27 @@ import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 
 const BRANCH = 'gh-pages';
+/**
+ * Живой мир — ОБЯЗАТЕЛЕН, страница сравнения — нет.
+ *
+ * Раньше требовались оба, и выкладка не проходила совсем, если не собралась
+ * страница сравнения: она берёт картинки из `shots/`, а `shots/` в репозитории
+ * не хранится, и в свежем контейнере их просто нет. Получалось, что свежий
+ * город нельзя выложить из-за старого отчёта.
+ *
+ * Правило простое и годится не только здесь: **не собрал — не трогай.**
+ * Не собранный файл не удаляется с сайта, а переносится с него как был.
+ */
 const FILES = [
-  ['build/pages/index.html', 'index.html'],
-  ['build/pages/report.html', 'report.html'],
+  ['build/pages/index.html', 'index.html', 'обязателен'],
+  ['build/pages/report.html', 'report.html', 'переносится'],
 ];
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
 
-for (const [from] of FILES) {
-  if (!existsSync(from)) {
-    console.log(`нет файла ${from} — сначала npm run site и npm run page`);
+for (const [from, , как] of FILES) {
+  if (как === 'обязателен' && !existsSync(from)) {
+    console.log(`нет файла ${from} — сначала npm run site`);
     process.exit(1);
   }
 }
@@ -70,7 +81,27 @@ try {
 // .nojekyll выключает сборщик блогов, который GitHub иначе прогоняет по файлам
 const empty = execFileSync('git', ['hash-object', '-w', '--stdin'], { input: '', encoding: 'utf8' }).trim();
 const entries = [`100644 blob ${empty}\t.nojekyll`];
-for (const [from, to] of FILES) entries.push(`100644 blob ${git('hash-object', '-w', from)}\t${to}`);
+
+/** Что сейчас лежит на сайте: из этого переносится то, что не пересобралось. */
+let старое = '';
+try {
+  git('fetch', 'origin', BRANCH);
+  старое = git('ls-tree', 'FETCH_HEAD');
+} catch { старое = ''; }
+
+for (const [from, to] of FILES) {
+  if (existsSync(from)) {
+    entries.push(`100644 blob ${git('hash-object', '-w', from)}\t${to}`);
+    continue;
+  }
+  const строка = старое.split('\n').find((l) => l.endsWith(`\t${to}`));
+  if (строка) {
+    entries.push(строка);
+    console.log(`${to} не пересобран — перенесён с сайта как был`);
+  } else {
+    console.log(`${to} не пересобран и на сайте его нет — пропускаю`);
+  }
+}
 
 const tree = execFileSync('git', ['mktree'], { input: entries.join('\n') + '\n', encoding: 'utf8' }).trim();
 
