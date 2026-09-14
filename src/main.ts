@@ -6,6 +6,7 @@ import { внутренность, построитьДома, type Дом } fro
 import { обстановка } from './city/street.ts';
 import { type Преграда, вКаком, преграды, пройти } from './city/walls.ts';
 import { слить } from './city/mesh.ts';
+import { даль } from './city/horizon.ts';
 import { кусок } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
@@ -138,6 +139,20 @@ function застройка(): void {
   });
 }
 
+/**
+ * Даль — земля за краем плиты, для ЛЮБОЙ сцены: край виден всегда, просто
+ * раньше по нему никто не ходил.
+ *
+ * Отдельной функцией, а не строчкой в двух местах. Первая редакция ставила
+ * даль только в `rebuild`, а `rebuild` при запуске страницы не зовётся —
+ * мир при загрузке собирается своим путём. Получилось, что даль появлялась
+ * только после того, как что-нибудь подвигаешь, и три правки подряд дали
+ * ПОБАЙТОВО ОДИНАКОВЫЙ снимок: я чинил то, чего в кадре не было.
+ */
+function поставитьДаль(): void {
+  viewer.setFar(даль((x, z) => ground.sample(x, z).height));
+}
+
 function rebuild(): void {
   const started = performance.now();
   try {
@@ -168,6 +183,7 @@ function rebuild(): void {
     walkers = placeWalkers(world, network, WALKER_COUNT);
   }
   viewer.setSurface(surface);
+  поставитьДаль();
   readout();
   hint();
 }
@@ -395,8 +411,32 @@ readout();
 let network: Network = buildNetwork(world);
 let traffic: Mover[] = [];
 let walkers: Walker[] = [];
-const TRAFFIC_COUNT = 18;
-const WALKER_COUNT = 26;
+/**
+ * Сколько машин и пешеходов в городе.
+ *
+ * Числа не из головы — из замера `npm run load` по сцене «город»: на её
+ * дороги встаёт максимум 51 машина (дальше их просто некуда ставить),
+ * полсотни стоят 1.06 мс на шаг при бюджете кадра 16.7 мс, а восемьсот
+ * пешеходов — 0.67 мс. То есть упираемся не в счёт, а в длину улиц.
+ *
+ * Раньше стояло 18, и улица выглядела пустой; пустоту я по глупости
+ * закрасил нарисованными машинами, в которые нельзя сесть. Машина
+ * в этом мире одна — та, что ездит по правилам; нарисованных больше нет.
+ */
+const TRAFFIC_COUNT = 45;
+const WALKER_COUNT = 60;
+
+/**
+ * На посёлке движение включено СРАЗУ, а не по кнопке.
+ *
+ * Город без машин — не город: улица, по которой никто не едет, читается как
+ * макет, сколько на ней ни поставь деревьев. На рукотворных сценах кнопка
+ * остаётся: там смотрят на устройство дороги, и лишнее движение мешает.
+ */
+if (sceneName === 'город' || sceneName === 'деревня') {
+  traffic = placeTraffic(world, network, TRAFFIC_COUNT);
+  walkers = placeWalkers(world, network, WALKER_COUNT);
+}
 /** Городские часы: по ним живут светофоры. Не связаны с кадрами. */
 let cityTime = 0;
 let car: Car | null = null;
@@ -838,3 +878,4 @@ viewer.onFrame((dt) => {
 
 // первая застройка: мир собран, опора заведена, смотрелка есть
 застройка();
+поставитьДаль();

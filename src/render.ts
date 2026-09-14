@@ -201,6 +201,11 @@ export interface Viewer {
    * ставится раз на сцену, а эта появляется и исчезает по ходу.
    */
   setInterior(в: { стены: Сетка; свет: Сетка } | null): void;
+  /**
+   * Даль — земля за краем плиты. Не мир: по ней не ходят и ничего на ней
+   * не стоит, она только закрывает обрыв, которым кончается плита.
+   */
+  setFar(с: Сетка | null): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -381,6 +386,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let светМеш: THREE.Mesh | null = null;
   let окнаМеш: THREE.Mesh | null = null;
   let нутроМеш: THREE.Mesh[] = [];
+  let дальМеш: THREE.Mesh | null = null;
   let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
@@ -453,26 +459,6 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let sight: Sight | null = null;
   /** Глаз выключается целиком — чтобы было с чем сравнить. */
   let sightOn = true;
-  /**
-   * Земля до горизонта. Мир — плита в полкилометра, и с высоты глаз видно, где
-   * он кончается. Раньше это пряталось дымкой — но дымки на пятистах метрах
-   * в природе нет, и она читалась как ложь. Теперь земля просто продолжается
-   * до горизонта, как ей и положено, а обрыв смотреть перестало быть на что.
-   */
-  const horizon = new THREE.Mesh(
-    // мир — квадрат 240 м; кольцо начинается внутри него и уходит за горизонт
-    // мир — квадрат 240 м; кольцо начинается внутри него и уходит за горизонт.
-    // Дальше полутора километров не растягиваем: с большой дальностью камеры
-    // рушится точность глубины, и наводка на резкость начинает мылить всё
-    // подряд — поймано снимком, а не рассуждением.
-    new THREE.RingGeometry(90, 1400, 64),
-    new THREE.MeshLambertMaterial({ color: COLORS.grass, side: THREE.DoubleSide }),
-  );
-  horizon.rotation.x = -Math.PI / 2;
-  horizon.position.y = -0.35;
-  horizon.visible = false;
-  horizon.name = 'горизонт';
-  scene.add(horizon);
   const chaseEye = new THREE.Vector3();
   const chaseAim = new THREE.Vector3();
   let chaseReady = false;
@@ -879,6 +865,42 @@ export function show(surface: Surface, startView: string, custom: View | null = 
         scene.add(стёклаМеш);
       }
     },
+    setFar(с) {
+      if (дальМеш !== null) {
+        scene.remove(дальМеш);
+        дальМеш.geometry.dispose();
+        (дальМеш.material as THREE.Material).dispose();
+        дальМеш = null;
+      }
+      if (с === null || с.индексы.length === 0) return;
+      const г = new THREE.BufferGeometry();
+      г.setAttribute('position', new THREE.BufferAttribute(с.позиции, 3));
+      г.setAttribute('normal', new THREE.BufferAttribute(с.нормали, 3));
+      /**
+       * Даль красится ЗДЕСЬ, тем же зелёным и той же пятнистостью, что и
+       * плита. Свой цвет у дали уже был — и по краю мира лежал слой травы
+       * другого оттенка, ровно то, что Алекс увидел на сайте. Трава одна,
+       * значит и цвет её один, и живёт он в одном месте — `COLORS.grass`.
+       */
+      const цвета = new Float32Array(с.позиции.length);
+      const трава = new THREE.Color(COLORS.grass);
+      for (let i = 0; i < с.позиции.length; i += 3) {
+        const пятно = 1 + blotch(с.позиции[i], с.позиции[i + 2]) * VARIATION.grass;
+        цвета[i] = трава.r * пятно;
+        цвета[i + 1] = трава.g * пятно;
+        цвета[i + 2] = трава.b * пятно;
+      }
+      г.setAttribute('color', new THREE.BufferAttribute(цвета, 3));
+      г.setIndex(new THREE.BufferAttribute(с.индексы, 1));
+      г.computeBoundingSphere();
+      // материал тот же, что у плиты, — иначе одна и та же трава светится
+      // по-разному, и шов виден даже при одинаковом цвете.
+      // Без теней: даль далеко, и тени от неё никто не увидит.
+      дальМеш = new THREE.Mesh(г, new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.96, metalness: 0, side: THREE.DoubleSide,
+      }));
+      scene.add(дальМеш);
+    },
     setInterior(в) {
       for (const м of нутроМеш) {
         scene.remove(м);
@@ -942,7 +964,6 @@ export function show(surface: Surface, startView: string, custom: View | null = 
     setWalk(next) {
       const wasWalking = walkEye !== null;
       walkEye = next;
-      horizon.visible = next !== null;
       if (next !== null && !wasWalking) {
         // пешком воздуха нет: на пятистах метрах его не видно и в жизни
         fog.near = 2200;
