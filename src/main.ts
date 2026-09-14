@@ -3,6 +3,8 @@
 import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, SCENES } from './scenes.ts';
 import { построитьДома, type Дом } from './city/house.ts';
+import { обстановка } from './city/street.ts';
+import { слить } from './city/mesh.ts';
 import { кусок } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
@@ -84,6 +86,8 @@ if (news && newsList && changes.length > 0 && query.get('bare') !== '1') {
 const viewer = show(surface, startView, viewFromQuery(query));
 /** Что построено на сцене: нужно и для показа, и для подписи под кадром. */
 let дома: readonly Дом[] = [];
+/** Что стоит на улице: деревья, фонари, машины. Тоже идёт в подпись. */
+let наУлице: Record<string, number> = {};
 const canvas = document.querySelector('canvas');
 
 /**
@@ -105,13 +109,17 @@ function застройка(): void {
     return;
   }
   const посёлок = кусок(sceneName);
-  const собрано = построитьДома(
-    посёлок.объекты, sceneName,
-    (x, z) => ground.sample(x, z).height,
-    посёлок.посёлок.сид,
-  );
+  const земля = (x: number, z: number): number => ground.sample(x, z).height;
+  const собрано = построитьДома(посёлок.объекты, sceneName, земля, посёлок.посёлок.сид);
+  const улица = обстановка(посёлок, sceneName, собрано.дома, земля, посёлок.посёлок.сид);
   дома = собрано.дома;
-  viewer.setBuildings(собрано);
+  наУлице = улица.счёт;
+  // дома и обстановка сливаются в один кусок: цена показа — вызовы отрисовки
+  viewer.setBuildings({
+    стены: слить([собрано.стены, улица.стены]),
+    стёкла: собрано.стёкла,
+    свет: слить([собрано.свет, улица.свет]),
+  });
 }
 
 function rebuild(): void {
@@ -181,6 +189,8 @@ function readout(): void {
         ['зданий', String(дома.length)],
         ['этажей в среднем', этажей.toFixed(1)],
         ['проёмов', String(дома.reduce((s2, д) => s2 + д.проёмы.length, 0))],
+        ['на улице', Object.entries(наУлице)
+          .map(([что, сколько]) => `${что} ${сколько}`).join(', ')],
       );
     }
     facts.innerHTML = rows.map(([k, v]) => `<div>${k} <b>${v}</b></div>`).join('');
