@@ -147,6 +147,7 @@ async function мир(секунд, потолокМс = 40000) {
  * по состоянию машины.
  */
 async function until(name, mark, limit = 120000) {
+  шаг(`жду: ${name}`);
   await page.evaluate(() => { window.__hit = null; });
   try {
     await page.waitForFunction((m) => {
@@ -165,6 +166,7 @@ async function until(name, mark, limit = 120000) {
     }, mark, { timeout: limit, polling: 30 });
   } catch {
     problems.push(`не дождались: ${name}`);
+    шаг(`НЕ ДОЖДАЛСЯ: ${name}`);
   }
   return page.evaluate(() => window.__hit ?? window.__car());
 }
@@ -193,10 +195,26 @@ await page.evaluate(() => { window.__yaw0 = window.__car().yaw; });
  * ни одна галочка на снимках не держится.
  */
 let missed = 0;
+/**
+ * Отметка шага с часами от начала.
+ *
+ * Пока её не было, проверка молчала до самого приговора — и повисший прогон
+ * читался как «висит», без единого намёка, на чём. Пятнадцать минут молчания
+ * и никаких следов, кроме времени файлов в `shots/`. Теперь каждый шаг
+ * виден в тот миг, когда случился.
+ */
+const началось = Date.now();
+const шаг = (что) => {
+  console.log(`  · ${что} (${((Date.now() - началось) / 1000).toFixed(0)} с)`);
+};
+
 const shot = async (name) => {
   for (const wait of [8000, 20000]) {
-    try { await page.screenshot({ path: `shots/${name}.png`, timeout: wait }); return; }
-    catch { /* пробуем ещё раз */ }
+    try {
+      await page.screenshot({ path: `shots/${name}.png`, timeout: wait });
+      шаг(name);
+      return;
+    } catch { /* пробуем ещё раз */ }
   }
   missed++;
   console.log(`  ! снимок «${name}» не получился — браузер не отдал картинку`);
@@ -207,7 +225,9 @@ await shot('ride-1-стоим');
 // Эталон считается ДО того, как машина тронется: пока Node занят счётом,
 // браузер продолжает жить, и время в нём идёт. Первая версия проверки на
 // этом и обманулась — приписала разгону целую секунду стояния на месте.
+шаг('считаю эталон разгона без экрана');
 const REFERENCE = referenceHundred(spawn);
+шаг(`эталон готов: ${Number.isNaN(REFERENCE) ? 'сотню не набрал' : REFERENCE.toFixed(2) + ' с'}`);
 
 // 1. РАЗГОН. Отсчёт ведём НЕ от нажатия клавиши, а от мига, когда физика
 // увидела газ: между этими событиями лежит неизвестная задержка браузера,
