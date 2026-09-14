@@ -74,7 +74,40 @@ const car = () => page.evaluate(() => window.__car());
  * условие сработало, и тем, как ответ дойдёт обратно, машина проезжает ещё
  * секунду. На этом первая версия проверки и соврала на целую секунду.
  */
-async function until(name, mark, limit = 45000) {
+/**
+ * Подождать СТОЛЬКО ЖЕ ВРЕМЕНИ МИРА, а не часов.
+ *
+ * Шаг физики ограничен сверху (`Math.min(0.1, delta)`), и на программном
+ * отрисовщике мир проживает втрое-впятеро меньше, чем идёт по часам. Любое
+ * `waitForTimeout` в сценарии, где что-то должно ПРОИЗОЙТИ, врёт ровно
+ * на эту разницу. Потолок по часам оставлен, чтобы не висеть вечно, если
+ * мир вообще встал.
+ */
+async function мир(секунд, потолокМс = 40000) {
+  const начало = (await page.evaluate(() => window.__car()))?.sim ?? null;
+  if (начало === null) { await page.waitForTimeout(секунд * 1000); return; }
+  const дедлайн = Date.now() + потолокМс;
+  for (;;) {
+    await page.waitForTimeout(80);
+    const сейчас = (await page.evaluate(() => window.__car()))?.sim ?? начало;
+    if (сейчас - начало >= секунд || Date.now() > дедлайн) return;
+  }
+}
+
+/**
+ * Потолок ожидания — 120 секунд ЧАСОВ, а не 45.
+ *
+ * Это не «подкрученная константа», а перевод одной единицы в другую.
+ * Событие, которого мы ждём (разгон до сотни, остановка, поворот), занимает
+ * порядка десяти секунд ВРЕМЕНИ МИРА. Мир на программном отрисовщике идёт
+ * втрое-впятеро медленнее часов, потому что шаг физики ограничен сверху.
+ * Значит десять секунд мира — это до пятидесяти секунд часов, и потолок
+ * в сорок пять оставлял проверку на грани: она проходила, пока контейнер
+ * не был занят, и падала, когда был. Ждать по часам вообще нельзя, но
+ * здесь часы стоят ПОТОЛКОМ, а не мерой: само условие проверяется
+ * по состоянию машины.
+ */
+async function until(name, mark, limit = 120000) {
   await page.evaluate(() => { window.__hit = null; });
   try {
     await page.waitForFunction((m) => {
@@ -257,16 +290,40 @@ await page.keyboard.down('w');
 let queued = null;
 let crash = { count: 0, force: 0 };
 let beforeCrash = await page.evaluate(() => window.__car());
-for (let tick = 0; tick < 150 && crash.count === 0; tick++) {
+/**
+ * Ждём время МИРА, а не часы.
+ *
+ * Шаг физики ограничен сверху: `Math.min(0.1, delta)`. Это правильно — иначе
+ * на подвисшем кадре машина телепортируется, — но у этого есть следствие:
+ * когда браузер рисует три кадра в секунду (а в контейнере видеокарты нет
+ * и рисует он программно), мир проживает 0.3 секунды за секунду часов.
+ * Сорок пять секунд по часам превращались в девять секунд городской жизни,
+ * машина никого не догоняла, и проверка валилась — на исправном коде.
+ *
+ * Это уже ловили однажды и починили в одном месте (коммит 837006f);
+ * здесь оно осталось. Теперь цикл кончается по `sim` — часам самого мира.
+ */
+const МИРОВЫХ_СЕКУНД = 45;
+const simНачало = beforeCrash?.sim ?? 0;
+/**
+ * Счётчик ударов НАКОПИТЕЛЬНЫЙ на всю поездку. Если до этого шага уже был
+ * хоть один удар — а он бывает, машину до этого возят по перекрёсткам, —
+ * то `crash.count === 0` ложно с первого же чтения, цикл выходит сразу,
+ * и проверка говорит «за 0 с никого не встретил». Считаем НОВЫЕ удары.
+ */
+const ударовБыло = (await page.evaluate(() => window.__crash())).count;
+let мирПрожил = 0;
+for (let tick = 0; tick < 900 && crash.count <= ударовБыло && мирПрожил < МИРОВЫХ_СЕКУНД; tick++) {
   await page.waitForTimeout(300);
   const found = await targetAhead();
   if (found !== null && (queued === null || found < queued)) queued = found;
   const now = await page.evaluate(() => ({
     crash: window.__crash(), car: window.__car(), traffic: window.__traffic(),
   }));
-  if (now.crash.count === 0 && Math.abs(now.car.speed) > Math.abs(beforeCrash.speed)) beforeCrash = now.car;
+  if (now.crash.count <= ударовБыло && Math.abs(now.car.speed) > Math.abs(beforeCrash.speed)) beforeCrash = now.car;
   crash = now.crash;
-  if (crash.count > 0) crash.knocked = now.traffic.filter((m) => m.knocked).length;
+  мирПрожил = (now.car?.sim ?? simНачало) - simНачало;
+  if (crash.count > ударовБыло) crash.knocked = now.traffic.filter((m) => m.knocked).length;
   // уехали с квартала — разворачиваемся и едем обратно, к перекрёсткам
   if (now.car !== null && Math.hypot(now.car.x, now.car.z) > 300) {
     await page.keyboard.up('w');
@@ -290,7 +347,7 @@ await shot('ride-10-удар');
  */
 await page.keyboard.press('r');               // руль в ноль
 await page.keyboard.down('w');
-await page.waitForTimeout(1200);              // тронуться вперёд
+await мир(1.2);                               // тронуться вперёд
 /**
  * Выезжаем на встречную ПЕРЕНОСОМ ВБОК, а не разворотом. Полный выворот
  * разворачивает машину больше чем на 90°, и тогда «в какую сторону она едет
@@ -299,11 +356,11 @@ await page.waitForTimeout(1200);              // тронуться вперёд
  * на встречную выглядит не так: руль вполоборота, перенос, и обратно прямо.
  */
 for (let i = 0; i < 5; i++) await page.mouse.move(800 - i * 90, 500);
-await page.waitForTimeout(2600);
+await мир(2.6);
 for (let i = 0; i < 5; i++) await page.mouse.move(800 + i * 90, 500);
-await page.waitForTimeout(1500);
+await мир(1.5);
 await page.keyboard.up('w');
-await page.waitForTimeout(400);
+await мир(0.4);
 const offences = await page.evaluate(() => window.__offences());
 
 // а этот — про приборку: на ней написано, что именно город засчитал
@@ -321,9 +378,9 @@ await page.waitForTimeout(500);
 await page.mouse.click(800, 500);             // взять руль
 await page.keyboard.press('c');               // пересесть за руль изнутри
 await page.keyboard.down('w');
-await page.waitForTimeout(2500);
+await мир(2.5);
 await page.keyboard.up('w');
-await page.waitForTimeout(300);
+await мир(0.3);
 await shot('ride-8-из-салона');
 
 await browser.close();
@@ -361,10 +418,12 @@ const checks = [
     trafficAfter.length > 0 && trafficAfter.some((c, i) => Math.abs(c.s - trafficBefore[i].s) > 3 || c.shape !== trafficBefore[i].shape),
     `${trafficAfter.length} штук, самая быстрая ${(Math.max(...trafficAfter.map((c) => c.speed)) * 3.6).toFixed(0)} км/ч`],
   ['догнал чужую машину', queued !== null,
-    queued === null ? 'за 45 с никого не встретил впереди' : `подъехал на ${queued.toFixed(1)} м`],
-  ['въехал в чужую машину', crash.count > 0,
-    crash.count > 0
-      ? `${crash.count} удар(ов), последний на ${crash.force.toFixed(1)} м/с, сбито ${crash.knocked ?? 0}`
+    queued === null ? `за ${мирПрожил.toFixed(0)} с жизни мира никого не встретил впереди`
+      : `подъехал на ${queued.toFixed(1)} м`],
+  ['въехал в чужую машину', crash.count > ударовБыло,
+    crash.count > ударовБыло
+      ? `${crash.count - ударовБыло} удар(ов), последний на ${crash.force.toFixed(1)} м/с, `
+        + `сбито ${crash.knocked ?? 0}`
       : 'догонял, но не задел'],
   ['город назвал выезд на встречную', offences.some((o) => o.what.includes('встречную')),
     offences.length === 0 ? 'не заметил ничего'
@@ -379,7 +438,7 @@ const checks = [
    */
   ['нарушения записаны событиями, а не кадрами', offences.length > 0 && offences.length < 30,
     `${offences.length} записей за ${(offences.length ? offences[offences.length - 1].at - offences[0].at : 0).toFixed(0)} с городской жизни`],
-  ['удар отнял у машины скорость', crash.count === 0
+  ['удар отнял у машины скорость', crash.count <= ударовБыло
     || Math.abs(afterCrash.speed) < Math.abs(beforeCrash.speed),
     `${(Math.abs(beforeCrash.speed) * 3.6).toFixed(0)} → ${(Math.abs(afterCrash.speed) * 3.6).toFixed(0)} км/ч`],
   ['помощь держит колёса в пределе сцепления',

@@ -1,7 +1,7 @@
 /** Склейка: собрать мир, посчитать поверхность, показать, повесить кнопки. */
 
 import type { Road } from './world/road.ts';
-import { DEFAULT_SCENE, SCENES } from './scenes.ts';
+import { DEFAULT_SCENE, SCENES, СЦЕНА_САЙТА } from './scenes.ts';
 import { построитьДома, type Дом } from './city/house.ts';
 import { обстановка } from './city/street.ts';
 import { слить } from './city/mesh.ts';
@@ -29,7 +29,7 @@ import { type Walker, moveWalkers, placeWalkers, walkerPose } from './city/walke
 
 const query = new URLSearchParams(location.search);
 const startView = query.get('view') ?? 'road';
-const startScene = query.get('scene') ?? DEFAULT_SCENE;
+const startScene = query.get('scene') ?? СЦЕНА_САЙТА;
 
 /** На каком расстоянии инструмент начинает распознавать намерение, метры. */
 const SNAP_RADIUS = 14;
