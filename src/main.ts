@@ -23,7 +23,7 @@ import { type Mover, type Network, along, bump, buildNetwork, moveTraffic, place
 import { judge, newWatchdog, tally } from './city/offence.ts';
 import { laneAcross } from './city/lanes.ts';
 import { lightFor } from './city/signals.ts';
-import { type Walker, moveWalkers, placeWalkers, walkerPose } from './city/walkers.ts';
+import { type Walker, moveWalkers, placeWalkers, walkerPose, фазаШага } from './city/walkers.ts';
 
 const query = new URLSearchParams(location.search);
 const startView = query.get('view') ?? 'road';
@@ -366,6 +366,12 @@ let traffic: Mover[] = [];
 let walkers: Walker[] = [];
 const TRAFFIC_COUNT = 18;
 const WALKER_COUNT = 26;
+/**
+ * `?traffic=1` — завести город сразу, без нажатия кнопки. Нужно снимкам из
+ * терминала: пустую улицу снять было можно, а живую — только руками, и
+ * поэтому её ни разу и не сняли.
+ */
+const СРАЗУ_ГОРОД = query.get('traffic') === '1';
 /** Городские часы: по ним живут светофоры. Не связаны с кадрами. */
 let cityTime = 0;
 let car: Car | null = null;
@@ -571,6 +577,12 @@ let lastCrash = 0;
 let dog = newWatchdog();
 /** Знаки расставлены? Они не меняются, и перекладывать их каждый кадр незачем. */
 let signsShown = false;
+
+// город из адреса: ровно то же, что делает кнопка «трафик»
+if (СРАЗУ_ГОРОД) {
+  traffic = placeTraffic(world, network, TRAFFIC_COUNT);
+  walkers = placeWalkers(world, network, WALKER_COUNT);
+}
 /**
  * Когда физика впервые увидела газ и когда впервые набрала сотню — по её
  * собственным часам. Проверка снаружи опрашивает страницу редко и неровно,
@@ -593,7 +605,10 @@ viewer.onFrame((dt) => {
     });
     viewer.setWalkers(walkers.map((w) => {
       const pose = walkerPose(world, w);
-      return { x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: pose.yaw, colour: w.colour };
+      return {
+        x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: pose.yaw,
+        colour: w.colour, штаны: w.штаны, кожа: w.кожа, фаза: фазаШага(w),
+      };
     }));
 
     // светофоры: стойка справа от стоп-линии, головой к подъезжающим

@@ -19,6 +19,11 @@ import { walkLight } from './signals.ts';
 const PACE = 1.35;
 /** Ширина перехода: в неё пешеход должен уложиться. */
 const CROSS_SPEED = 1.2;
+/**
+ * Длина шага, м. Средний взрослый — 0.75 м; за полный цикл (левой и правой)
+ * проходится два шага.
+ */
+export const ШАГ = 0.75;
 
 export interface Walker {
   /** По какой дороге идёт вдоль. */
@@ -32,13 +37,37 @@ export interface Walker {
   speed: number;
   /** Если переходит дорогу: сколько уже прошёл поперёк, доля. */
   crossing: number;
+  /** Рубашка, штаны и кожа: человек не одноцветный. */
   colour: number;
+  штаны: number;
+  кожа: number;
+  /**
+   * Сколько метров прошёл всего. Из этого ВЫЧИСЛЯЕТСЯ фаза шага — и ноги
+   * не могут разъехаться с положением: путь один, и он же двигает человека.
+   * Хранить отдельно «фазу» значило бы завести вторую правду о том же самом.
+   */
+  путь: number;
   seed: number;
   /** Чем занят: для проверок. */
   state: 'идёт' | 'ждёт' | 'переходит';
 }
 
-const CLOTHES = [0x2f3a44, 0x6b4a3a, 0x8f8574, 0x3d5a4a, 0x77303a, 0x4a4a58, 0xa89a7c];
+/**
+ * Фаза шага, радианы. Полный цикл — два шага, поэтому делится на 2 × ШАГ.
+ * Стоящий человек фазу не двигает: путь не растёт.
+ */
+export const фазаШага = (w: Walker): number => (w.путь / (2 * ШАГ)) * 2 * Math.PI;
+
+/**
+ * Одежда. Верх берётся из СВЕТЛОГО набора, низ — из ТЁМНОГО, и это не вкус,
+ * а устройство: пока наборы не пересекаются, «человек одного тона от шеи до
+ * пят» невыразим. Первая редакция брала оба цвета из одного списка, и
+ * половина прохожих вышла тёмными монолитами, у которых не видно, где
+ * кончается куртка.
+ */
+const CLOTHES = [0x8a99a8, 0xb5714f, 0xc9bda4, 0x5d8f6d, 0xa8414c, 0x6f7c93, 0xd6c98f, 0x4f6f96];
+const ШТАНЫ = [0x24282e, 0x3b3f4a, 0x4a4036, 0x2e3a33, 0x413a44, 0x1e2126];
+const КОЖА = [0xe0b48f, 0xc68e63, 0x8d5a3b, 0xf0cfae, 0x6b4227];
 
 function roll(w: Walker): number {
   w.seed = (w.seed * 16807) % 2147483647;
@@ -62,6 +91,9 @@ export function placeWalkers(world: World, net: Network, count: number, seed = 3
       speed: PACE * (0.65 + next() * 0.5),
       crossing: 0,
       colour: CLOTHES[Math.floor(next() * CLOTHES.length) % CLOTHES.length],
+      штаны: ШТАНЫ[Math.floor(next() * ШТАНЫ.length) % ШТАНЫ.length],
+      кожа: КОЖА[Math.floor(next() * КОЖА.length) % КОЖА.length],
+      путь: next() * 4,
       seed: Math.floor(next() * 2147483647),
       state: 'идёт',
     });
@@ -69,21 +101,55 @@ export function placeWalkers(world: World, net: Network, count: number, seed = 3
   return walkers;
 }
 
+/**
+ * По какой линии идёт пешеход: чуть внутрь от внешнего края мощёной части.
+ *
+ * Одно определение на весь файл. Раньше их было два: положение считалось от
+ * этой линии, а ШИРИНА ПЕРЕХОДА — от края полотна. Переход выходил длиннее,
+ * чем расстояние, которое человек проходит, и ноги отставали от него на
+ * полсантиметра за кадр. Пока мера одна, разойтись нечему.
+ */
+const тротуар = (world: World, shape: number): number => world.shapes[shape].outerHalf - 1.1;
+
+/** Где на земле оказывается точка тротуара — по дороге, метке вдоль и стороне. */
+function наТротуаре(
+  world: World, shape: number, s: number, side: number, crossing: number,
+): { x: number; z: number } {
+  const spot = along(world, shape, s);
+  // при переходе едем от своей стороны к противоположной
+  const offset = тротуар(world, shape) * (side * (1 - 2 * crossing));
+  // право по ходу возрастания s — это (−fz, fx)
+  return { x: spot.x - spot.fz * offset, z: spot.z + spot.fx * offset };
+}
+
+/**
+ * Насколько тротуар ДЛИННЕЕ осевой в этом месте.
+ *
+ * На повороте внешний тротуар длиннее осевой, внутренний короче — и заметно:
+ * на «каше» расхождение доходило до полуметра за кадр, то есть человек то
+ * летел, то полз. Раньше скорость отмерялась по осевой, а шёл он по тротуару:
+ * две разные меры одного движения.
+ *
+ * Считается ТОЙ ЖЕ функцией, которая ставит человека на землю, поэтому
+ * разойтись с ней не может: это не формула кривизны рядом, а сама геометрия.
+ */
+function растяжение(world: World, shape: number, s: number, side: number, crossing: number): number {
+  const ПРОБА = 0.5;
+  const a = наТротуаре(world, shape, s, side, crossing);
+  const b = наТротуаре(world, shape, s + ПРОБА, side, crossing);
+  const длина = Math.hypot(b.x - a.x, b.z - a.z) / ПРОБА;
+  // у самого центра крутого поворота тротуар вырождается: дальше 4× не пускаем
+  return Math.min(4, Math.max(0.25, длина));
+}
+
 /** Где пешеход стоит и куда смотрит. */
 export function walkerPose(world: World, w: Walker): { x: number; z: number; yaw: number } {
   const spot = along(world, w.shape, w.s);
-  const shape = world.shapes[w.shape];
-  // тротуар: чуть внутрь от внешнего края мощёной части
-  const kerb = shape.outerHalf - 1.1;
-  // при переходе едем от своей стороны к противоположной
-  const offset = kerb * (w.side * (1 - 2 * w.crossing));
-  // право по ходу возрастания s — это (−fz, fx)
-  const x = spot.x - spot.fz * offset;
-  const z = spot.z + spot.fx * offset;
+  const точка = наТротуаре(world, w.shape, w.s, w.side, w.crossing);
   const heading = w.crossing > 0
     ? Math.atan2(spot.fx * -w.side, spot.fz * w.side) + Math.PI / 2
     : Math.atan2(spot.fz * w.dir, spot.fx * w.dir);
-  return { x, z, yaw: heading };
+  return { x: точка.x, z: точка.z, yaw: heading };
 }
 
 /**
@@ -94,19 +160,32 @@ export function walkerPose(world: World, w: Walker): { x: number; z: number; yaw
  */
 export function moveWalkers(
   world: World, net: Network, walkers: Walker[], dt: number, time: number,
+  /**
+   * `походка: 'по часам'` — считать путь временем, а не расстоянием. Заведомо
+   * сломанный вариант: тогда стоящий на светофоре продолжает перебирать ногами,
+   * а бегущий и плетущийся шагают одинаково.
+   */
+  options: { походка?: 'по часам' } = {},
 ): void {
+  const поЧасам = options.походка === 'по часам';
   for (const w of walkers) {
+    if (поЧасам) w.путь += PACE * dt;
     const total = net.length[w.shape];
 
     if (w.crossing > 0) {
       w.state = 'переходит';
-      w.crossing += (CROSS_SPEED * dt) / Math.max(2, world.shapes[w.shape].outerHalf * 2);
+      // переход — это путь от тротуара до тротуара, то есть ровно 2 × линия
+      w.crossing += (CROSS_SPEED * dt) / Math.max(2, тротуар(world, w.shape) * 2);
+      if (!поЧасам) w.путь += CROSS_SPEED * dt;
       if (w.crossing >= 1) { w.crossing = 0; w.side = -w.side; w.state = 'идёт'; }
       continue;
     }
 
     w.state = 'идёт';
-    w.s += w.speed * w.dir * dt;
+    // скорость — это метры по земле; по осевой их надо отмерить с поправкой
+    const вдоль = (w.speed * dt) / растяжение(world, w.shape, w.s, w.side, w.crossing);
+    w.s += вдоль * w.dir;
+    if (!поЧасам) w.путь += w.speed * dt;
 
     /**
      * Решение принимается на УГЛУ ТРОТУАРА, а не у центра перекрёстка.
@@ -130,7 +209,11 @@ export function moveWalkers(
         ? true
         : walkLight(signal, approach.group, time).light === 'зелёный';
       if (green) { w.crossing = 1e-4; }
-      else { w.state = 'ждёт'; w.s -= w.speed * w.dir * dt; }
+      else {
+        w.state = 'ждёт';
+        w.s -= вдоль * w.dir;
+        if (!поЧасам) w.путь -= w.speed * dt;
+      }
       continue;
     }
 

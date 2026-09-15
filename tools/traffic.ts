@@ -4,6 +4,7 @@
  *   npm run traffic            — сцена «решётка»
  *   npm run traffic -- каша    — другая сцена
  *   npm run traffic -- решётка сломать   — выключить объезд, проверка обязана упасть
+ *   npm run traffic -- решётка шаг-по-часам — походка от часов, обязана упасть
  */
 
 import { SCENES } from '../src/scenes.ts';
@@ -19,6 +20,8 @@ const scene = process.argv[2] ?? 'решётка';
 const mode = process.argv[3] ?? '';
 const broken = mode === 'сломать';
 const lawless = mode === 'без-правил';
+/** Заведомо сломанный вариант: походка считается часами, а не пройденным путём. */
+const byClock = mode === 'шаг-по-часам';
 const oneLane = mode === 'одна-полоса';
 const world = buildWorld(SCENES[scene] ?? SCENES['решётка'], 'plain');
 const net = buildNetwork(world);
@@ -33,6 +36,15 @@ const reasons: Record<string, number> = {};
 let ranRed = 0, closestPair = Infinity, inBoxTogether = 0;
 // пешеходы
 let offKerb = 0, worstKerb = 0, crossedOnRed = 0, yieldedToWalker = 0, crossings = 0;
+/**
+ * Походка. Фаза шага ВЫЧИСЛЯЕТСЯ из пройденного пути, и это значит, что путь
+ * обязан совпадать с тем, насколько человек на самом деле сдвинулся по земле.
+ * Разошлись — ноги живут отдельно от человека: стоит и семенит либо едет
+ * не перебирая. Прыжок при переходе на другую улицу — не движение, а смена
+ * места, и такие кадры из сравнения выкидываются.
+ */
+let худшийРазлад = 0, кадровПоходки = 0;
+const прежнее = new Map<number, { x: number; z: number; путь: number }>();
 let parkedEver = 0, leftEver = 0, maxParked = 0;
 const wasParked = movers.map(() => false);
 const walked = walkers.map(() => 0);
@@ -76,7 +88,7 @@ const startS = movers.map((m) => m.s);
 
 for (let t = 0; t < 120; t += DT) {
   // «сломать» — выключить соблюдение дистанции: машины въедут друг в друга
-  moveWalkers(world, net, walkers, DT, t);
+  moveWalkers(world, net, walkers, DT, t, byClock ? { походка: 'по часам' } : {});
   const crossing = walkers.filter((w) => w.crossing > 0).map((w) => ({ shape: w.shape, s: w.s }));
   moveTraffic(world, net, movers, DT, t, { headway: !broken, rules: !lawless, lanes: !oneLane, crossing });
   if (movers.some((m) => m.reason === 'пешеход')) yieldedToWalker++;
@@ -91,6 +103,15 @@ for (let t = 0; t < 120; t += DT) {
   walkers.forEach((w, i) => {
     walked[i] += w.speed * DT;
     const pose = walkerPose(world, w);
+    const было = прежнее.get(i);
+    if (было !== undefined) {
+      const сдвиг = Math.hypot(pose.x - было.x, pose.z - было.z);
+      if (сдвиг < 0.5) {
+        худшийРазлад = Math.max(худшийРазлад, Math.abs(сдвиг - (w.путь - было.путь)));
+        кадровПоходки++;
+      }
+    }
+    прежнее.set(i, { x: pose.x, z: pose.z, путь: w.путь });
     const near = nearestRoad(world, pose.x, pose.z);
     // не переходящий пешеход обязан быть на тротуаре, а не на проезжей части
     // у перекрёстка углы тротуара скруглены и «ближайшая дорога» — уже
@@ -454,7 +475,7 @@ const sees = playerScene(false);
 const blind = playerScene(true);
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(38, '.')} ${value}`);
-console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : lawless ? '   [СЛОМАНО: правила выключены]' : oneLane ? '   [СЛОМАНО: перестроений нет, все в правой полосе]' : ''}\n`);
+console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : byClock ? '   [СЛОМАНО: походка по часам]' : lawless ? '   [СЛОМАНО: правила выключены]' : oneLane ? '   [СЛОМАНО: перестроений нет, все в правой полосе]' : ''}\n`);
 line('дорог в сети / узлов', `${world.shapes.length} / ${world.junctions.length}`);
 line('свернули на другую дорогу', `${turns} из ${movers.length}`);
 line('сдвинулись с места', `${moved} из ${movers.length}`);
@@ -482,6 +503,8 @@ const checks: [string, boolean, string][] = [
   ['пешеходы вообще переходят дорогу', crossings > 3, `${crossings} за две минуты`],
   ['кто-то припарковался и уехал', parkedEver > 0 && leftEver > 0, `${parkedEver} парковок, ${leftEver} выездов`],
   ['пешеходы дошли хоть куда-то', walked.every((d) => d > 20), `самый ленивый ${Math.min(...walked).toFixed(0)} м`],
+  ['ноги идут ровно столько, сколько человек прошёл', худшийРазлад < 0.01 && кадровПоходки > 1000,
+    `худшее расхождение ${(худшийРазлад * 100).toFixed(2)} см за кадр на ${кадровПоходки} кадрах`],
   ['город видит машину игрока', sees.held > 0, `${(sees.held / 60).toFixed(1)} с держался за неё`],
   ['трафик не проехал сквозь игрока', sees.hit === 0,
     `подъехал на ${sees.approached.toFixed(1)} м, ближе всего ${(sees.closest * 100).toFixed(0)}% от касания`],

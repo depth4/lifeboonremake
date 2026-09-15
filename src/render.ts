@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Material, Surface } from './surface/index.ts';
 import type { Point2 } from './world/road.ts';
+import { EYE_HEIGHT } from './person/person.ts';
 import { type Sight, createSight } from './person/sight.ts';
 
 const COLORS: Record<Material, number> = {
@@ -204,8 +205,11 @@ export interface Viewer {
   }[]): void;
   /** Светофоры: где стоят и каким цветом горят. */
   setSignals(lamps: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
-  /** Пешеходы. */
-  setWalkers(people: readonly { x: number; y: number; z: number; yaw: number; colour: number }[]): void;
+  /** Пешеходы. `фаза` — где человек в шаге, радианы: из неё ходят ноги и руки. */
+  setWalkers(people: readonly {
+    x: number; y: number; z: number; yaw: number;
+    colour: number; штаны: number; кожа: number; фаза: number;
+  }[]): void;
   /** Дорожные знаки: где стоят, куда смотрят, какие. */
   setSigns(signs: readonly {
     x: number; y: number; z: number; yaw: number; kind: string; value: number;
@@ -228,6 +232,104 @@ export function viewFromQuery(query: URLSearchParams): View | null {
 
 /** Показывать ли рёбра треугольников сразу: ?wire=1. Дальше — кнопкой. */
 const START_WIRE = new URLSearchParams(location.search).get('wire') === '1';
+
+
+/**
+ * ЧЕЛОВЕК — ИЗ КОРОБОК.
+ *
+ * Раньше пешеход был капсулой: одна гладкая пилюля, которая с любого ракурса
+ * читалась «человек вообще». Рядом с миром, целиком собранным из плоских
+ * граней и коробок, она выглядела чужой — единственная круглая вещь на улице.
+ * Коробки не «проще»: они той же природы, что дома, машины и бордюр, и от
+ * этого улица становится одним целым.
+ *
+ * Важнее вида то, что коробок ШЕСТЬ, а не одна: голова, корпус, две ноги,
+ * две руки. У каждой свой поворот, и человек получает походку — ноги и руки
+ * ходят в противофазе. Капсуле ходить было нечем.
+ *
+ * Все размеры — метры, от подошвы вверх. Рост 1.72: средний взрослый.
+ * Числа живут ЗДЕСЬ и нигде больше, поэтому «голова оторвалась от шеи»
+ * или «ноги длиннее человека» записать негде — всё считается друг от друга.
+ */
+/** Ноги: от земли до бедра. */
+const БЕДРО = 0.84;
+/** Корпус: от бедра до плеч. */
+const ТЕЛО = { глубина: 0.24, высота: 0.56, ширина: 0.36 };
+/** Плечо — верх корпуса. Рука висит С ПЛЕЧА, а не с макушки. */
+const ПЛЕЧО = БЕДРО + ТЕЛО.высота;
+/**
+ * Рука: от плеча до середины бедра. Длина не выдумана, а взята от роста —
+ * у человека 1.72 кончики пальцев приходятся примерно на 0.66 м от земли.
+ * Первая редакция считала руку «от плеча и почти до земли», 1.12 м, и человек
+ * вышел бельевой прищепкой. Это ровно тот случай, когда число надо выводить,
+ * а не назначать.
+ */
+const РУКА = { длина: ПЛЕЧО - 0.66, глубина: 0.12, ширина: 0.10 };
+/** Голова: чуть выше плеч, с зазором под шею. */
+const ГОЛОВА = { низ: ПЛЕЧО + 0.03, высота: 0.27, ребро: 0.24 };
+/**
+ * Лицо — тёмная накладка на передней грани головы.
+ *
+ * Без неё человек из коробок ОДИНАКОВ спереди и сзади, и на снимке нельзя
+ * сказать, идёт он к тебе или от тебя. Для живого города это не мелочь:
+ * куда смотрит прохожий — половина того, что у него можно прочесть.
+ */
+const ЛИЦО = {
+  высота: 0.09,
+  ширина: 0.17,
+  толщина: 0.02,
+  /**
+   * Середина лица приходится РОВНО на ту высоту, с которой смотрит игрок.
+   * Рост прохожего и рост человека за камерой — одно число, а не два похожих:
+   * иначе однажды окажется, что толпа на голову ниже того, кто в ней идёт.
+   */
+  надЗемлёй: EYE_HEIGHT,
+};
+/** Нога. */
+const НОГА = { глубина: 0.19, ширина: 0.15 };
+/** Насколько ноги расставлены и насколько руки вынесены вбок от оси. */
+const РАССТАВ = НОГА.ширина / 2 + 0.03;
+const ПЛЕЧИ = ТЕЛО.ширина / 2 + РУКА.ширина / 2;
+/**
+ * Размах маха на полной скорости, радианы. У идущего человека бедро уходит
+ * вперёд-назад примерно на 15° в каждую сторону, рука меньше. Первая редакция
+ * ставила 30°, и пешеход маршировал.
+ */
+const РАЗМАХ_НОГИ = 0.27;
+const РАЗМАХ_РУКИ = 0.19;
+
+/**
+ * Собрать пачки частей. Коробка руки и ноги сдвинута так, что её НАЧАЛО
+ * координат лежит в суставе: тогда «мах» — это просто поворот, и нога не
+ * может при повороте уехать из бедра.
+ */
+function собратьЛюдей(сколько: number): {
+  голова: THREE.InstancedMesh; лицо: THREE.InstancedMesh; тело: THREE.InstancedMesh;
+  ноги: THREE.InstancedMesh; руки: THREE.InstancedMesh;
+} {
+  /** Коробка «вглубь × вверх × вбок»; `висит` — подвесить за верхнюю грань. */
+  const кусок = (вглубь: number, вверх: number, вбок: number, висит: boolean): THREE.BoxGeometry => {
+    const g = new THREE.BoxGeometry(вглубь, вверх, вбок);
+    g.translate(0, висит ? -вверх / 2 : 0, 0);
+    return g;
+  };
+  const кожа = (): THREE.Material => new THREE.MeshStandardMaterial({ roughness: 0.92 });
+  const пачка = (g: THREE.BufferGeometry, n: number): THREE.InstancedMesh => {
+    const m = new THREE.InstancedMesh(g, кожа(), n);
+    m.castShadow = true;
+    return m;
+  };
+
+  return {
+    // корпус и голова стоят на своей опоре, поэтому за нижнюю грань
+    тело: пачка(кусок(ТЕЛО.глубина, ТЕЛО.высота, ТЕЛО.ширина, false), сколько),
+    голова: пачка(кусок(ГОЛОВА.ребро, ГОЛОВА.высота, ГОЛОВА.ребро, false), сколько),
+    лицо: пачка(кусок(ЛИЦО.толщина, ЛИЦО.высота, ЛИЦО.ширина, false), сколько),
+    // руки и ноги висят на суставе, поэтому за верхнюю
+    ноги: пачка(кусок(НОГА.глубина, БЕДРО, НОГА.ширина, true), сколько * 2),
+    руки: пачка(кусок(РУКА.глубина, РУКА.длина, РУКА.ширина, true), сколько * 2),
+  };
+}
 
 export function show(surface: Surface, startView: string, custom: View | null = null): Viewer {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -365,7 +467,16 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let trafficLamps: THREE.InstancedMesh | null = null;
   let signalPoles: THREE.InstancedMesh | null = null;
   let signalHeads: THREE.InstancedMesh | null = null;
-  let walkerMesh: THREE.InstancedMesh | null = null;
+  /**
+   * Человек. Части тела лежат КАЖДАЯ своей пачкой: голова со всеми головами,
+   * ноги со всеми ногами. Так вся толпа города стоит четыре вызова отрисовки
+   * (решение 053 — цена сидит в вызовах, а не в треугольниках), и при этом
+   * ноги могут ходить: у каждой части свой поворот.
+   */
+  let люди: {
+    голова: THREE.InstancedMesh; лицо: THREE.InstancedMesh; тело: THREE.InstancedMesh;
+    ноги: THREE.InstancedMesh; руки: THREE.InstancedMesh;
+  } | null = null;
   /** Вся застройка посёлка одним мешем. */
   let домаМеш: THREE.InstancedMesh | null = null;
   let signGroup: THREE.Group | null = null;
@@ -801,30 +912,66 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       scene.add(домаМеш);
     },
     setWalkers(people) {
-      if (walkerMesh !== null && walkerMesh.count !== people.length) {
-        scene.remove(walkerMesh); walkerMesh.dispose(); walkerMesh = null;
+      if (люди !== null && люди.голова.count !== people.length) {
+        for (const часть of Object.values(люди)) { scene.remove(часть); часть.dispose(); }
+        люди = null;
       }
       if (people.length === 0) return;
-      if (walkerMesh === null) {
-        // человек — капсула: с любого ракурса читается как человек, а не как ящик
-        const body = new THREE.CapsuleGeometry(0.22, 1.25, 4, 8);
-        body.translate(0, 0.87, 0);
-        walkerMesh = new THREE.InstancedMesh(
-          body, new THREE.MeshStandardMaterial({ roughness: 0.85 }), people.length,
-        );
-        walkerMesh.castShadow = true;
-        scene.add(walkerMesh);
+      if (люди === null) {
+        люди = собратьЛюдей(people.length);
+        scene.add(люди.тело, люди.голова, люди.лицо, люди.ноги, люди.руки);
       }
+
       const m = new THREE.Matrix4();
-      const tint = new THREE.Color();
+      const q = new THREE.Quaternion();
+      const e = new THREE.Euler();
+      const тон = new THREE.Color();
+      const один = new THREE.Vector3(1, 1, 1);
+      const где = new THREE.Vector3();
+
+      /** Поставить часть: опора в местных осях (вперёд, вверх, вбок) + свой мах. */
+      const часть = (
+        меш: THREE.InstancedMesh, номер: number,
+        p: { x: number; y: number; z: number; yaw: number },
+        вперёд: number, вверх: number, вбок: number, мах: number, цвет: number,
+      ): void => {
+        const cos = Math.cos(p.yaw), sin = Math.sin(p.yaw);
+        // местное «вперёд» — это (cos, sin) по земле, «вбок» — (−sin, cos)
+        где.set(p.x + вперёд * cos - вбок * sin, p.y + вверх, p.z + вперёд * sin + вбок * cos);
+        // сначала мах вокруг Z (вперёд-назад), потом разворот по курсу
+        e.set(0, -p.yaw, мах, 'YZX');
+        q.setFromEuler(e);
+        m.compose(где, q, один);
+        меш.setMatrixAt(номер, m);
+        меш.setColorAt(номер, тон.setHex(цвет));
+      };
+
       people.forEach((p, i) => {
-        m.makeRotationY(-p.yaw);
-        m.setPosition(p.x, p.y, p.z);
-        (walkerMesh as THREE.InstancedMesh).setMatrixAt(i, m);
-        (walkerMesh as THREE.InstancedMesh).setColorAt(i, tint.setHex(p.colour));
+        /**
+         * Размах маха растёт от того, идёт человек или стоит. Стоящий фазу
+         * не двигает вовсе — его путь не растёт, — поэтому «стоит и семенит
+         * ногами» невыразимо: махи считаются из той же величины, что и шаг.
+         */
+        const мах = Math.sin(p.фаза) * РАЗМАХ_НОГИ;
+        const махРук = -Math.sin(p.фаза) * РАЗМАХ_РУКИ;
+        // корпус качается в такт: за один шаг — два покачивания
+        const качка = Math.cos(p.фаза * 2) * 0.012;
+
+        часть(люди!.тело, i, p, 0, БЕДРО + качка, 0, 0, p.colour);
+        часть(люди!.голова, i, p, 0, ГОЛОВА.низ + качка, 0, 0, p.кожа);
+        // лицо выступает на волос из передней грани, иначе грани мерцают друг сквозь друга
+        часть(люди!.лицо, i, p, ГОЛОВА.ребро / 2, ЛИЦО.надЗемлёй - ЛИЦО.высота / 2 + качка, 0, 0, 0x2a2420);
+        for (const бок of [0, 1]) {
+          const знак = бок === 0 ? 1 : -1;
+          часть(люди!.ноги, i * 2 + бок, p, 0, БЕДРО + качка, знак * РАССТАВ, знак * мах, p.штаны);
+          часть(люди!.руки, i * 2 + бок, p, 0, ПЛЕЧО + качка, знак * ПЛЕЧИ, знак * махРук, p.colour);
+        }
       });
-      walkerMesh.instanceMatrix.needsUpdate = true;
-      if (walkerMesh.instanceColor) walkerMesh.instanceColor.needsUpdate = true;
+
+      for (const меш of Object.values(люди)) {
+        меш.instanceMatrix.needsUpdate = true;
+        if (меш.instanceColor) меш.instanceColor.needsUpdate = true;
+      }
     },
     setSight(on) { sightOn = on; },
     sight() { return sightOn; },
