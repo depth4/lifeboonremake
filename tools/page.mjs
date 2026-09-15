@@ -18,6 +18,15 @@ const report = JSON.parse(
   execFileSync('node', ['--experimental-strip-types', 'tools/report.ts'], { encoding: 'utf8', maxBuffer: 1 << 24 }),
 );
 
+/**
+ * Снимки. Папка `shots/` в `.gitignore` — значит на свежем клоне её НЕТ,
+ * и `readdirSync` по ней падал всегда. Страница должна собираться и без
+ * картинок: цифры в ней главное, а на месте снимка честно пишется, что его
+ * нет. Инструмент, который падает из-за отсутствующей необязательной папки,
+ * сломан — и ломался он ровно там, где его никто не запускал: на чистом
+ * клоне и в CI.
+ */
+mkdirSync(SHOTS, { recursive: true });
 const pics = {};
 for (const name of readdirSync(SHOTS)) {
   if (!name.endsWith('.png')) continue;
@@ -35,7 +44,8 @@ const fig = (key, caption, note = '') => pics[key]
        <figcaption><b>${caption}</b>${note ? `<span>${note}</span>` : ''}</figcaption></figure>`
   : `<div class="plate missing">нет снимка: ${key}</div>`;
 
-const pair = (keyA, keyB, caption, noteA, noteB) => `
+const pair = (keyA, keyB, caption, noteA, noteB) => (!pics[keyA] || !pics[keyB]) ? `
+  <div class="plate missing">нет снимков: ${keyA} и ${keyB}</div>` : `
   <div class="pair">
     <figure class="plate"><span class="tag tag-a">А</span><img src="${pics[keyA]}" alt="${caption}, вариант А" loading="lazy" />
       <figcaption><b>${caption}</b><span>${noteA}</span></figcaption></figure>
