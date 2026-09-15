@@ -213,26 +213,11 @@ footer { margin-top: 70px; border-top: 1px solid var(--line); padding-top: 18px;
   <h2>Дешёвый способ и чего он стоит</h2>
   <p>Самый частый способ в играх: земля — ровная сетка, которую никто не режет, дорога — отдельная лента сверху, по краю юбка, чтобы в стык не было видно неба. Он честно быстрее втрое, кода в нём вдесятеро меньше, и я собрал его по-настоящему, а не понарошку — чтобы цену выбора было видно, а не слышно.</p>
   
-  <div class="pair">
-    <figure class="plate"><span class="tag tag-a">А</span><img src="undefined" alt="Прямой крест, вариант А" loading="lazy" />
-      <figcaption><b>Прямой крест</b><span>один перекрёсток, разметка обрывается</span></figcaption></figure>
-    <figure class="plate"><span class="tag tag-b">Б</span><img src="undefined" alt="Прямой крест, вариант Б" loading="lazy" />
-      <figcaption><b>Прямой крест</b><span>перекрёстка нет: тротуар одной дороги идёт поперёк проезжей части другой</span></figcaption></figure>
-  </div>
+  <div class="plate missing">нет снимков: перекрёсток-A и перекрёсток-B</div>
   
-  <div class="pair">
-    <figure class="plate"><span class="tag tag-a">А</span><img src="undefined" alt="Слияние под 12°, вариант А" loading="lazy" />
-      <figcaption><b>Слияние под 12°</b><span>одна площадка со скруглением</span></figcaption></figure>
-    <figure class="plate"><span class="tag tag-b">Б</span><img src="undefined" alt="Слияние под 12°, вариант Б" loading="lazy" />
-      <figcaption><b>Слияние под 12°</b><span>ленты лежат друг на друге, между ними торчит земля</span></figcaption></figure>
-  </div>
+  <div class="plate missing">нет снимков: острый-A и острый-B</div>
   
-  <div class="pair">
-    <figure class="plate"><span class="tag tag-a">А</span><img src="undefined" alt="Восемь дорог, холмы, вариант А" loading="lazy" />
-      <figcaption><b>Восемь дорог, холмы</b><span>0 незашитых рёбер</span></figcaption></figure>
-    <figure class="plate"><span class="tag tag-b">Б</span><img src="undefined" alt="Восемь дорог, холмы, вариант Б" loading="lazy" />
-      <figcaption><b>Восемь дорог, холмы</b><span>5 244 незашитых рёбер, земля торчит сквозь асфальт</span></figcaption></figure>
-  </div>
+  <div class="plate missing">нет снимков: каша-A и каша-B</div>
   <p>Это не придирка к реализации. Пока дорога и земля — <b>две независимые поверхности</b>, «земля торчит сквозь дорогу» можно выразить, а значит оно будет случаться, и чинить это придётся вечно: допусками, приподниманием дороги, подкрученными числами. Ровно так мы потеряли прошлый проект.</p>
 </section>
 
@@ -273,80 +258,80 @@ footer { margin-top: 70px; border-top: 1px solid var(--line); padding-top: 18px;
       <tbody><tr>
     <th scope="row">крест</th>
     <td class="n">4</td><td class="n">1</td>
-    <td class="n">14 980</td>
+    <td class="n">15 970</td>
     <td class="n ok">0</td>
     <td class="n">8%</td>
     <td class="n">27</td>
-    <td class="n">308</td>
+    <td class="n">327</td>
     <td class="n bad">1 138</td>
     <td class="n ">—</td>
-    <td class="n">33</td>
+    <td class="n">35</td>
   </tr><tr>
     <th scope="row">тройник</th>
     <td class="n">3</td><td class="n">1</td>
-    <td class="n">13 026</td>
+    <td class="n">14 146</td>
     <td class="n ok">0</td>
     <td class="n">8%</td>
     <td class="n">27</td>
-    <td class="n">187</td>
+    <td class="n">212</td>
     <td class="n bad">936</td>
     <td class="n ">—</td>
     <td class="n">31</td>
   </tr><tr>
     <th scope="row">острый</th>
     <td class="n">2</td><td class="n">1</td>
-    <td class="n">13 692</td>
+    <td class="n">14 696</td>
     <td class="n ok">0</td>
     <td class="n">8%</td>
     <td class="n">27</td>
-    <td class="n">228</td>
+    <td class="n">259</td>
     <td class="n bad">1 086</td>
     <td class="n ">—</td>
-    <td class="n">32</td>
+    <td class="n">34</td>
   </tr><tr>
     <th scope="row">бритва</th>
     <td class="n">4</td><td class="n">2</td>
-    <td class="n">14 114</td>
+    <td class="n">15 632</td>
     <td class="n ok">0</td>
     <td class="n">8%</td>
     <td class="n">27</td>
-    <td class="n">228</td>
+    <td class="n">272</td>
     <td class="n bad">1 184</td>
     <td class="n ">—</td>
-    <td class="n">33</td>
+    <td class="n">40</td>
   </tr><tr>
     <th scope="row">звезда</th>
     <td class="n">5</td><td class="n">1</td>
-    <td class="n">16 322</td>
+    <td class="n">17 354</td>
     <td class="n ok">0</td>
     <td class="n">8%</td>
-    <td class="n">28</td>
-    <td class="n">179</td>
+    <td class="n">27</td>
+    <td class="n">187</td>
     <td class="n bad">1 436</td>
     <td class="n bad">0.09 м</td>
-    <td class="n">30</td>
+    <td class="n">31</td>
   </tr><tr>
     <th scope="row">решётка</th>
     <td class="n">12</td><td class="n">4</td>
-    <td class="n">21 566</td>
+    <td class="n">23 338</td>
     <td class="n ok">0</td>
     <td class="n">8%</td>
-    <td class="n">28</td>
-    <td class="n">241</td>
+    <td class="n">27</td>
+    <td class="n">250</td>
     <td class="n bad">2 396</td>
     <td class="n ">—</td>
-    <td class="n">33</td>
+    <td class="n">47</td>
   </tr><tr>
     <th scope="row">впритык</th>
     <td class="n">2</td><td class="n">0</td>
-    <td class="n">13 934</td>
+    <td class="n">15 446</td>
     <td class="n ok">0</td>
     <td class="n">0%</td>
     <td class="n">27</td>
-    <td class="n">218</td>
+    <td class="n">242</td>
     <td class="n bad">1 424</td>
     <td class="n ">—</td>
-    <td class="n">35</td>
+    <td class="n">36</td>
   </tr><tr>
     <th scope="row">петля</th>
     <td class="n">2</td><td class="n">1</td>
@@ -354,21 +339,21 @@ footer { margin-top: 70px; border-top: 1px solid var(--line); padding-top: 18px;
     <td class="n ok">0</td>
     <td class="n">9%</td>
     <td class="n">151</td>
-    <td class="n">245</td>
+    <td class="n">237</td>
     <td class="n bad">476</td>
     <td class="n bad">0.03 м</td>
-    <td class="n">22</td>
+    <td class="n">21</td>
   </tr><tr>
     <th scope="row">вилка</th>
     <td class="n">3</td><td class="n">1</td>
-    <td class="n">13 724</td>
+    <td class="n">15 342</td>
     <td class="n ok">0</td>
     <td class="n">14%</td>
     <td class="n">212</td>
-    <td class="n">212</td>
+    <td class="n">239</td>
     <td class="n bad">932</td>
     <td class="n bad">0.04 м</td>
-    <td class="n">29</td>
+    <td class="n">32</td>
   </tr><tr>
     <th scope="row">серпантин</th>
     <td class="n">1</td><td class="n">0</td>
@@ -376,21 +361,21 @@ footer { margin-top: 70px; border-top: 1px solid var(--line); padding-top: 18px;
     <td class="n ok">0</td>
     <td class="n">24%</td>
     <td class="n">142</td>
-    <td class="n">291</td>
+    <td class="n">307</td>
     <td class="n bad">1 612</td>
     <td class="n bad">0.06 м</td>
-    <td class="n">51</td>
+    <td class="n">49</td>
   </tr><tr>
     <th scope="row">каша</th>
     <td class="n">32</td><td class="n">11</td>
-    <td class="n">34 886</td>
+    <td class="n">39 086</td>
     <td class="n ok">0</td>
     <td class="n">18%</td>
-    <td class="n">168</td>
-    <td class="n">665</td>
+    <td class="n">40</td>
+    <td class="n">737</td>
     <td class="n bad">5 244</td>
     <td class="n bad">0.12 м</td>
-    <td class="n">81</td>
+    <td class="n">82</td>
   </tr></tbody>
     </table>
   </div>
@@ -398,8 +383,8 @@ footer { margin-top: 70px; border-top: 1px solid var(--line); padding-top: 18px;
 
   <h3>Итог одной строкой</h3>
   <div class="runs">
-    <div><code>вариант А</code><span>0 дырок на всех сценах, 0 треугольников изнанкой вверх, 0 нулевой площади, 0 пересечений границ. Уклон вдоль дороги ровно 8.0% при пределе 8%. Сборка 179–665 мс.</span></div>
-    <div><code>вариант Б</code><span>476–5 244 дырок на каждой сцене, земля торчит сквозь асфальт до 0.12 м. Сборка 22–81 мс.</span></div>
+    <div><code>вариант А</code><span>0 дырок на всех сценах, 0 треугольников изнанкой вверх, 0 нулевой площади, 0 пересечений границ. Уклон вдоль дороги ровно 8.0% при пределе 8%. Сборка 187–737 мс.</span></div>
+    <div><code>вариант Б</code><span>476–5 244 дырок на каждой сцене, земля торчит сквозь асфальт до 0.12 м. Сборка 21–82 мс.</span></div>
   </div>
 </section>
 
@@ -475,7 +460,7 @@ footer { margin-top: 70px; border-top: 1px solid var(--line); padding-top: 18px;
 </section>
 
 <footer>
-  Собрано 14 сентября 2026 г..
+  Собрано 15 сентября 2026 г..
   Цифры на этой странице посчитаны при сборке страницы, а не переписаны руками:
   меняется мир — меняются они.
 </footer>
