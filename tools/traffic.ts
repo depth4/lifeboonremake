@@ -7,7 +7,9 @@
  *   npm run traffic -- решётка шаг-по-часам — походка от часов, обязана упасть
  */
 
-import { дорогиСцены } from '../src/scenes.ts';
+import { дорогиСцены, посёлокСцены } from '../src/scenes.ts';
+import { расселить } from '../src/city/житель.ts';
+import { машиныЖителей } from '../src/city/жизнь.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
 import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { laneAcross, sideOf } from '../src/city/lanes.ts';
@@ -39,11 +41,28 @@ const net = buildNetwork(world);
  * 18 и 26: старые замеры остаются сравнимыми.
  */
 const улиц = net.length.reduce((sum, l) => sum + l, 0);
-const movers = placeTraffic(world, net, Math.max(18, Math.round(улиц / 51)));
+
+/**
+ * ОТКУДА БЕРУТСЯ МАШИНЫ. Если у сцены есть посёлок — из его жителей: кто
+ * сейчас в пути, тот едет, кто дома или на работе, тот стоит у своего
+ * подъезда. Если посёлка нет (рукотворные сцены без домов) — ничьи машины,
+ * которые просто ездят и НЕ ПАРКУЮТСЯ: парковаться им не к чему.
+ *
+ * Это не два правила, а одно: машина стоит, когда её хозяин внутри. Нет
+ * хозяина — нет и стоянки.
+ */
+const посёлок = посёлокСцены(scene);
+const ЧАС = 7.8;
+const жизнь = посёлок === null ? null : расселить(посёлок);
+const movers = жизнь === null
+  ? placeTraffic(world, net, Math.max(18, Math.round(улиц / 51)))
+  : машиныЖителей(world, net, жизнь, ЧАС, Math.max(18, Math.round(улиц / 51))).машины;
 const walkers = placeWalkers(world, net, Math.max(26, Math.round(улиц / 35)));
 const DT = 1 / 60;
 
 let offRoad = 0, worstOff = 0, tooFast = 0, fastest = 0, stuck = 0, worstSpeeding = -99;
+/** Кто именно встал: без имени цифра «шесть застряло» ничего не даёт. */
+const застрявшие: string[] = [];
 const travelled = movers.map(() => 0);
 const reasons: Record<string, number> = {};
 /** Нарушения ПДД и столкновения — то, ради чего правила и писались. */
@@ -110,7 +129,13 @@ for (let t = 0; t < 120; t += DT) {
   // «сломать» — выключить соблюдение дистанции: машины въедут друг в друга
   moveWalkers(world, net, walkers, DT, t, byClock ? { походка: 'по часам' } : {});
   const crossing = walkers.filter((w) => w.crossing > 0).map((w) => ({ shape: w.shape, s: w.s }));
-  moveTraffic(world, net, movers, DT, t, { headway: !broken, rules: !lawless, lanes: !oneLane, crossing });
+  /**
+   * Городской час идёт за минуту: две минуты проверки — это два часа
+   * утреннего города, с 7:48 до 9:48. Медленнее нельзя: иначе за прогон
+   * не наступает ни один час выхода, и «кто-то уехал» проверять не на чем.
+   */
+  moveTraffic(world, net, movers, DT, t,
+    { headway: !broken, rules: !lawless, lanes: !oneLane, crossing, час: ЧАС + t / 60 });
   if (movers.some((m) => m.reason === 'пешеход')) yieldedToWalker++;
   movers.forEach((m, i) => {
     const parked = m.park?.phase === 'стоит';
@@ -274,9 +299,18 @@ for (let t = 0; t < 120; t += DT) {
 movers.forEach((m, i) => {
   if (m.shape !== startShapes[i]) turns++;
   if (Math.abs(m.s - startS[i]) > 20 || m.shape !== startShapes[i]) moved++;
-  // «встал намертво» — это проехать меньше тридцати метров за две минуты,
-  // а не стоять в тот миг, когда проверка закончилась: на красном стоят все
-  if (travelled[i] < 30) stuck++;
+  /**
+   * «Встал намертво» — это проехать меньше тридцати метров за две минуты,
+   * а не стоять в тот миг, когда проверка закончилась: на красном стоят все.
+   *
+   * Припаркованная машина сюда не входит: она не встала, она СТОИТ, и стоит
+   * по причине — её хозяин внутри. Считать её застрявшей значило бы звать
+   * поломкой ровно то, ради чего парковку и завели.
+   */
+  if (travelled[i] < 30 && m.park === null) {
+    stuck++;
+    if (застрявшие.length < 5) застрявшие.push(`${tell(m, i)} проехал ${travelled[i].toFixed(0)} м`);
+  }
 });
 
 /**
@@ -517,7 +551,8 @@ const checks: [string, boolean, string][] = [
   ['никто не съехал с проезжей части', offRoad === 0, `${offRoad} случаев, худший ${worstOff.toFixed(2)} м`],
   ['превышают на 20–40, а не втрое', tooFast === 0,
     `самое быстрое ${(fastest * 3.6).toFixed(0)} км/ч, это +${worstSpeeding.toFixed(0)} к знаку`],
-  ['никто не встал намертво', stuck === 0, `${stuck} проехали меньше 30 м`],
+  ['никто не встал намертво', stuck === 0,
+    `${stuck} проехали меньше 30 м${застрявшие.length > 0 ? '\n      ' + застрявшие.join('\n      ') : ''}`],
   ['габариты нигде не наложились', closest > 1, `самое тесное ${(closest * 100).toFixed(0)}% от касания`],
   ['кто-то свернул на перекрёстке', world.junctions.length === 0 || turns > 0, `${turns} поворотов`],
   ['никто не проехал на красный', ranRed === 0,
@@ -528,7 +563,14 @@ const checks: [string, boolean, string][] = [
   ['пешеходы не гуляют по проезжей части', offKerb === 0, `${offKerb} случаев, заход ${worstKerb.toFixed(2)} м`],
   ['пешеходы не идут на красный', crossedOnRed === 0, `${crossedOnRed} переходов`],
   ['пешеходы вообще переходят дорогу', crossings > 3, `${crossings} за две минуты`],
-  ['кто-то припарковался и уехал', parkedEver > 0 && leftEver > 0, `${parkedEver} парковок, ${leftEver} выездов`],
+  /**
+   * Парковка существует только там, где есть к чему парковаться. На сцене
+   * без домов ничья машина не встаёт вообще — и это не отсутствие проверки,
+   * а само правило: у стоянки должна быть причина.
+   */
+  [жизнь === null ? 'без домов никто не паркуется' : 'кто-то припарковался и уехал',
+    жизнь === null ? parkedEver === 0 && leftEver === 0 : parkedEver > 0 && leftEver > 0,
+    `${parkedEver} парковок, ${leftEver} выездов`],
   ['пешеходы дошли хоть куда-то', walked.every((d) => d > 20), `самый ленивый ${Math.min(...walked).toFixed(0)} м`],
   ['ноги идут ровно столько, сколько человек прошёл', худшийРазлад < 0.01 && кадровПоходки > 1000,
     `худшее расхождение ${(худшийРазлад * 100).toFixed(2)} см за кадр на ${кадровПоходки} кадрах`],

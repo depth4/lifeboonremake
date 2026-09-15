@@ -23,6 +23,8 @@ import { judge, newWatchdog, tally } from './city/offence.ts';
 import { laneAcross } from './city/lanes.ts';
 import { lightFor } from './city/signals.ts';
 import { type Walker, moveWalkers, placeWalkers, walkerPose, фазаШага } from './city/walkers.ts';
+import { СЕКУНД_В_ЧАСЕ, type Расселение, расселить, часСуток } from './city/житель.ts';
+import { машиныЖителей } from './city/жизнь.ts';
 
 const query = new URLSearchParams(location.search);
 const startView = query.get('view') ?? 'road';
@@ -131,10 +133,7 @@ function rebuild(): void {
   // застройка ставится после того, как заведена опора: дом стоит НА земле,
   // и её высоту надо у кого-то спросить
   if (опораГотова) застройка();
-  if (traffic.length > 0) {
-    traffic = placeTraffic(world, network, TRAFFIC_COUNT);
-    walkers = placeWalkers(world, network, WALKER_COUNT);
-  }
+  if (traffic.length > 0) заселить();
   viewer.setSurface(surface);
   readout();
   hint();
@@ -344,6 +343,12 @@ let traffic: Mover[] = [];
 let walkers: Walker[] = [];
 const TRAFFIC_COUNT = 18;
 const WALKER_COUNT = 26;
+/** Сколько машин жителей показывать разом. Дальше — вопрос уровней подробности. */
+const ГОРОДСКИХ_МАШИН = 180;
+/** С какого часа начинается городской день на странице: утро, все выезжают. */
+const УТРО = 7.8;
+/** Расселение посёлка: кто где живёт. null — сцена без домов. */
+let жизнь: Расселение | null = null;
 /**
  * `?traffic=1` — завести город сразу, без нажатия кнопки. Нужно снимкам из
  * терминала: пустую улицу снять было можно, а живую — только руками, и
@@ -499,8 +504,7 @@ el('drive')?.addEventListener('click', (event) => {
     dog = newWatchdog();
     signsShown = false;
     if (!on) viewer.setSigns([]);
-    traffic = on ? placeTraffic(world, network, TRAFFIC_COUNT) : [];
-    walkers = on ? placeWalkers(world, network, WALKER_COUNT) : [];
+    if (on) заселить(); else { traffic = []; walkers = []; жизнь = null; }
     viewer.setTraffic([]);
     viewer.setSignals([]);
     viewer.setWalkers([]);
@@ -556,11 +560,26 @@ let dog = newWatchdog();
 /** Знаки расставлены? Они не меняются, и перекладывать их каждый кадр незачем. */
 let signsShown = false;
 
-// город из адреса: ровно то же, что делает кнопка «трафик»
-if (СРАЗУ_ГОРОД) {
-  traffic = placeTraffic(world, network, TRAFFIC_COUNT);
+/**
+ * Откуда берутся машины. Если у сцены есть посёлок — ИЗ ЕГО ЖИТЕЛЕЙ: кто
+ * сейчас в пути, тот едет, кто дома или на работе, тот стоит у своего
+ * подъезда до часа выхода. Нет посёлка — ничьи машины, которые просто ездят
+ * и не паркуются: парковаться им не к чему.
+ */
+function заселить(): void {
+  const посёлок = посёлокСцены(sceneName);
+  if (посёлок === null) {
+    traffic = placeTraffic(world, network, TRAFFIC_COUNT);
+  } else {
+    жизнь = расселить(посёлок);
+    traffic = машиныЖителей(world, network, жизнь, часСуток(cityTime + УТРО * СЕКУНД_В_ЧАСЕ),
+      ГОРОДСКИХ_МАШИН).машины;
+  }
   walkers = placeWalkers(world, network, WALKER_COUNT);
 }
+
+// город из адреса: ровно то же, что делает кнопка «трафик»
+if (СРАЗУ_ГОРОД) заселить();
 /**
  * Когда физика впервые увидела газ и когда впервые набрала сотню — по её
  * собственным часам. Проверка снаружи опрашивает страницу редко и неровно,
@@ -580,6 +599,8 @@ viewer.onFrame((dt) => {
     moveTraffic(world, network, traffic, step, cityTime, {
       crossing,
       player: car === null ? null : { x: car.x, z: car.z, speed: forwardSpeed(car), yaw: car.yaw },
+      // городской час: по нему стоящая машина понимает, вышел ли хозяин
+      час: часСуток(cityTime + УТРО * СЕКУНД_В_ЧАСЕ),
     });
     viewer.setWalkers(walkers.map((w) => {
       const pose = walkerPose(world, w);

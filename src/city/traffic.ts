@@ -18,13 +18,14 @@
 import type { World } from '../world/world.ts';
 import { type Signal, buildSignals, junctionReach, lightFor, stopLine } from './signals.ts';
 import { type Lanes, buildLanes, laneAcross, laneAt, laneCount } from './lanes.ts';
+import { type Маршрут, дальше } from './путь.ts';
 import { type Signs, buildSigns, priorityOf } from './signs.ts';
 
 const G = 9.80665;
 /** С какой боковой перегрузкой ездит обычный водитель. */
 const COMFORT = 0.28;
 /** Быстрее этого по городу никто не едет, м/с. */
-const CRUISE = 16;
+export const CRUISE = 16;
 
 // ── параметры модели следования (IDM)
 /** Максимальное ускорение, м/с². */
@@ -92,8 +93,35 @@ export interface Mover {
    * стремится. Пока они не совпали, машина перестраивается.
    */
   lane: number;
-  /** Место в кармане, если едет парковаться или стоит. */
-  park: { bay: number; phase: 'въезжает' | 'стоит' | 'выезжает'; left: number } | null;
+  /**
+   * Хозяин: номер жителя, которому принадлежит машина, или −1 — ничья.
+   *
+   * Это и есть ответ на «машины на парковке не должны быть декоративными».
+   * Декоративность — не свойство машины, а следствие того, что у стоянки
+   * нет причины. У хозяина причина есть: он дома или на работе. НИЧЬЯ МАШИНА
+   * НЕ ПАРКУЕТСЯ ВООБЩЕ — ей негде взять причину, и «стоит просто так»
+   * записать негде.
+   */
+  хозяин: number;
+  /**
+   * До какого часа суток хозяин будет внутри, когда доедет. `null` — ехать
+   * ему некуда, значит и вставать незачем.
+   */
+  доЧаса: number | null;
+  /**
+   * Куда едет. `null` — не едет никуда конкретно (ничья машина на голой
+   * сцене): такая выбирает повороты наугад и не паркуется вовсе.
+   *
+   * Пока маршрута не было, «приехал» сказать было нельзя — приезжать
+   * некуда, — и машина парковалась где придётся, простаивая до чужого часа.
+   */
+  маршрут: Маршрут | null;
+  /**
+   * Место в кармане. `доЧаса` — час суток, когда хозяин выйдет; до него
+   * машина стоит. Раньше здесь был обратный отсчёт `8 + случайно × 25`
+   * секунд, то есть стоянка без причины.
+   */
+  park: { bay: number; phase: 'въезжает' | 'стоит' | 'выезжает'; доЧаса: number } | null;
   /**
    * Куда поедем через ближайший перекрёсток. Решение принимается НА ПОДЪЕЗДЕ,
    * а не в точке въезда: пока путь неизвестен, нельзя сказать, пересекается
@@ -244,7 +272,14 @@ export function buildNetwork(world: World): Network {
     if (shape.halfWidth < 6) return;
     const total = length[si];
     const edge = shape.outerHalf + 4;
-    for (let at = edge; at < total - edge; at += 6.5) {
+    /**
+     * Шаг карманов — длина кузова плюс место на манёвр. Было 6.5 м, то есть
+     * между двумя занятыми карманами оставалось два метра: въехать боком туда
+     * физически нельзя, и машина, выбравшая такой карман, вставала посреди
+     * полосы навсегда, а за ней вся улица. Девять метров — это 4.4 кузова
+     * и 4.6 на заезд.
+     */
+    for (let at = edge; at < total - edge; at += 9) {
       if (nodes[si].some((n) => Math.abs(n.s - at) < shape.outerHalf + 6)) continue;
       /**
        * Карман — это ПРАВАЯ ПОЛОСА, а не полоска у бордюра. Отдельного места
@@ -345,6 +380,21 @@ export function locate(world: World, x: number, z: number):
   return bestDist > 40 ? null : best;
 }
 
+/**
+ * СТОИТ — значит не участник движения, а препятствие.
+ *
+ * Одно определение на весь проект, и это не удобство. За один вечер четыре
+ * разных места независимо перепутали «стоит» и «едет», и каждое давало свой
+ * тупик: очередь не объезжала припаркованную, выезжающий уступал стоящему,
+ * разворот ждал припаркованную у обочины, а въезд на перекрёсток считал
+ * припаркованную за ним затором — и не пускал туда никого НИКОГДА.
+ *
+ * Пока определение одно, «в одном месте она участник, в другом препятствие»
+ * записать негде.
+ */
+export const стоит = (m: Mover): boolean =>
+  m.park?.phase === 'стоит' || m.knocked !== null;
+
 /** Насколько круто дорога заворачивает здесь: радиус в метрах. */
 function radius(world: World, shape: number, s: number): number {
   const back = along(world, shape, s - 5), fwd = along(world, shape, s + 5);
@@ -353,7 +403,7 @@ function radius(world: World, shape: number, s: number): number {
   return wrapped < 1e-4 ? 1e5 : 10 / wrapped;
 }
 
-const COLOURS = [0x9fa5ab, 0x2b3a4a, 0x7d2b2b, 0xd8d3c6, 0x35513f, 0x1c1e22, 0x8a7b4f];
+export const COLOURS = [0x9fa5ab, 0x2b3a4a, 0x7d2b2b, 0xd8d3c6, 0x35513f, 0x1c1e22, 0x8a7b4f];
 
 export function placeTraffic(world: World, net: Network, count: number, seed = 1): Mover[] {
   let rnd = (seed * 16807) % 2147483647;
@@ -377,6 +427,8 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
       seed: Math.floor(next() * 2147483647),
       lane: 0,
       across: 0,   // ставится ниже, когда полоса выбрана
+      // ничья машина: ехать ей есть куда, а вставать негде и незачем
+      хозяин: -1, доЧаса: null, маршрут: null,
       park: null,
       route: null,
       knocked: null,
@@ -654,7 +706,7 @@ function desiredSpeed(haste: number, limitKmh: number): number {
 }
 
 /** Пересчитать желаемую скорость под дорогу, на которой машина оказалась. */
-function retune(net: Network, m: Mover): void {
+export function retune(net: Network, m: Mover): void {
   m.cruise = desiredSpeed(m.haste, net.signs.limit[m.shape]);
 }
 
@@ -678,7 +730,7 @@ function aheadOn(movers: readonly Mover[], m: Mover, line: number, reach: number
     const gap = (o.s - m.s) * m.dir - LENGTH;
     if (gap < 0 || gap > reach) continue;
     if (best === null || gap < best.gap)
-      best = { gap, speed: o.speed, parked: o.park?.phase === 'стоит' || o.knocked !== null };
+      best = { gap, speed: o.speed, parked: стоит(o) };
   }
   return best;
 }
@@ -694,8 +746,18 @@ function laneSafe(movers: readonly Mover[], m: Mover, line: number): boolean {
     if (Math.abs(o.across - line) > 2.2) continue;
     const gap = (o.s - m.s) * m.dir;
     if (gap >= 0 && gap < LENGTH + GAP0 + m.speed * 0.6) return false;      // впереди тесно
-    // сзади: ему должно хватить места, чтобы не тормозить резко
-    if (gap < 0 && -gap < LENGTH + GAP0 + o.speed * HEADWAY * 0.7) return false;
+    /**
+     * Сзади: ему должно хватить места, чтобы не тормозить резко. У СТОЯЩЕГО
+     * тормозить нечем — ему нужно только не быть задетым. Пока сзади
+     * требовался полный запас и для стоящего, получался тупик: машина не
+     * могла уйти из-под припаркованной, потому что сзади в соседней полосе
+     * стояла другая, которая стояла потому, что первая ей мешала. Оба
+     * не ехали до конца проверки.
+     */
+    const сзадиНадо = o.speed > 0.5
+      ? LENGTH + GAP0 + o.speed * HEADWAY * 0.7
+      : LENGTH + 0.8;
+    if (gap < 0 && -gap < сзадиНадо) return false;
   }
   return true;
 }
@@ -709,8 +771,21 @@ function sideBlocker(movers: readonly Mover[], m: Mover): number | null {
   for (const o of movers) {
     if (o === m || o.shape !== m.shape) continue;
     if (o.knocked === null && o.dir !== m.dir) continue;
+    /**
+     * Бок о бок — это про КУЗОВА, а не про дистанцию следования.
+     *
+     * Раньше здесь стояло `LENGTH + GAP0` — 7.6 метра, то есть машина
+     * в семи метрах впереди считалась «стоящей рядом», хотя между кузовами
+     * два с половиной метра чистого асфальта. Из-за этого получался клин:
+     * машина между припаркованной справа и соседом слева-сзади не могла
+     * шагнуть вбок НИКУДА — любой шаг считался «в сторону кого-то», — и
+     * стояла до конца проверки вместе со всей очередью за собой.
+     *
+     * Дистанция следования нужна, чтобы не догнать. Чтобы не задеть боком,
+     * нужна длина кузова и немного сверху.
+     */
     const along = Math.abs(o.s - m.s);
-    if (along > LENGTH + GAP0) continue;             // разъехались вдоль — не мешает
+    if (along > LENGTH + 1) continue;                // кузова разъехались — не мешает
     const side = Math.abs(o.across - m.across);
     if (side > 3.6) continue;                        // дальше полосы — не мешает
     if (side < best) { best = side; near = o.across; }
@@ -731,6 +806,28 @@ function sideBlocker(movers: readonly Mover[], m: Mover): number | null {
 function wantLane(world: World, net: Network, movers: readonly Mover[], m: Mover): number {
   const count = laneCount(net.lanes, m.shape, m.dir as 1 | -1);
   if (count <= 1) return 0;
+  const left = count - 1;
+  const line = (i: number): number => laneAcross(net.lanes, m.shape, m.dir as 1 | -1, i);
+  const mine = aheadOn(movers, m, line(m.lane), SCAN);
+
+  /**
+   * ПРЕПЯТСТВИЕ РАЗБИРАЕТСЯ ПЕРВЫМ — раньше запрета перестраиваться в очереди.
+   *
+   * Стоящего надо объезжать, ждать его бессмысленно: он не поедет. А запрет
+   * «в очереди на месте не перестраиваются» касается ОЧЕРЕДИ — потока,
+   * который сам вот-вот тронется. Пока эти два правила стояли в обратном
+   * порядке, получался тупик: машина останавливалась перед припаркованной,
+   * а остановившись, переставала иметь право её объехать. Ловилось на живом
+   * городе — очередь из шести машин стояла за одной стоящей всю проверку.
+   */
+  if (mine !== null && mine.parked && mine.gap < 40) {
+    for (const to of [m.lane + 1, m.lane - 1]) {
+      if (to < 0 || to > left) continue;
+      if (laneSafe(movers, m, line(to))) return to;
+    }
+    return m.lane;
+  }
+
   /**
    * В очереди на месте не перестраиваются. Не запрет ради запрета: пока
    * машина еле ползёт, соседи вокруг неё двигаются быстрее, чем она успевает
@@ -739,7 +836,6 @@ function wantLane(world: World, net: Network, movers: readonly Mover[], m: Mover
    */
   if (m.speed < 2 && m.lane !== 0) return m.lane;
   if (m.speed < 2) return 0;
-  const left = count - 1;
 
   // 8.5: поворот выполняется из крайней полосы, и решение принимается заранее
   const ahead = nextJunction(world, net, m);
@@ -747,18 +843,6 @@ function wantLane(world: World, net: Network, movers: readonly Mover[], m: Mover
     const turn = turnOf(world, net, m.shape, m.dir, m.route);
     if (turn > 0.35) return 0;
     if (turn < -0.35) return left;
-  }
-
-  const line = (i: number): number => laneAcross(net.lanes, m.shape, m.dir as 1 | -1, i);
-  const mine = aheadOn(movers, m, line(m.lane), SCAN);
-
-  // препятствие: стоящего надо объезжать, ждать его бессмысленно
-  if (mine !== null && mine.parked && mine.gap < 40) {
-    for (const to of [m.lane + 1, m.lane - 1]) {
-      if (to < 0 || to > left) continue;
-      if (laneSafe(movers, m, line(to))) return to;
-    }
-    return m.lane;
   }
 
   // обгон: впереди заметно медленнее меня, а слева есть куда
@@ -807,17 +891,39 @@ function wantAcross(world: World, net: Network, m: Mover): number {
   if (m.park === null || m.park.phase === 'выезжает') return lane;
   const bay = net.bays[m.park.bay];
   const gap = (bay.s - m.s) * m.dir;
-  return gap > 8 ? lane : bay.across;
+  /**
+   * Вбок машина уходит, только КОГДА ПОРАВНЯЛАСЬ со своим карманом. Раньше
+   * она начинала за восемь метров — то есть напротив ЧУЖОГО, занятого
+   * кармана, — и упиралась в стоящего боком, не доехав до своего.
+   */
+  return gap > 3 ? lane : bay.across;
 }
 
-/** Свободна ли полоса рядом и сзади — чтобы выехать из кармана. */
-function laneClear(world: World, net: Network, movers: readonly Mover[], m: Mover): boolean {
+/**
+ * Кто держит выезд из кармана: те, кто рядом и сзади в целевой полосе.
+ *
+ * Отдаётся наружу списком, а не «да/нет», потому что проверке нужно знать
+ * не только «не уехал», но и КТО не пустил. Если держат только стоящие
+ * машины — это не уступка потоку, а тупик: стоящей не уступают. Ровно
+ * таким тупиком ряд припаркованных машин запирал сам себя, пока выезд
+ * шёл по своей же полосе.
+ *
+ * Правило одно на обоих: машина решает по нему же, по чему её проверяют.
+ */
+export function ктоДержитВыезд(
+  net: Network, movers: readonly Mover[], m: Mover,
+): Mover[] {
   const lane = laneMid(net, m);
-  return !movers.some((o) => o !== m && o.shape === m.shape && o.dir === m.dir
+  return movers.filter((o) => o !== m && o.shape === m.shape && o.dir === m.dir
     && Math.abs(o.across - lane) < 2.4
     // назад смотрим далеко: подъезжающий сзади проедет эти метры,
     // пока машина выползает из кармана
     && (m.s - o.s) * m.dir > -22 && (m.s - o.s) * m.dir < 20);
+}
+
+/** Свободна ли полоса рядом и сзади — чтобы выехать из кармана. */
+function laneClear(world: World, net: Network, movers: readonly Mover[], m: Mover): boolean {
+  return ктоДержитВыезд(net, movers, m).length === 0;
 }
 
 /** Точка впереди, которую надо пройти с такой скоростью. */
@@ -1060,6 +1166,18 @@ export function moveTraffic(
     lanes?: boolean;
     /** Машина игрока: город обязан её видеть, иначе он едет сквозь неё. */
     player?: { x: number; z: number; speed: number; yaw: number } | null;
+    /**
+     * Час суток. По нему припаркованная машина понимает, вышел ли хозяин.
+     * Без него город живёт вне времени, и стоянка снова становится
+     * случайным отсчётом.
+     */
+    час?: number;
+    /**
+     * `выезд: 'по своей полосе'` — выезжать из кармана вперёд по той же
+     * полосе, как было до 15.09. Заведомо сломанный вариант: ряд стоящих
+     * машин запирает сам себя, и город с утра не выезжает.
+     */
+    выезд?: 'по своей полосе';
   } = {},
 ): void {
   const headway = options.headway ?? true;
@@ -1115,7 +1233,13 @@ export function moveTraffic(
     const exits = net.atJunction[t.end.junction].filter((l) => l.shape !== m.shape);
     // ехать некуда — это тупик, и разбирается он разворотом ниже, а не здесь
     if (exits.length === 0) return;
-    const pick = exits[Math.floor(roll(m) * exits.length) % exits.length];
+    /**
+     * Поворот берётся ИЗ МАРШРУТА, если он есть. Наугад сворачивает только
+     * та машина, которой некуда ехать, — на голой сцене без домов.
+     */
+    const поМаршруту = m.маршрут === null ? null : дальше(m.маршрут, m.shape);
+    const нужная = поМаршруту === null ? null : exits.find((l) => l.shape === поМаршруту);
+    const pick = нужная ?? exits[Math.floor(roll(m) * exits.length) % exits.length];
     const half = { junction: t.end.junction, shape: pick.shape, s: pick.s,
       dir: pick.s < net.length[pick.shape] / 2 ? 1 : -1, lane: 0 };
     // полоса выезда выбирается по тому, куда сворачиваем (ПДД 8.6)
@@ -1285,8 +1409,15 @@ export function moveTraffic(
        */
       const r = m.route as Route;
       const outMouth = mouthAt(net, r.junction, r.shape, r.s, -r.dir);
+      /**
+       * 13.2 — про ЗАТОР, а не про припаркованную машину. Стоящая у бордюра
+       * не «затор, в котором придётся встать», её объезжают. Пока она им
+       * считалась, перекрёсток с занятым карманом за ним не пропускал никого
+       * вообще: на зелёном машина стояла с причиной «затор за перекрёстком»
+       * все две минуты проверки.
+       */
       const jam = movers.some((o) => o !== m && o.shape === r.shape && o.dir === r.dir
-        && o.speed < 1.5 && (o.s - outMouth) * r.dir < LENGTH + GAP0
+        && !стоит(o) && o.speed < 1.5 && (o.s - outMouth) * r.dir < LENGTH + GAP0
         && (o.s - outMouth) * r.dir > -LENGTH);
       if (jam && ahead.stopGap > -0.5) {
         holds.push({ gap: Math.max(0.4, ahead.stopGap), speed: 0, why: 'затор за перекрёстком' });
@@ -1491,10 +1622,32 @@ export function moveTraffic(
           m.speed = 0;
         }
       } else if (m.park.phase === 'стоит') {
-        m.park.left -= dt;
         m.speed = 0;
         m.reason = 'стоит в кармане';
-        if (m.park.left <= 0 && laneClear(world, net, movers, m)) m.park.phase = 'выезжает';
+        /**
+         * Уезжает, когда ВЫШЕЛ ХОЗЯИН, а не когда истёк случайный отсчёт.
+         * Час суток приходит снаружи: город знает своё время, машина — нет.
+         */
+        const час = options.час ?? 0;
+        const пора = ((час - m.park.доЧаса + 24) % 24) < 12;
+        if (пора) {
+          /**
+           * Выезжают В СОСЕДНЮЮ ПОЛОСУ, а не вперёд по своей.
+           *
+           * Карман — это правая полоса (так и в жизни: стоящая машина её
+           * занимает). Значит впереди в той же полосе стоит следующая
+           * припаркованная машина в шести метрах, и тронуться по своей полосе
+           * нельзя НИКОГДА: ряд запирает сам себя. Поймано честной
+           * расстановкой: из 149 машин утром уезжали 17.
+           *
+           * Полоса выбирается до проверки занятости — иначе проверялась бы
+           * та полоса, из которой мы и так уезжаем.
+           */
+          m.lane = options.выезд === 'по своей полосе'
+            ? 0
+            : Math.min(1, Math.max(0, laneCount(net.lanes, m.shape, m.dir as 1 | -1) - 1));
+          if (laneClear(world, net, movers, m)) m.park.phase = 'выезжает';
+        }
         const want = wantAcross(world, net, m);
         m.across += Math.max(-0.9 * dt, Math.min(0.9 * dt, want - m.across));
         return;
@@ -1518,15 +1671,26 @@ export function moveTraffic(
           return;
         }
       }
-    } else if (m.speed > 3 && m.route === null && roll(m) < 0.0015) {
-      // ищем свободный карман по своей стороне впереди
+    } else if (m.хозяин >= 0 && m.доЧаса !== null && m.маршрут !== null
+      && m.route === null && m.маршрут.цель.shape === m.shape
+      && (m.маршрут.цель.s - m.s) * m.dir > 0
+      && (m.маршрут.цель.s - m.s) * m.dir < 90) {
+      /**
+       * Машина ищет карман, только когда ПРИЕХАЛА: она на той дороге, где
+       * цель, и цель уже впереди, в пределах девяноста метров. До маршрутов
+       * тут стоял случайный бросок «раз в тысячу шагов», и машина вставала
+       * посреди чужой улицы, чтобы простоять там до вечера.
+       *
+       * Ничья машина этой ветки не достигает никогда: у неё нет ни хозяина,
+       * ни цели. Значит «стоит просто так» записать негде.
+       */
       const side = Math.sign(m.dir);
       const found = net.bays.findIndex((b) => b.taken < 0 && b.shape === m.shape
         && Math.sign(b.across) === side
-        && (b.s - m.s) * m.dir > 14 && (b.s - m.s) * m.dir < 70);
+        && (b.s - m.s) * m.dir > 8 && (b.s - m.s) * m.dir < 90);
       if (found >= 0) {
         net.bays[found].taken = index;
-        m.park = { bay: found, phase: 'въезжает', left: 8 + roll(m) * 25 };
+        m.park = { bay: found, phase: 'въезжает', доЧаса: m.доЧаса };
       }
     }
 
@@ -1569,9 +1733,19 @@ export function moveTraffic(
     const tail = net.length[m.shape];
     const stopsHere = net.ends[m.shape][m.dir > 0 ? 1 : 0] === null;
     if (stopsHere && (m.dir > 0 ? m.s > tail - 6 : m.s < 6)) {
-      const back = -m.dir;
+      const back = -m.dir as 1 | -1;
+      /**
+       * Занято ли место, куда мы встанем. Смотрим ТУ ПОЛОСУ, в которой
+       * окажемся, а не всё встречное направление: на улице в две полосы
+       * в каждую сторону требование «встречных нет вовсе» означает, что
+       * развернуться нельзя никогда, пока по улице кто-то едет. Двое
+       * упирались в край посёлка и стояли там до конца проверки.
+       */
+      const куда = laneAcross(net.lanes, m.shape, back, 0);
+      const сюда = Math.max(3, Math.min(tail - 3, m.s + back * 2));
       const busy = movers.some((o) => o !== m && o.shape === m.shape
-        && o.dir === back && Math.abs(o.s - m.s) < 14);
+        && o.dir === back && Math.abs(o.s - сюда) < LENGTH + 2
+        && Math.abs(o.across - куда) < 2.4);
       if (busy) { m.speed = 0; m.s = Math.max(2, Math.min(tail - 2, m.s)); }
       else {
         m.dir = back;
