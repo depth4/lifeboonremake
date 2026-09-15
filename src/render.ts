@@ -8,6 +8,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Material, Surface } from './surface/index.ts';
 import type { Point2 } from './world/road.ts';
 import { EYE_HEIGHT } from './person/person.ts';
+import { type Дом, ДВЕРЬ, ОКНО, ЭТАЖ } from './city/дом.ts';
 import { type Sight, createSight } from './person/sight.ts';
 
 const COLORS: Record<Material, number> = {
@@ -188,11 +189,12 @@ export interface Viewer {
   /**
    * Дома посёлка. Один вызов ставит весь город: дома не двигаются, и
    * пересобирать их каждый кадр незачем. Пустой список — убрать застройку.
+   *
+   * Дом приходит ГОТОВЫМ из `city/дом.ts` — с этажами, окнами и подъездами.
+   * Показ ничего не додумывает: он раскладывает то, что ему дали. Поэтому
+   * «на картинке четыре этажа, а в расчёте три» невыразимо.
    */
-  setBuildings(дома: readonly {
-    x: number; z: number; низ: number; yaw: number;
-    ширина: number; глубина: number; высота: number; цвет: number;
-  }[]): void;
+  setBuildings(дома: readonly { дом: Дом; низ: number }[]): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -329,6 +331,49 @@ function собратьЛюдей(сколько: number): {
     ноги: пачка(кусок(НОГА.глубина, БЕДРО, НОГА.ширина, true), сколько * 2),
     руки: пачка(кусок(РУКА.глубина, РУКА.длина, РУКА.ширина, true), сколько * 2),
   };
+}
+
+
+/**
+ * ДОМ — ИЗ ЧАСТЕЙ, А НЕ КОРОБКА.
+ *
+ * Раньше застройка была одним мешем одинаковых коробок, и с уровня глаз
+ * посёлок выглядел складом контейнеров — Алекс это увидел и справедливо снял
+ * сцены с сайта. Дело было не в числе треугольников: у коробки просто нечего
+ * читать. Человек узнаёт дом по трём вещам, и все три стоят копейки —
+ * цоколь, крыша и проёмы.
+ *
+ * Все размеры и все проёмы приходят готовыми из `city/дом.ts`. Показ ничего
+ * не додумывает: он раскладывает то, что ему дали. Поэтому «на картинке
+ * четыре этажа, а в расчёте три» записать негде.
+ */
+/** Высота цоколя, м. */
+const ЦОКОЛЬ = 0.55;
+/** Свес крыши за стены, м. */
+const СВЕС = 0.45;
+/** На сколько проём выступает из стены, м. Меньше — грани мерцают друг сквозь друга. */
+const ТОЛЩИНА = 0.09;
+/** Цвет стекла: отражённое небо, а не чёрная дыра. */
+const СТЕКЛО = 0x5d7794;
+
+/**
+ * Двускатная крыша единичного размера: конёк вдоль фасада, скаты на улицу
+ * и во двор. Обход вершин задан так, чтобы наружу смотрели лицевые грани, —
+ * иначе крыша чернеет с одной стороны, и это видно только с улицы.
+ */
+function двускатная(): THREE.BufferGeometry {
+  const A = [-0.5, 0, -0.5], B = [0.5, 0, -0.5], C = [0.5, 0, 0.5], D = [-0.5, 0, 0.5];
+  const E = [0, 1, -0.5], F = [0, 1, 0.5];
+  const треугольники = [
+    B, F, C, B, E, F,      // скат на улицу
+    A, D, F, A, F, E,      // скат во двор
+    A, E, B,               // торец
+    D, C, F,               // торец
+  ];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(треугольники.flat(), 3));
+  g.computeVertexNormals();
+  return g;
 }
 
 export function show(surface: Surface, startView: string, custom: View | null = null): Viewer {
@@ -477,8 +522,12 @@ export function show(surface: Surface, startView: string, custom: View | null = 
     голова: THREE.InstancedMesh; лицо: THREE.InstancedMesh; тело: THREE.InstancedMesh;
     ноги: THREE.InstancedMesh; руки: THREE.InstancedMesh;
   } | null = null;
-  /** Вся застройка посёлка одним мешем. */
-  let домаМеш: THREE.InstancedMesh | null = null;
+  /**
+   * Вся застройка посёлка. Как и человек, дом разложен по ПАЧКАМ ЧАСТЕЙ:
+   * все цоколи в одной, все окна в другой. Весь город — шесть вызовов
+   * отрисовки независимо от числа домов (решение 053).
+   */
+  let застройка: THREE.InstancedMesh[] | null = null;
   let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
@@ -881,35 +930,109 @@ export function show(surface: Surface, startView: string, custom: View | null = 
       scene.add(signGroup);
     },
     setBuildings(дома) {
-      if (домаМеш !== null) { scene.remove(домаМеш); домаМеш.dispose(); домаМеш = null; }
+      if (застройка !== null) {
+        for (const меш of застройка) { scene.remove(меш); меш.dispose(); }
+        застройка = null;
+      }
       if (дома.length === 0) return;
+
+      const скатных = дома.filter((д) => д.дом.крыша === 'скатная').length;
+      const окон = дома.reduce((n, д) => n + д.дом.окна.length, 0);
+      const дверей = дома.reduce((n, д) => n + д.дом.двери.length, 0);
+
+      /** Коробка с началом координат на нижней грани: дом СТОИТ на земле. */
+      const коробка = (): THREE.BoxGeometry => {
+        const g = new THREE.BoxGeometry(1, 1, 1);
+        g.translate(0, 0.5, 0);
+        return g;
+      };
+      const пачка = (
+        g: THREE.BufferGeometry, n: number, m: THREE.Material,
+      ): THREE.InstancedMesh => {
+        const меш = new THREE.InstancedMesh(g, m, Math.max(1, n));
+        меш.castShadow = true;
+        меш.receiveShadow = true;
+        меш.count = n;
+        return меш;
+      };
+      const камень = (шероховатость: number): THREE.Material =>
+        new THREE.MeshStandardMaterial({ roughness: шероховатость });
+
+      const цоколь = пачка(коробка(), дома.length, камень(0.95));
+      const стены = пачка(коробка(), дома.length, камень(0.9));
+      const плоские = пачка(коробка(), дома.length - скатных, камень(0.85));
+      const скаты = пачка(двускатная(), скатных, камень(0.8));
       /**
-       * Все дома — один меш на весь город. Коробка с единичными сторонами,
-       * а размер задаётся масштабом каждого экземпляра: так тысяча домов
-       * стоит один вызов отрисовки вместо тысячи.
+       * Окно и дверь СВЕТЯТСЯ САМИ (basic): стекло в тени — это не чёрное
+       * пятно, а отражённое небо. С обычным материалом окна на теневой
+       * стороне пропадали совсем, и дом снова становился ящиком.
        */
-      const коробка = new THREE.BoxGeometry(1, 1, 1);
-      коробка.translate(0, 0.5, 0); // ставим на землю, а не серединой в неё
-      домаМеш = new THREE.InstancedMesh(
-        коробка, new THREE.MeshStandardMaterial({ roughness: 0.9 }), дома.length,
-      );
-      домаМеш.castShadow = true;
-      домаМеш.receiveShadow = true;
+      const окна = пачка(коробка(), окон, new THREE.MeshBasicMaterial());
+      const двери = пачка(коробка(), дверей, new THREE.MeshBasicMaterial());
+      застройка = [цоколь, стены, плоские, скаты, окна, двери];
+      scene.add(...застройка);
+
       const m = new THREE.Matrix4();
       const q = new THREE.Quaternion();
+      const e = new THREE.Euler();
+      const где = new THREE.Vector3();
+      const размер = new THREE.Vector3();
       const тон = new THREE.Color();
-      дома.forEach((д, i) => {
-        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -д.yaw);
-        m.compose(
-          new THREE.Vector3(д.x, д.низ, д.z), q,
-          new THREE.Vector3(д.ширина, д.высота, д.глубина),
-        );
-        (домаМеш as THREE.InstancedMesh).setMatrixAt(i, m);
-        (домаМеш as THREE.InstancedMesh).setColorAt(i, тон.setHex(д.цвет));
+      let плоскихN = 0, скатовN = 0, оконN = 0, дверейN = 0;
+
+      /** Поставить часть: смещение в осях дома (вперёд, вверх, вбок) + свой доворот. */
+      const часть = (
+        меш: THREE.InstancedMesh, номер: number, д: Дом, низ: number,
+        вперёд: number, вверх: number, вбок: number,
+        глубина: number, высота: number, ширина: number, доворот: number, цвет: number,
+      ): void => {
+        const cos = Math.cos(д.курс), sin = Math.sin(д.курс);
+        где.set(д.x + вперёд * cos - вбок * sin, низ + вверх, д.z + вперёд * sin + вбок * cos);
+        e.set(0, -(д.курс + доворот), 0);
+        q.setFromEuler(e);
+        размер.set(глубина, высота, ширина);
+        m.compose(где, q, размер);
+        меш.setMatrixAt(номер, m);
+        меш.setColorAt(номер, тон.setHex(цвет));
+      };
+
+      дома.forEach(({ дом: д, низ }, i) => {
+        // цоколь: чуть шире стен и темнее. Без него дом висит над землёй
+        часть(цоколь, i, д, низ, 0, 0, 0, д.глубина + 0.36, ЦОКОЛЬ, д.ширина + 0.36, 0,
+          тон.setHex(д.цвет).multiplyScalar(0.55).getHex());
+        часть(стены, i, д, низ, 0, ЦОКОЛЬ, 0, д.глубина, д.высота - ЦОКОЛЬ, д.ширина, 0, д.цвет);
+
+        if (д.крыша === 'скатная') {
+          часть(скаты, скатовN++, д, низ, 0, д.высота, 0,
+            д.глубина + СВЕС * 2, д.подъём, д.ширина + СВЕС * 2, 0, д.цветКрыши);
+        } else {
+          // парапет: тонкая плита чуть шире стен — по ней плоская крыша и читается
+          часть(плоские, плоскихN++, д, низ, 0, д.высота, 0,
+            д.глубина + 0.3, д.подъём, д.ширина + 0.3, 0, д.цветКрыши);
+        }
+
+        for (const п of д.двери) {
+          const наФасаде = п.грань === 0;
+          часть(двери, дверейN++, д, низ,
+            наФасаде ? д.глубина / 2 : п.вдоль,
+            ЦОКОЛЬ + ДВЕРЬ.высота / 2,
+            наФасаде ? п.вдоль : (п.грань * д.ширина) / 2,
+            ТОЛЩИНА, ДВЕРЬ.высота, ДВЕРЬ.ширина, наФасаде ? 0 : Math.PI / 2, 0x3a2f28);
+        }
+        for (const п of д.окна) {
+          const наФасаде = п.грань === 0;
+          часть(окна, оконN++, д, низ,
+            наФасаде ? д.глубина / 2 : п.вдоль,
+            п.этаж * ЭТАЖ + ОКНО.отПола + ОКНО.высота / 2,
+            наФасаде ? п.вдоль : (п.грань * д.ширина) / 2,
+            ТОЛЩИНА, ОКНО.высота, ОКНО.ширина, наФасаде ? 0 : Math.PI / 2, СТЕКЛО);
+        }
       });
-      домаМеш.instanceMatrix.needsUpdate = true;
-      if (домаМеш.instanceColor) домаМеш.instanceColor.needsUpdate = true;
-      scene.add(домаМеш);
+
+      for (const меш of застройка) {
+        меш.instanceMatrix.needsUpdate = true;
+        if (меш.instanceColor) меш.instanceColor.needsUpdate = true;
+      }
     },
     setWalkers(people) {
       if (люди !== null && люди.голова.count !== people.length) {
