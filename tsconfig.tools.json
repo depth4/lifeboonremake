@@ -1,0 +1,8 @@
+{
+  "//": "Инструменты из терминала: тот же строгий режим, но им видно Node.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["tools", "src/types"]
+}

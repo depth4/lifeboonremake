@@ -1,0 +1,29 @@
+# Проверка на каждый push и каждый pull request.
+#
+# Зачем: `npm test` надо не забыть запустить, а забытая проверка однажды будет
+# забыта — в этом проекте так было дважды. GitHub не забывает.
+#
+# Здесь идёт БЫСТРАЯ половина: без настоящего браузера. Браузерная половина
+# (`ride`, `play`) требует Chromium и минут, и гоняется руками перед выкладкой.
+
+name: проверка
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  всё:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: npm test быстро
+        run: npm test быстро

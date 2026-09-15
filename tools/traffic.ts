@@ -9,7 +9,7 @@
 import { SCENES } from '../src/scenes.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
 import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
-import { laneAcross, laneCount, sideOf } from '../src/city/lanes.ts';
+import { laneAcross, sideOf } from '../src/city/lanes.ts';
 import { TOWN_LIMIT, priorityOf } from '../src/city/signs.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
 import { lightFor, walkLight } from '../src/city/signals.ts';

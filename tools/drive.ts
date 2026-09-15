@@ -17,7 +17,7 @@ import { buildSurface } from '../src/surface/index.ts';
 import { GroundIndex, type Spot } from '../src/car/ground.ts';
 import { VIPER } from '../src/car/passport.ts';
 import { P_ZERO } from '../src/car/tyre.ts';
-import { type Car, type Controls, createCar, forwardSpeed, step } from '../src/car/car.ts';
+import { type Controls, createCar, forwardSpeed, step } from '../src/car/car.ts';
 
 const mode = process.argv[2] ?? '';
 const broken = mode === 'сломать';

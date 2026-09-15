@@ -1,0 +1,24 @@
+{
+  "//": "Разрешения на то, что в этом проекте делается постоянно: чтобы новый чат не тратил ходы на спрашивание.",
+  "permissions": {
+    "allow": [
+      "Bash(npm test:*)",
+      "Bash(npm run:*)",
+      "Bash(npm install)",
+      "Bash(npm ci)",
+      "Bash(npx tsc:*)",
+      "Bash(node tools/:*)",
+      "Bash(node --experimental-strip-types tools/:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git branch:*)",
+      "Bash(git revert:*)",
+      "Bash(git stash:*)"
+    ],
+    "deny": []
+  }
+}

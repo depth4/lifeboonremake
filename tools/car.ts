@@ -148,7 +148,7 @@ function accelerate(muDrive: number, transfer = true): Run {
     const roll = GUESS.rollingResistance * weight;
     ax = (force - drag - roll) / (m + rotatingMass(gear));
 
-    const vPrev = v, xPrev = x;
+    const vPrev = v;
     v += ax * dt;
     x += v * dt;
     t += dt;

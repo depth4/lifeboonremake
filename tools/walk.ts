@@ -13,7 +13,7 @@ import { SCENES } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
 import { GroundIndex } from '../src/car/ground.ts';
-import { EYE_HEIGHT, createPerson, eyes, gaze, look, step } from '../src/person/person.ts';
+import { EYE_HEIGHT, type Footing, createPerson, eyes, gaze, look, step } from '../src/person/person.ts';
 
 const broken = process.argv[2] === 'сломать';
 const world = buildWorld(SCENES['решётка'], 'plain');
@@ -68,9 +68,9 @@ const say = (name: string, ok: boolean, note: string): void => { checks.push([na
 // ── Ступенька под ногами: ноги её гасят, голова не прыгает.
 {
   // бордюр 15 см ровно на пути: земля ниже нуля до x=1, выше после
-  const curb: typeof ground = {
+  const curb: Footing = {
     sample: (x: number) => ({ height: x < 1 ? 0 : 0.15, nx: 0, ny: 1, nz: 0 }),
-  } as typeof ground;
+  };
   const p = createPerson(0, 0, curb);
   let jump = 0, was = eyes(p).y;
   for (let i = 0; i < 180; i++) {
