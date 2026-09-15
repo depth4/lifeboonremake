@@ -1,9 +1,9 @@
 /** Из чего сделана поверхность в конкретных точках: асфальт, тротуар, трава. */
-import { SCENES } from '../src/scenes.ts';
+import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
 
-const world = buildWorld(SCENES[process.argv[2] ?? 'крест'], 'plateau');
+const world = buildWorld(дорогиСцены(process.argv[2] ?? 'крест'), 'plateau');
 const s = buildSurface(world);
 const P = s.positions, I = s.indices;
 const material: string[] = [];

@@ -1,5 +1,5 @@
 /** Самые вытянутые треугольники: где они и из чего сделаны. */
-import { SCENES } from '../src/scenes.ts';
+import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
 import { layout } from './fuzz.ts';
@@ -9,7 +9,7 @@ const scene = process.argv[2] ?? 'бритва';
 const seeded = scene === 'зерно' ? layout(Number(process.argv[3])) : null;
 const world = seeded
   ? buildWorld(seeded.roads, seeded.terrain)
-  : buildWorld(SCENES[scene], process.argv[3] ?? 'plateau');
+  : buildWorld(дорогиСцены(scene), process.argv[3] ?? 'plateau');
 const s = buildSurface(world);
 const P = s.positions, I = s.indices;
 const material = new Map<number, string>();

@@ -12,7 +12,7 @@
 import type { Point2, Road, RoadType, Station } from './road.ts';
 import type { Terrain } from './terrain.ts';
 import { limitCurvature, resample, roadWidth, stationsFromLine } from './road.ts';
-import { DEFAULT_TERRAIN, TERRAINS } from './terrain.ts';
+import { DEFAULT_TERRAIN, МИН_ПОЛМИРА, ПОЛЕ_ЗА_ДОРОГОЙ, ШАГ_СЕТКИ, TERRAINS } from './terrain.ts';
 import { planarize } from './network.ts';
 
 /**
@@ -59,6 +59,17 @@ export interface World {
   readonly shapes: readonly RoadShape[];
   readonly junctions: readonly Junction[];
   readonly terrain: Terrain;
+  /**
+   * Половина стороны мира, м. Мир — квадрат с центром в нуле.
+   *
+   * ЭТО СВОЙСТВО МИРА, А НЕ ПОСТОЯННАЯ. Раньше размер мира был глобальным
+   * числом 120, а размер посёлка — отдельным числом в сцене, и они обязаны
+   * были совпадать, но ничто их не связывало: посёлок в 600 метров молча
+   * обрезался бы по краю плиты, и это нигде не всплыло бы. Теперь мир
+   * ВЫВОДИТСЯ из того, что в нём построено, и «посёлок больше мира»
+   * записать негде.
+   */
+  readonly half: number;
   readonly grade: number;
   readonly lift: number;
   /**
@@ -323,10 +334,31 @@ export function buildWorld(roads: readonly Road[], terrainName: string = DEFAULT
     shapes,
     junctions,
     terrain,
+    half: worldHalf(shapes),
     grade: shapes.reduce((g, s) => Math.max(g, s.grade), 0),
     lift: shapes.reduce((l, s) => Math.max(l, s.lift), 0),
     near: indexRoads(shapes),
   };
+}
+
+/**
+ * Насколько велик мир, в котором помещается эта дорожная сеть.
+ *
+ * Берётся самая дальняя точка полотна плюс поле под откос, и округляется
+ * вверх до шага сетки земли — иначе край плиты попадал бы между узлами
+ * сетки и порождал иглы. Ниже `МИН_ПОЛМИРА` не опускаемся: у рукотворных
+ * сцен земля должна оставаться ровно той же, какой была, иначе все замеры
+ * и все известные поломки обстрела поедут разом.
+ */
+function worldHalf(shapes: readonly RoadShape[]): number {
+  let reach = 0;
+  for (const shape of shapes) {
+    for (const st of shape.stations) {
+      reach = Math.max(reach, Math.abs(st.x) + shape.outerHalf, Math.abs(st.z) + shape.outerHalf);
+    }
+  }
+  const нужно = Math.ceil((reach + ПОЛЕ_ЗА_ДОРОГОЙ) / ШАГ_СЕТКИ) * ШАГ_СЕТКИ;
+  return Math.max(МИН_ПОЛМИРА, нужно);
 }
 
 export interface RoadProximity {

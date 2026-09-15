@@ -25,7 +25,7 @@ import type { World } from '../world/world.ts';
 import type { Region } from './clip.ts';
 import type { Surface } from './mesh.ts';
 import { bands } from '../world/road.ts';
-import { WORLD_HALF } from '../world/terrain.ts';
+import { ШАГ_СЕТКИ } from '../world/terrain.ts';
 import { roadHeightAt, shelfHeight } from '../world/world.ts';
 import { box, corridor, densify, grow, inside, intersect, union, unionAll } from './clip.ts';
 import { CURB_FOOT, CURB_TOP, GROUND, MeshBuilder, ROAD, SHELF, carvePlane } from './mesh.ts';
@@ -39,8 +39,8 @@ import type { Material } from './mesh.ts';
 const CORNER_RADIUS = 6;
 /** Длиннее этого ребра границы не бывает: иначе край дороги врёт про высоту. */
 const MAX_EDGE = 4;
-/** Шаг сетки земли, метры. */
-const GRID_STEP = 4;
+/** Шаг сетки земли, метры. Живёт рядом с размером мира: они связаны. */
+const GRID_STEP = ШАГ_СЕТКИ;
 /** Насколько точки сетки сбиты с ровных мест, доля шага. */
 const WOBBLE = 0.34;
 /** Ближе этого к границе внутренние точки не ставим: там рождаются иглы. */
@@ -88,7 +88,7 @@ export interface Plan {
 export function plan(world: World): Plan {
   // Мир — квадрат. Всё мощёное обрезается по нему, поэтому «край мира»
   // ровно один: у земли и у дороги он не может оказаться разным.
-  const edge = box(WORLD_HALF);
+  const edge = box(world.half);
 
   const corridors = world.shapes.map((s) => corridor(lineOf(s), s.halfWidth));
   const paved = intersect(closeCorners(unionAll(corridors), CORNER_RADIUS), edge);
@@ -115,7 +115,7 @@ export function buildSurface(world: World): Surface {
   // --- 2. Границы: короткими рёбрами, иначе край дороги врёт про высоту ---
   const edgePaved = densify(paved, MAX_EDGE);
   const edgeOuter = densify(outer, MAX_EDGE);
-  const edgeBox = densify(box(WORLD_HALF), GRID_STEP);
+  const edgeBox = densify(box(world.half), GRID_STEP);
 
   // --- 3. Точки внутри: без них поверхность натянулась бы между краями ---
   // «Сколько метров наружу от тротуара» считается по ТОЙ ЖЕ границе, которая
@@ -144,7 +144,7 @@ export function buildSurface(world: World): Surface {
   // потом нечем починить, потому что у них нет описанной окружности. Сбитая
   // сетка делает точное совпадение трёх точек на прямой невозможным — и заодно
   // трава перестаёт бликовать полосами.
-  const steps = Math.round((WORLD_HALF * 2) / GRID_STEP);
+  const steps = Math.round((world.half * 2) / GRID_STEP);
   const wobble = (i: number, j: number): number => {
     const h = Math.sin(i * 127.1 + j * 311.7) * 43758.545;
     return (h - Math.floor(h) - 0.5) * 2 * WOBBLE * GRID_STEP;
@@ -152,8 +152,8 @@ export function buildSurface(world: World): Surface {
   for (let i = 1; i < steps; i++) {
     for (let j = 1; j < steps; j++) {
       interior.push({
-        x: -WORLD_HALF + i * GRID_STEP + wobble(i, j),
-        z: -WORLD_HALF + j * GRID_STEP + wobble(j + 1000, i),
+        x: -world.half + i * GRID_STEP + wobble(i, j),
+        z: -world.half + j * GRID_STEP + wobble(j + 1000, i),
       });
     }
   }
@@ -161,7 +161,7 @@ export function buildSurface(world: World): Surface {
   // --- 4. Один раскрой на всё ---
   // За краем мира точек не существует: тогда внешняя граница раскроя — ровно
   // квадрат мира, и треугольников, торчащих наружу, взяться неоткуда.
-  const within = interior.filter((p) => Math.abs(p.x) < WORLD_HALF && Math.abs(p.z) < WORLD_HALF);
+  const within = interior.filter((p) => Math.abs(p.x) < world.half && Math.abs(p.z) < world.half);
   const plane = carvePlane([edgePaved, edgeOuter, edgeBox], within, CLEARANCE);
 
   // --- 5. Из чего сделана поверхность в этом месте ---

@@ -15,13 +15,13 @@
  * Запуск: npm run load [сцена]
  */
 
-import { SCENES } from '../src/scenes.ts';
+import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildNetwork, moveTraffic, placeTraffic } from '../src/city/traffic.ts';
 import { moveWalkers, placeWalkers } from '../src/city/walkers.ts';
 
 const scene = process.argv[2] ?? 'решётка';
-const world = buildWorld(SCENES[scene] ?? SCENES['решётка'], 'plain');
+const world = buildWorld(дорогиСцены(scene), 'plain');
 const net = buildNetwork(world);
 const DT = 1 / 60;
 /** Бюджет одного кадра при 60 кадрах в секунду, мс. */

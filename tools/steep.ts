@@ -1,5 +1,5 @@
 /** Самые крутые треугольники по материалам: тротуар не имеет права быть крутым. */
-import { SCENES } from '../src/scenes.ts';
+import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
 import { layout } from './fuzz.ts';
@@ -8,7 +8,7 @@ const name = process.argv[2] ?? 'крест';
 const seeded = name === 'зерно' ? layout(Number(process.argv[3])) : null;
 const world = seeded
   ? buildWorld(seeded.roads, seeded.terrain)
-  : buildWorld(SCENES[name], process.argv[3] ?? 'hills');
+  : buildWorld(дорогиСцены(name), process.argv[3] ?? 'hills');
 const s = buildSurface(world);
 const P = s.positions, I = s.indices;
 const worst = new Map<string, { slope: number; at: string }>();

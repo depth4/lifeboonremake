@@ -1,12 +1,12 @@
 /** Поперечный разрез: что было у земли и что стало. Цифрами, без картинок. */
-import { SCENES } from '../src/scenes.ts';
+import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld, shelfHeight, roadHeightAt, nearestRoad } from '../src/world/world.ts';
 import { TERRAINS } from '../src/world/terrain.ts';
 
 const scene = process.argv[2] ?? 'крест';
 const terrain = process.argv[3] ?? 'mountain';
 const along = Number(process.argv[4] ?? -38);
-const world = buildWorld(SCENES[scene], terrain);
+const world = buildWorld(дорогиСцены(scene), terrain);
 const nat = TERRAINS[terrain].height;
 
 console.log(`разрез поперёк дороги при x=${along}, рельеф «${TERRAINS[terrain].label}»`);

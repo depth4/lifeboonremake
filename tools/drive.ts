@@ -11,7 +11,7 @@
  *   npm run drive сломать   — убрать перенос веса: сверка обязана упасть
  */
 
-import { SCENES } from '../src/scenes.ts';
+import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
 import { GroundIndex, type Spot } from '../src/car/ground.ts';
@@ -104,7 +104,7 @@ function skidpad(): { g: number; radius: number } {
 
 /** Круг по нашему кварталу: не проваливается ли колесо и по чему едет. */
 function lap(): { spots: Record<string, number>; lowest: number; steps: number } {
-  const world = buildWorld(SCENES['крест'], 'plain');
+  const world = buildWorld(дорогиСцены('крест'), 'plain');
   const index = new GroundIndex(buildSurface(world, 'A'));
   const sample = (x: number, z: number): Spot => index.sample(x, z);
   const car = createCar(P, -60, 0, 0);

@@ -7,7 +7,7 @@
  *   npm run traffic -- решётка шаг-по-часам — походка от часов, обязана упасть
  */
 
-import { SCENES } from '../src/scenes.ts';
+import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
 import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { laneAcross, sideOf } from '../src/city/lanes.ts';
@@ -23,10 +23,24 @@ const lawless = mode === 'без-правил';
 /** Заведомо сломанный вариант: походка считается часами, а не пройденным путём. */
 const byClock = mode === 'шаг-по-часам';
 const oneLane = mode === 'одна-полоса';
-const world = buildWorld(SCENES[scene] ?? SCENES['решётка'], 'plain');
+const world = buildWorld(дорогиСцены(scene), 'plain');
 const net = buildNetwork(world);
-const movers = placeTraffic(world, net, 18);
-const walkers = placeWalkers(world, net, 26);
+
+/**
+ * Сколько машин и пешеходов ставить — по ДЛИНЕ УЛИЦ, а не числом.
+ *
+ * Числом было 18 машин и 26 пешеходов, и на «решётке» с её километром улиц
+ * это плотный поток. На настоящем городе в семь километров те же 18 машин
+ * расползаются так, что за две минуты никто никого не встречает: проверки
+ * «кто-то кого-то обогнал» и «пешеходы переходят дорогу» проваливались не
+ * потому, что правила плохи, а потому, что в городе было пусто.
+ *
+ * Плотность подобрана так, чтобы на «решётке» получились ровно прежние
+ * 18 и 26: старые замеры остаются сравнимыми.
+ */
+const улиц = net.length.reduce((sum, l) => sum + l, 0);
+const movers = placeTraffic(world, net, Math.max(18, Math.round(улиц / 51)));
+const walkers = placeWalkers(world, net, Math.max(26, Math.round(улиц / 35)));
 const DT = 1 / 60;
 
 let offRoad = 0, worstOff = 0, tooFast = 0, fastest = 0, stuck = 0, worstSpeeding = -99;
@@ -34,6 +48,12 @@ const travelled = movers.map(() => 0);
 const reasons: Record<string, number> = {};
 /** Нарушения ПДД и столкновения — то, ради чего правила и писались. */
 let ranRed = 0, closestPair = Infinity, inBoxTogether = 0;
+/**
+ * Кто и когда проехал на красный. Без имени и мига цифра «1 проезд» —
+ * это цифра, с которой нечего делать: приходится писать второй инструмент,
+ * чтобы узнать, кто это был. Тот же приём, что у тесноты ниже.
+ */
+const красные: string[] = [];
 // пешеходы
 let offKerb = 0, worstKerb = 0, crossedOnRed = 0, yieldedToWalker = 0, crossings = 0;
 /**
@@ -185,7 +205,13 @@ for (let t = 0; t < 120; t += DT) {
   movers.forEach((m, i) => {
     const w = watch(world, net, m, t);
     const before = w === null ? true : w.stopGap > 0;
-    if (wasBefore[i] && !before && w !== null && w.light === 'красный' && m.speed > 1) ranRed++;
+    if (wasBefore[i] && !before && w !== null && w.light === 'красный' && m.speed > 1) {
+      ranRed++;
+      if (красные.length < 6) {
+        красные.push(`t=${t.toFixed(1)} ${tell(m, i)} ${(m.speed * 3.6).toFixed(0)} км/ч, `
+          + `за стоп-линией на ${(-w.stopGap).toFixed(2)} м, занят «${m.reason}»`);
+      }
+    }
     wasBefore[i] = before;
   });
 
@@ -443,7 +469,7 @@ const lawful = offenceScene(false);
  */
 function priorityScene(): { signs: number; mainWaits: number; sideWaits: number; name: string } {
   const scene = 'бритва';
-  const w2 = buildWorld(SCENES[scene], 'plain');
+  const w2 = buildWorld(дорогиСцены(scene), 'plain');
   const n2 = buildNetwork(w2);
   const cars = placeTraffic(w2, n2, 14);
   const junction = w2.junctions.findIndex((_, j) => n2.atJunction[j].length >= 3
@@ -494,7 +520,8 @@ const checks: [string, boolean, string][] = [
   ['никто не встал намертво', stuck === 0, `${stuck} проехали меньше 30 м`],
   ['габариты нигде не наложились', closest > 1, `самое тесное ${(closest * 100).toFixed(0)}% от касания`],
   ['кто-то свернул на перекрёстке', world.junctions.length === 0 || turns > 0, `${turns} поворотов`],
-  ['никто не проехал на красный', ranRed === 0, `${ranRed} проездов`],
+  ['никто не проехал на красный', ranRed === 0,
+    `${ranRed} проездов${красные.length > 0 ? '\n      ' + красные.join('\n      ') : ''}`],
   ['на перекрёстке не столкнулись', inBoxTogether === 0,
     `самое тесное — ${closestPair === Infinity ? 'никого рядом' : (closestPair * 100).toFixed(0) + '% от касания'}`],
   ['едут по ПРАВОЙ стороне', wrongSide === 0, `${wrongSide} не по той стороне, смещение ${sideSample.toFixed(2)} м`],

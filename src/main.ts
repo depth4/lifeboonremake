@@ -1,9 +1,8 @@
 /** Склейка: собрать мир, посчитать поверхность, показать, повесить кнопки. */
 
 import type { Road } from './world/road.ts';
-import { DEFAULT_SCENE, SCENES } from './scenes.ts';
+import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
 import { ЗАСТРОЙКА, type Назначение, РАЗМЕР } from './city/norms.ts';
-import { ПОСЁЛКИ } from './scenes.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
@@ -32,8 +31,8 @@ const startScene = query.get('scene') ?? DEFAULT_SCENE;
 /** На каком расстоянии инструмент начинает распознавать намерение, метры. */
 const SNAP_RADIUS = 14;
 
-let sceneName = SCENES[startScene] ? startScene : DEFAULT_SCENE;
-const roads: Road[] = [...SCENES[sceneName]];
+let sceneName = ИМЕНА_СЦЕН.includes(startScene) ? startScene : DEFAULT_SCENE;
+const roads: Road[] = [...дорогиСцены(sceneName)];
 let terrainName = query.get('terrain') ?? DEFAULT_TERRAIN;
 if (!TERRAINS[terrainName]) terrainName = DEFAULT_TERRAIN;
 
@@ -106,8 +105,8 @@ const ЭТАЖ = 3;
  * негде было бы записать.
  */
 function застройка(): void {
-  const посёлок = ПОСЁЛКИ[sceneName];
-  if (!посёлок || !viewer) { viewer?.setBuildings([]); return; }
+  const посёлок = посёлокСцены(sceneName);
+  if (посёлок === null || !viewer) { viewer?.setBuildings([]); return; }
   const вид = sceneName === 'деревня' ? 'деревня' : 'город';
   viewer.setBuildings(посёлок.участки.map((у) => {
     const дом = у.что === 'жильё'
@@ -285,14 +284,14 @@ if (variants) {
 // --- кнопки сцены ---
 const scenes = document.getElementById('scenes');
 if (scenes) {
-  scenes.innerHTML = Object.keys(SCENES)
+  scenes.innerHTML = ИМЕНА_СЦЕН
     .map((key) => `<button type="button" data-scene="${key}" aria-pressed="${key === sceneName}">${key}</button>`)
     .join('');
   scenes.addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-scene]');
     if (!button) return;
     sceneName = button.dataset.scene ?? DEFAULT_SCENE;
-    roads.splice(0, roads.length, ...SCENES[sceneName]);
+    roads.splice(0, roads.length, ...дорогиСцены(sceneName));
     lastGood = [...roads];
     rebuild();
     scenes.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));

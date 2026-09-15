@@ -9,14 +9,14 @@
  *          npm run walk сломать   — снять предел шеи, проверка ОБЯЗАНА упасть
  */
 
-import { SCENES } from '../src/scenes.ts';
+import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
 import { GroundIndex } from '../src/car/ground.ts';
 import { EYE_HEIGHT, type Footing, createPerson, eyes, gaze, look, step } from '../src/person/person.ts';
 
 const broken = process.argv[2] === 'сломать';
-const world = buildWorld(SCENES['решётка'], 'plain');
+const world = buildWorld(дорогиСцены('решётка'), 'plain');
 const ground = new GroundIndex(buildSurface(world));
 const DT = 1 / 60;
 const OPTIONS = broken ? { neck: false } : {};

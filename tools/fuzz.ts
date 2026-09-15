@@ -15,7 +15,7 @@ import type { Point2, Road } from '../src/world/road.ts';
 import { roadTypeForLanes } from '../src/world/road.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
-import { TERRAINS, WORLD_HALF } from '../src/world/terrain.ts';
+import { TERRAINS, МИН_ПОЛМИРА } from '../src/world/terrain.ts';
 import { inspect, problems } from './inspect.ts';
 import { crossingBorders } from './edges.ts';
 
@@ -53,8 +53,8 @@ export function layout(seed: number): { roads: Road[]; terrain: string } {
     const centerline: Point2[] = [];
     for (let i = 0; i < points; i++) {
       centerline.push({
-        x: (rand() * 2 - 1) * (WORLD_HALF - 10),
-        z: (rand() * 2 - 1) * (WORLD_HALF - 10),
+        x: (rand() * 2 - 1) * (МИН_ПОЛМИРА - 10),
+        z: (rand() * 2 - 1) * (МИН_ПОЛМИРА - 10),
       });
     }
     roads.push({ type: roadTypeForLanes(1 + Math.floor(rand() * 4)), centerline });

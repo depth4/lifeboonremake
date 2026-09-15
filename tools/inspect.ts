@@ -12,7 +12,6 @@ import type { Surface } from '../src/surface/index.ts';
 import { SEALED } from '../src/surface/index.ts';
 import type { World } from '../src/world/world.ts';
 import { MAX_GRADE } from '../src/world/world.ts';
-import { WORLD_HALF } from '../src/world/terrain.ts';
 
 export interface Report {
   readonly vertices: number;
@@ -42,8 +41,9 @@ export interface Report {
   readonly lift: number;
 }
 
-const onBorder = (x: number, z: number): boolean =>
-  Math.abs(Math.abs(x) - WORLD_HALF) < 0.01 || Math.abs(Math.abs(z) - WORLD_HALF) < 0.01;
+/** Край мира спрашивается у САМОГО мира: другого края у него нет. */
+const onBorder = (half: number, x: number, z: number): boolean =>
+  Math.abs(Math.abs(x) - half) < 0.01 || Math.abs(Math.abs(z) - half) < 0.01;
 
 export function inspect(world: World, surface: Surface): Report {
   const P = surface.positions;
@@ -121,7 +121,8 @@ export function inspect(world: World, surface: Surface): Report {
   for (const [pair, count] of edges) {
     if (count === 2) continue;
     const ends = pair.split('|').map((s) => s.split(',').map((n) => Number(n) / 1000));
-    if (count === 1 && onBorder(ends[0][0], ends[0][2]) && onBorder(ends[1][0], ends[1][2])) continue;
+    if (count === 1 && onBorder(world.half, ends[0][0], ends[0][2])
+      && onBorder(world.half, ends[1][0], ends[1][2])) continue;
     holes++;
   }
 

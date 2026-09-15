@@ -29,12 +29,12 @@
 import type { World } from '../world/world.ts';
 import type { Surface } from './mesh.ts';
 import { bands } from '../world/road.ts';
-import { WORLD_HALF } from '../world/terrain.ts';
+import { ШАГ_СЕТКИ } from '../world/terrain.ts';
 import { groundHeightAt, roadHeightAt } from '../world/world.ts';
 import { GROUND, MeshBuilder, ROAD, SHELF, CURB_FOOT, CURB_TOP } from './mesh.ts';
 
 /** Шаг сетки земли, метры. */
-const GRID_STEP = 4;
+const GRID_STEP = ШАГ_СЕТКИ;
 /** На сколько земля под дорогой опущена, чтобы не лезть сквозь асфальт. */
 const DIP = 0.35;
 /** На сколько лента свисает по краю, чтобы в стык не было видно неба. */
@@ -44,10 +44,10 @@ export function buildSurface(world: World): Surface {
   const mesh = new MeshBuilder();
 
   // --- 1. Земля: ровная сетка, которую никто не режет ---
-  const steps = Math.round((WORLD_HALF * 2) / GRID_STEP);
+  const steps = Math.round((world.half * 2) / GRID_STEP);
   const at = (i: number, j: number): number => {
-    const x = -WORLD_HALF + i * GRID_STEP;
-    const z = -WORLD_HALF + j * GRID_STEP;
+    const x = -world.half + i * GRID_STEP;
+    const z = -world.half + j * GRID_STEP;
     // земля НЕ знает, где именно проходит край дороги: она знает только
     // расстояние до осевой линии. В этом вся суть отдельной поверхности.
     const near = world.near(x, z);
@@ -134,17 +134,17 @@ export function buildSurface(world: World): Surface {
  * решёткой точек внутри проезжей части.
  */
 export function pokeThrough(world: World): { worst: number; share: number; probes: number } {
-  const steps = Math.round((WORLD_HALF * 2) / GRID_STEP);
+  const steps = Math.round((world.half * 2) / GRID_STEP);
   const nodeHeight = (i: number, j: number): number => {
-    const x = -WORLD_HALF + i * GRID_STEP;
-    const z = -WORLD_HALF + j * GRID_STEP;
+    const x = -world.half + i * GRID_STEP;
+    const z = -world.half + j * GRID_STEP;
     const near = world.near(x, z);
     return near !== null && near.distance < near.outerHalf ? near.roadHeight - DIP : groundHeightAt(world, x, z);
   };
 
   /** Высота натянутого треугольника сетки в этой точке. */
   const meshHeight = (x: number, z: number): number => {
-    const fi = (x + WORLD_HALF) / GRID_STEP, fj = (z + WORLD_HALF) / GRID_STEP;
+    const fi = (x + world.half) / GRID_STEP, fj = (z + world.half) / GRID_STEP;
     const i = Math.min(steps - 1, Math.max(0, Math.floor(fi)));
     const j = Math.min(steps - 1, Math.max(0, Math.floor(fj)));
     const u = fi - i, v = fj - j;

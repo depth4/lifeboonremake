@@ -1,9 +1,9 @@
 /** Что за кольца областей проходят рядом с точкой. */
-import { SCENES } from '../src/scenes.ts';
+import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { plan } from '../src/surface/carve.ts';
 
-const world = buildWorld(SCENES[process.argv[2] ?? 'каша'], 'plateau');
+const world = buildWorld(дорогиСцены(process.argv[2] ?? 'каша'), 'plateau');
 const near = { x: Number(process.argv[3] ?? -17.3), z: Number(process.argv[4] ?? -56.2) };
 const regions = plan(world) as unknown as Record<string, { x: number; z: number }[][]>;
 
