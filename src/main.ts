@@ -100,10 +100,9 @@ const canvas = document.querySelector('canvas');
 function застройка(): void {
   const посёлок = посёлокСцены(sceneName);
   if (посёлок === null || !viewer) { viewer?.setBuildings([]); return; }
-  const вид = sceneName === 'деревня' ? 'деревня' : 'город';
   // объекты, а не участки: школа на четырёх участках — ОДНО здание
   viewer.setBuildings(посёлок.объекты.map((о) => {
-    const дом = домНаУчастке(о, вид, посёлок.сид);
+    const дом = домНаУчастке(о, посёлок.вид, посёлок.сид);
     return { дом, низ: ground.sample(дом.x, дом.z).height };
   }));
 }
