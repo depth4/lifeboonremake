@@ -322,8 +322,25 @@ export function along(world: World, shape: number, s: number): { x: number; z: n
   const st = world.shapes[shape].stations;
   const total = st.at(-1)?.s ?? 0;
   const t = Math.max(0, Math.min(total, s));
-  let i = 0;
-  while (i + 2 < st.length && st[i + 1].s < t) i++;
+  /**
+   * Нужный отрезок ищется ДЕЛЕНИЕМ ПОПОЛАМ, а не перебором с начала.
+   *
+   * Станции идут через ровные два метра, и на двухсотметровой улице их сотня.
+   * Перебор с начала стоил в среднем полсотни шагов НА КАЖДЫЙ ВЫЗОВ, а зовут
+   * эту функцию все: каждый пешеход по пять раз за кадр, каждая машина, каждая
+   * поза, каждая проверка. Замерено: на проверке жителей это было больше
+   * половины всего времени.
+   *
+   * Отрезок выбирается ТОТ ЖЕ САМЫЙ — это не приближение, а тот же ответ,
+   * найденный быстрее: ищем наименьшее i, у которого конец отрезка уже
+   * дальше t, и не выходим за предпоследнюю станцию.
+   */
+  let низ = 0, верх = st.length - 2;
+  while (низ < верх) {
+    const середина = (низ + верх) >> 1;
+    if (st[середина + 1].s >= t) верх = середина; else низ = середина + 1;
+  }
+  const i = низ;
   const a = st[i], b = st[i + 1];
   const k = (t - a.s) / Math.max(1e-6, b.s - a.s);
   const dx = b.x - a.x, dz = b.z - a.z;
@@ -512,6 +529,17 @@ export interface Path {
   /** Курс на въезде и насколько круто поворачиваем: + направо, − налево. */
   readonly inYaw: number;
   readonly turn: number;
+  /**
+   * Круг, в который путь помещается целиком: середина и радиус.
+   *
+   * Нужен не для геометрии, а для скорости: два пути, чьи круги не задевают
+   * друг друга, не могут сойтись ближе опасного расстояния, и перебирать
+   * их точки попарно незачем. Замерено профилировщиком: на попарном переборе
+   * путей город тратил больше половины всего времени.
+   */
+  readonly cx: number;
+  readonly cz: number;
+  readonly r: number;
 }
 
 /** На сколько кусков режется кривая перекрёстка. Шаг выходит около полутора метров. */
@@ -551,12 +579,28 @@ export function crossPath(
     const t = i / STEPS, u = 1 - t;
     pts.push({ x: u * u * a.x + 2 * u * t * cx + t * t * b.x, z: u * u * a.z + 2 * u * t * cz + t * t * b.z });
   }
+  /**
+   * Метки вдоль пути и круг вокруг него считаются ОДНИМ проходом. Функция
+   * горячая — её зовут на каждую машину с маршрутом каждый шаг, — и лишний
+   * проход по тринадцати точкам с `Math.hypot` тут виден в профиле.
+   */
   const mark = [0];
-  for (let i = 0; i + 1 < pts.length; i++)
-    mark.push(mark[i] + Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].z - pts[i].z));
+  let minX = pts[0].x, maxX = pts[0].x, minZ = pts[0].z, maxZ = pts[0].z;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const dx = pts[i + 1].x - pts[i].x, dz = pts[i + 1].z - pts[i].z;
+    mark.push(mark[i] + Math.sqrt(dx * dx + dz * dz));
+    const q = pts[i + 1];
+    if (q.x < minX) minX = q.x; else if (q.x > maxX) maxX = q.x;
+    if (q.z < minZ) minZ = q.z; else if (q.z > maxZ) maxZ = q.z;
+  }
   const inYaw = Math.atan2(a.fz, a.fx);
   const outYaw = Math.atan2(b.fz, b.fx);
-  return { pts, mark, len: mark[mark.length - 1], inYaw, turn: wrap(outYaw - inYaw) };
+  const полуX = (maxX - minX) / 2, полуZ = (maxZ - minZ) / 2;
+  return {
+    pts, mark, len: mark[mark.length - 1], inYaw, turn: wrap(outYaw - inYaw),
+    cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2,
+    r: Math.sqrt(полуX * полуX + полуZ * полуZ),
+  };
 }
 
 /**
@@ -686,16 +730,38 @@ function nearest(a: Path, b: Path): { at: number; foe: number; gap: number } {
    * оказывается в конце схождения, машины считают, что встретятся позже,
    * чем встречаются, и въезжают друг в друга по дороге туда.
    */
+  /**
+   * ОТСЕЧКА ПО КРУГАМ. Если круги двух путей не задевают друг друга даже
+   * с запасом в опасное расстояние, ни одна пара точек ближе него не будет.
+   * Оба, кто спрашивает, сравнивают просвет только с этим порогом — значит
+   * ответ «дальше порога» для них тот же самый, и перебирать 169 пар
+   * незачем. Замерено: попарный перебор занимал 52% всего времени города.
+   */
+  const между = Math.hypot(a.cx - b.cx, a.cz - b.cz);
+  if (между > a.r + b.r + RUB) return { at: 0, foe: 0, gap: Infinity };
+
+  /**
+   * Внутри считается КВАДРАТ расстояния, а корень берётся один раз в конце.
+   * `Math.hypot` защищён от переполнения и оттого медленный, а нам нужно
+   * сравнение, которому корень не нужен.
+   */
   let first: { at: number; foe: number; gap: number } | null = null;
   let best = { at: 0, foe: 0, gap: Infinity };
-  for (let i = 0; i < a.pts.length; i++)
+  const ОПАСНО = RUB * RUB;
+  for (let i = 0; i < a.pts.length; i++) {
+    const ax = a.pts[i].x, az = a.pts[i].z, at = a.mark[i];
+    if (first !== null && at >= first.at) continue;   // ищем ПЕРВОЕ по ходу
     for (let k = 0; k < b.pts.length; k++) {
-      const d = Math.hypot(a.pts[i].x - b.pts[k].x, a.pts[i].z - b.pts[k].z);
-      if (d < best.gap) best = { at: a.mark[i], foe: b.mark[k], gap: d };
-      if (d < RUB && (first === null || a.mark[i] < first.at))
-        first = { at: a.mark[i], foe: b.mark[k], gap: d };
+      const dx = ax - b.pts[k].x, dz = az - b.pts[k].z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < best.gap) best = { at, foe: b.mark[k], gap: d2 };
+      if (d2 < ОПАСНО && (first === null || at < first.at)) {
+        first = { at, foe: b.mark[k], gap: d2 };
+      }
     }
-  return first ?? best;
+  }
+  const итог = first ?? best;
+  return { at: итог.at, foe: итог.foe, gap: Math.sqrt(итог.gap) };
 }
 
 /**
