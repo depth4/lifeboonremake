@@ -6,33 +6,19 @@
  *   npm run shot -- all plan           — по снимку на каждую сцену
  *
  * Все снимки одного запуска делаются в одном браузере: так на дюжину сцен
- * уходит несколько секунд, а не минута.
+ * уходит несколько секунд, а не минута. Поэтому же снимать умеет не только
+ * командная строка: `снять(список)` вывозится наружу, и страница сравнения
+ * сама добывает себе недостающие картинки, вместо того чтобы ждать, пока
+ * их кто-нибудь сделает руками.
  */
 
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { SCENES } from '../src/scenes.ts';
 
 const PORT = 5199;
-const args = process.argv.slice(2);
-const all = args[0] === 'all';
-const view = (all ? args[1] : args[0]) ?? 'road';
-const terrain = (all ? args[2] : args[2]) ?? 'plateau';
-const scene = all ? null : args[1];
-
-// наводка: npm run shot -- наводка крест холмы from=x,y,z at=x,y,z
-const aim = Object.fromEntries(
-  args.filter((a) => a.includes('=')).map((a) => a.split('=')),
-);
-
-const suffix = aim.variant ? `-${aim.variant}` : '';
-
-const jobs = all
-  ? Object.keys(SCENES).map((name) => ({ scene: name, view, terrain, out: `shots/${name}-${view}${suffix}.png` }))
-  : [{ scene, view, terrain, out: `shots/${scene ? `${scene}-` : ''}${view}${suffix}.png` }];
-
-mkdirSync('shots', { recursive: true });
 
 /**
  * Шрифты подключаются с чужого хоста и не обязательны: у каждого начертания
@@ -41,41 +27,78 @@ mkdirSync('shots', { recursive: true });
  */
 const OPTIONAL = /fonts\.(googleapis|gstatic)\.com/;
 
-const server = await createServer({ server: { port: PORT, strictPort: true }, logLevel: 'warn' });
-await server.listen();
+/**
+ * Снять пачку кадров в ОДНОМ браузере и одном сервере.
+ *
+ * Работа: `{ out, scene, view, terrain, params }`. `params` — всё, что уходит
+ * в адрес страницы как есть: наводка камеры, `traffic=1`, `bare=1`, вариант.
+ *
+ * Возвращает список бед. Пустой список — всё снято.
+ */
+export async function снять(работы, { тихо = false } = {}) {
+  if (работы.length === 0) return [];
+  const server = await createServer({ server: { port: PORT, strictPort: true }, logLevel: 'warn' });
+  await server.listen();
 
-const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 
-const problems = [];
-page.on('pageerror', (e) => problems.push('ошибка в коде: ' + String(e).split('\n')[0]));
-page.on('requestfailed', (r) => {
-  if (!OPTIONAL.test(r.url())) problems.push('не загрузилось: ' + r.url());
-});
+  const беды = [];
+  page.on('pageerror', (e) => беды.push('ошибка в коде: ' + String(e).split('\n')[0]));
+  page.on('requestfailed', (r) => {
+    if (!OPTIONAL.test(r.url())) беды.push('не загрузилось: ' + r.url());
+  });
 
-for (const job of jobs) {
-  const url = new URL(`http://localhost:${PORT}/`);
-  url.searchParams.set('view', job.view);
-  url.searchParams.set('terrain', job.terrain);
-  if (job.scene) url.searchParams.set('scene', job.scene);
-  for (const [k, v] of Object.entries(aim)) url.searchParams.set(k, v);
-  try {
-    await page.goto(url.href, { waitUntil: 'load' });
-    await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });
-    await page.screenshot({ path: job.out });
-    console.log(`снимок: ${job.out}`);
-  } catch (e) {
-    problems.push(`${job.out}: страница не ожила — ${e.message.split('\n')[0]}`);
+  for (const job of работы) {
+    const url = new URL(`http://localhost:${PORT}/`);
+    url.searchParams.set('view', job.view);
+    url.searchParams.set('terrain', job.terrain);
+    if (job.scene) url.searchParams.set('scene', job.scene);
+    for (const [k, v] of Object.entries(job.params ?? {})) url.searchParams.set(k, v);
+    mkdirSync(dirname(job.out), { recursive: true });
+    try {
+      await page.goto(url.href, { waitUntil: 'load' });
+      await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });
+      await page.screenshot({ path: job.out });
+      if (!тихо) console.log(`снимок: ${job.out}`);
+    } catch (e) {
+      беды.push(`${job.out}: страница не ожила — ${e.message.split('\n')[0]}`);
+    }
   }
+
+  await browser.close();
+  // vite держит открытые сокеты и сам процесс не заканчивает
+  server.close().catch(() => {});
+  return беды;
 }
 
-await browser.close();
+/** Запущен ли этот файл сам, а не ввезён кем-то. */
+const сам = process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop());
 
-if (problems.length > 0) {
-  console.log('на странице проблемы:');
-  for (const p of problems) console.log('  ✗ ' + p);
+if (сам) {
+  const args = process.argv.slice(2);
+  const all = args[0] === 'all';
+  const view = (all ? args[1] : args[0]) ?? 'road';
+  const terrain = args[2] ?? 'plateau';
+  const scene = all ? null : args[1];
+
+  // наводка: npm run shot -- наводка крест холмы from=x,y,z at=x,y,z
+  const params = Object.fromEntries(args.filter((a) => a.includes('=')).map((a) => a.split('=')));
+  const suffix = params.variant ? `-${params.variant}` : '';
+
+  const работы = all
+    ? Object.keys(SCENES).map((name) => ({
+      scene: name, view, terrain, params, out: `shots/${name}-${view}${suffix}.png`,
+    }))
+    : [{
+      scene, view, terrain, params,
+      out: `shots/${scene ? `${scene}-` : ''}${view}${suffix}.png`,
+    }];
+
+  const беды = await снять(работы);
+  if (беды.length > 0) {
+    console.log('на странице проблемы:');
+    for (const p of беды) console.log('  ✗ ' + p);
+  }
+  process.exit(беды.length > 0 ? 1 : 0);
 }
-
-// vite держит открытые сокеты и сам процесс не заканчивает — выходим принудительно
-server.close().catch(() => {});
-process.exit(problems.length > 0 ? 1 : 0);

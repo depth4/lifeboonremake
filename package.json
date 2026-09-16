@@ -9,7 +9,7 @@
     "build": "node tools/types.mjs && vite build",
     "shot": "node --experimental-strip-types tools/shot.mjs",
     "check": "node --experimental-strip-types tools/check.ts",
-    "page": "node tools/page.mjs",
+    "page": "node --experimental-strip-types tools/page.mjs",
     "fuzz": "node --experimental-strip-types tools/fuzz.ts",
     "scenes": "node --experimental-strip-types tools/scenes.ts",
     "play": "node tools/play.mjs",

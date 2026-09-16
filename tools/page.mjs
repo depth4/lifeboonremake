@@ -10,27 +10,88 @@
 
 import { readFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { снять } from './shot.mjs';
 
 const SHOTS = 'shots/для-страницы';
 const OUT = 'build/сравнение.html';
+
+/**
+ * ЧТО ИМЕННО ПОКАЗЫВАЕТ СТРАНИЦА — здесь, одним списком, и отсюда же эти
+ * снимки берутся.
+ *
+ * Раньше список был только в разметке ниже, а картинки кто-то когда-то делал
+ * руками и складывал в папку. Папка в `.gitignore`, и на чистом клоне
+ * страница собиралась с десятью табличками «нет снимка» — ровно в таком виде
+ * она и лежала на сайте. Проверить это было нечем: инструмент честно писал
+ * «картинок 0» и заканчивался успехом.
+ *
+ * Теперь страница сама добывает то, чего у неё нет, и «страница без картинок»
+ * перестала быть выразимой.
+ */
+const КАРТИНКИ = {
+  'переход': { scene: 'крест', view: 'node', terrain: 'plateau' },
+  'с-дороги': { scene: 'крест', view: 'curb', terrain: 'plateau' },
+  'вблизи-A': { scene: 'крест', view: 'close', terrain: 'hills', variant: 'A' },
+  'выемка': { scene: 'крест', view: 'close', terrain: 'mountain' },
+  'острый-A': { scene: 'острый', view: 'close', terrain: 'plateau', variant: 'A' },
+  'острый-B': { scene: 'острый', view: 'close', terrain: 'plateau', variant: 'B' },
+  'звезда': { scene: 'звезда', view: 'over', terrain: 'plateau' },
+  'решётка': { scene: 'решётка', view: 'over', terrain: 'plateau' },
+  'каша': { scene: 'каша', view: 'plan', terrain: 'plateau' },
+  'каша-A': { scene: 'каша', view: 'over', terrain: 'hills', variant: 'A' },
+  'каша-B': { scene: 'каша', view: 'over', terrain: 'hills', variant: 'B' },
+  'серпантин': { scene: 'серпантин', view: 'over', terrain: 'mountain' },
+  'перекрёсток-A': { scene: 'крест', view: 'plan', terrain: 'plateau', variant: 'A' },
+  'перекрёсток-B': { scene: 'крест', view: 'plan', terrain: 'plateau', variant: 'B' },
+};
 
 const report = JSON.parse(
   execFileSync('node', ['--experimental-strip-types', 'tools/report.ts'], { encoding: 'utf8', maxBuffer: 1 << 24 }),
 );
 
-/**
- * Снимки. Папка `shots/` в `.gitignore` — значит на свежем клоне её НЕТ,
- * и `readdirSync` по ней падал всегда. Страница должна собираться и без
- * картинок: цифры в ней главное, а на месте снимка честно пишется, что его
- * нет. Инструмент, который падает из-за отсутствующей необязательной папки,
- * сломан — и ломался он ровно там, где его никто не запускал: на чистом
- * клоне и в CI.
- */
 mkdirSync(SHOTS, { recursive: true });
+
+/**
+ * Снимки делаются ЗАНОВО при каждой сборке страницы, а не хранятся.
+ * Хранимая картинка устаревает молча: мир меняется, а на странице
+ * позавчерашний кадр, и никто не отличит. Четырнадцать кадров в одном
+ * браузере — это секунды. `npm run page быстро` пропускает съёмку: это
+ * для тех случаев, когда правят саму вёрстку страницы.
+ */
+if (!process.argv.includes('быстро')) {
+  const беды = await снять(
+    Object.entries(КАРТИНКИ).map(([имя, к]) => ({
+      out: `${SHOTS}/${имя}.png`,
+      scene: к.scene,
+      view: к.view,
+      terrain: к.terrain,
+      params: к.variant ? { variant: к.variant, bare: '1' } : { bare: '1' },
+    })),
+    { тихо: true },
+  );
+  if (беды.length > 0) {
+    console.log('снимки не сделались:');
+    for (const b of беды) console.log('  ✗ ' + b);
+    process.exit(1);
+  }
+}
+
 const pics = {};
 for (const name of readdirSync(SHOTS)) {
   if (!name.endsWith('.png')) continue;
   pics[name.replace('.png', '')] = 'data:image/png;base64,' + readFileSync(`${SHOTS}/${name}`).toString('base64');
+}
+
+/**
+ * Проверка, у которой есть заведомо сломанный случай: сотри любой снимок
+ * и собери страницу — она его сделает заново. Если хоть одного нет,
+ * страница не собирается: пустая табличка «нет снимка» на сайте — это
+ * та же ложь, что и неверная цифра.
+ */
+const нет = Object.keys(КАРТИНКИ).filter((имя) => !pics[имя]);
+if (нет.length > 0) {
+  console.log(`не хватает снимков: ${нет.join(', ')}`);
+  process.exit(1);
 }
 
 const A = report.A;
