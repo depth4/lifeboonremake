@@ -9,7 +9,9 @@
 
 import { дорогиСцены, посёлокСцены } from '../src/scenes.ts';
 import { расселить } from '../src/city/житель.ts';
-import { машиныЖителей, пешеходыЖителей } from '../src/city/жизнь.ts';
+import {
+  ЧАС_УТРА, машиныЖителей, пешеходыЖителей, сколькоМашин, сколькоПешеходов,
+} from '../src/city/жизнь.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
 import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { laneAcross, sideOf } from '../src/city/lanes.ts';
@@ -28,19 +30,10 @@ const oneLane = mode === 'одна-полоса';
 const world = buildWorld(дорогиСцены(scene), 'plain');
 const net = buildNetwork(world);
 
-/**
- * Сколько машин и пешеходов ставить — по ДЛИНЕ УЛИЦ, а не числом.
- *
- * Числом было 18 машин и 26 пешеходов, и на «решётке» с её километром улиц
- * это плотный поток. На настоящем городе в семь километров те же 18 машин
- * расползаются так, что за две минуты никто никого не встречает: проверки
- * «кто-то кого-то обогнал» и «пешеходы переходят дорогу» проваливались не
- * потому, что правила плохи, а потому, что в городе было пусто.
- *
- * Плотность подобрана так, чтобы на «решётке» получились ровно прежние
- * 18 и 26: старые замеры остаются сравнимыми.
- */
-const улиц = net.length.reduce((sum, l) => sum + l, 0);
+// сколько машин и пешеходов ставить — одна плотность на весь проект,
+// она же и у страницы: см. `сколькоМашин` в `жизнь.ts`
+const машин = сколькоМашин(net);
+const пешком = сколькоПешеходов(net);
 
 /**
  * ОТКУДА БЕРУТСЯ МАШИНЫ. Если у сцены есть посёлок — из его жителей: кто
@@ -52,14 +45,14 @@ const улиц = net.length.reduce((sum, l) => sum + l, 0);
  * хозяина — нет и стоянки.
  */
 const посёлок = посёлокСцены(scene);
-const ЧАС = 7.8;
+const ЧАС = ЧАС_УТРА;
 const жизнь = посёлок === null ? null : расселить(посёлок);
 const movers = жизнь === null
-  ? placeTraffic(world, net, Math.max(18, Math.round(улиц / 51)))
-  : машиныЖителей(world, net, жизнь, ЧАС, Math.max(18, Math.round(улиц / 51))).машины;
+  ? placeTraffic(world, net, машин)
+  : машиныЖителей(world, net, жизнь, ЧАС, машин).машины;
 const walkers = жизнь === null
-  ? placeWalkers(world, net, Math.max(26, Math.round(улиц / 35)))
-  : пешеходыЖителей(world, net, жизнь, ЧАС, Math.max(26, Math.round(улиц / 35)));
+  ? placeWalkers(world, net, пешком)
+  : пешеходыЖителей(world, net, жизнь, ЧАС, пешком);
 const DT = 1 / 60;
 
 let offRoad = 0, worstOff = 0, tooFast = 0, fastest = 0, stuck = 0, worstSpeeding = -99;

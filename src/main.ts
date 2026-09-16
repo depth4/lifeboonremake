@@ -24,7 +24,9 @@ import { laneAcross } from './city/lanes.ts';
 import { lightFor } from './city/signals.ts';
 import { type Walker, moveWalkers, placeWalkers, walkerPose, фазаШага } from './city/walkers.ts';
 import { СЕКУНД_В_ЧАСЕ, type Расселение, расселить, часСуток } from './city/житель.ts';
-import { машиныЖителей, пешеходыЖителей } from './city/жизнь.ts';
+import {
+  ЧАС_УТРА, машиныЖителей, пешеходыЖителей, сколькоМашин, сколькоПешеходов,
+} from './city/жизнь.ts';
 
 const query = new URLSearchParams(location.search);
 const startView = query.get('view') ?? 'road';
@@ -341,13 +343,14 @@ const опораГотова = true;
 let network: Network = buildNetwork(world);
 let traffic: Mover[] = [];
 let walkers: Walker[] = [];
-const TRAFFIC_COUNT = 18;
-const WALKER_COUNT = 26;
-/** Сколько машин и пешеходов жителей показывать разом: дальше нужны уровни подробности. */
-const ГОРОДСКИХ_МАШИН = 180;
-const ГОРОДСКИХ_ПЕШЕХОДОВ = 220;
-/** С какого часа начинается городской день на странице: утро, все выезжают. */
-const УТРО = 7.8;
+/**
+ * Сколько машин и пешеходов показывать — НЕ ЧИСЛОМ, а по длине улиц, и той
+ * же формулой, что у проверки (`сколькоМашин` в `жизнь.ts`). Раньше здесь
+ * стояло четыре числа: 18 и 26 на рукотворных сценах, 180 и 220 на городских
+ * — потолок под старую цену шага. После полок по дорогам весь «большой
+ * город» считается за 7 мс из 16.7, и потолок стал просто неправдой:
+ * страница показывала вдвое более пустой город, чем проверяла проверка.
+ */
 /** Расселение посёлка: кто где живёт. null — сцена без домов. */
 let жизнь: Расселение | null = null;
 /**
@@ -570,13 +573,13 @@ let signsShown = false;
 function заселить(): void {
   const посёлок = посёлокСцены(sceneName);
   if (посёлок === null) {
-    traffic = placeTraffic(world, network, TRAFFIC_COUNT);
-    walkers = placeWalkers(world, network, WALKER_COUNT);
+    traffic = placeTraffic(world, network, сколькоМашин(network));
+    walkers = placeWalkers(world, network, сколькоПешеходов(network));
   } else {
     жизнь = расселить(посёлок);
-    const час = часСуток(cityTime + УТРО * СЕКУНД_В_ЧАСЕ);
-    traffic = машиныЖителей(world, network, жизнь, час, ГОРОДСКИХ_МАШИН).машины;
-    walkers = пешеходыЖителей(world, network, жизнь, час, ГОРОДСКИХ_ПЕШЕХОДОВ);
+    const час = часСуток(cityTime + ЧАС_УТРА * СЕКУНД_В_ЧАСЕ);
+    traffic = машиныЖителей(world, network, жизнь, час, сколькоМашин(network)).машины;
+    walkers = пешеходыЖителей(world, network, жизнь, час, сколькоПешеходов(network));
   }
 }
 
@@ -602,7 +605,7 @@ viewer.onFrame((dt) => {
       crossing,
       player: car === null ? null : { x: car.x, z: car.z, speed: forwardSpeed(car), yaw: car.yaw },
       // городской час: по нему стоящая машина понимает, вышел ли хозяин
-      час: часСуток(cityTime + УТРО * СЕКУНД_В_ЧАСЕ),
+      час: часСуток(cityTime + ЧАС_УТРА * СЕКУНД_В_ЧАСЕ),
     });
     viewer.setWalkers(walkers.map((w) => {
       const pose = walkerPose(world, w);
