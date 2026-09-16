@@ -1132,7 +1132,10 @@ const SLIDE = 0.8 * G;
  * два положения сразу. Остановилась и постояла — водитель пришёл в себя,
  * и она снова участник движения.
  */
-function rollKnocked(world: World, net: Network, m: Mover, dt: number): void {
+function rollKnocked(
+  world: World, net: Network, m: Mover, dt: number,
+  переехал: (o: Mover, был: number) => void,
+): void {
   const k = m.knocked as Knocked;
   const v = Math.hypot(k.vx, k.vz);
   if (v > 1e-6) {
@@ -1144,7 +1147,9 @@ function rollKnocked(world: World, net: Network, m: Mover, dt: number): void {
 
   const at = locate(world, k.x, k.z);
   if (at !== null) {
+    const был = m.shape;
     m.shape = at.shape;
+    переехал(m, был);
     m.s = Math.max(0, Math.min(net.length[at.shape], at.s));
     m.across = at.across;
   }
@@ -1281,6 +1286,45 @@ export function moveTraffic(
   const changing = options.lanes ?? true;
 
   /**
+   * КТО НА КАКОЙ ДОРОГЕ. Считается один раз за шаг, из самого списка машин.
+   *
+   * Зачем. Почти каждый вопрос машины к городу начинается со слов «а кто
+   * на МОЕЙ дороге» — кто впереди, свободна ли соседняя полоса, кто стоит
+   * бок о бок, есть ли затор за перекрёстком. Раньше каждый такой вопрос
+   * перебирал ВСЕХ и тут же выбрасывал 99% первой же строкой `o.shape !==
+   * m.shape`. От этого цена шага росла быстрее, чем число машин: на
+   * «большом городе» удвоение с 400 до 800 стоило втрое дороже, а не вдвое.
+   *
+   * Почему это не второй источник правды. Список не хранится между шагами
+   * и никем не правится: он собирается заново в начале каждого шага из
+   * `movers`. Разойтись с истиной ему негде — он и есть та же истина,
+   * разложенная по полкам.
+   *
+   * Почему ответ не меняется. Внутри каждой полки машины идут в том же
+   * порядке, что и в общем списке, — один проход слева направо. А все, кого
+   * полка не содержит, и так отсеивались первой строкой. Значит и «первый
+   * из равных» остаётся тем же.
+   */
+  const наДороге: Mover[][] = net.length.map(() => []);
+  for (const o of movers) наДороге[o.shape].push(o);
+
+  /**
+   * Машина сменила дорогу — значит сменила и полку.
+   *
+   * Это единственное место, где полки правятся, и зовут его ровно два
+   * присваивания `m.shape` на весь город: выезд с перекрёстка и сбитая
+   * машина, которую занесло на соседнюю улицу. Больше `m.shape` не меняет
+   * никто, поэтому разъехаться полке с истиной негде.
+   */
+  const переехал = (o: Mover, был: number): void => {
+    if (был === o.shape) return;
+    const полка = наДороге[был];
+    const i = полка.indexOf(o);
+    if (i >= 0) полка.splice(i, 1);
+    наДороге[o.shape].push(o);
+  };
+
+  /**
    * ПРЕДПРОХОД. Всё, что зависит от других машин, считается ДО того, как
    * кто-либо тронулся: занятость перекрёстков, свет каждому и очередь на
    * въезд. Иначе решение зависело бы от места в списке — а это тот самый
@@ -1360,6 +1404,27 @@ export function moveTraffic(
   const entered = movers.map((m) => m.route === null ? -Infinity : inside(world, net, m));
 
   /**
+   * КТО У КАКОГО ПЕРЕКРЁСТКА и КТО СЕЙЧАС ТЕЛО НА ДОРОГЕ — по тем же
+   * соображениям, что и полки по дорогам выше: спрашивают про узел, а
+   * перебирают весь город.
+   *
+   * `уУзла` — номера тех, у кого есть путь через этот узел: с ними
+   * разбирается очерёдность проезда.
+   * `тела` — номера тех, кто УЖЕ внутри какого-нибудь узла, и сбитых
+   * где угодно: это препятствия, у которых нет терпения.
+   *
+   * Оба списка идут по возрастанию номера, то есть в том же порядке, что
+   * и общий список, и собираются одним проходом. Ответ от них не меняется.
+   */
+  const уУзла: number[][] = net.atJunction.map(() => []);
+  const тела: number[] = [];
+  for (let k = 0; k < movers.length; k++) {
+    const o = movers[k];
+    if (paths[k] !== null && o.route !== null) уУзла[o.route.junction].push(k);
+    if (o.knocked !== null || entered[k] > 0) тела.push(k);
+  }
+
+  /**
    * КТО ВЪЕЗЖАЕТ В ЭТОТ ШАГ. Перекрёсток занимают ПУТИ, а не машины: два
    * непересекающихся пути проезжаются вместе — ради этого всё и строилось, —
    * а два пересекающихся ждут друг друга.
@@ -1393,13 +1458,13 @@ export function moveTraffic(
 
   movers.forEach((m, index) => {
     // сбитая машина правилам не подчиняется: она уже не участник, а тело
-    if (m.knocked !== null) { rollKnocked(world, net, m, dt); return; }
+    if (m.knocked !== null) { rollKnocked(world, net, m, dt, переехал); return; }
     const total = net.length[m.shape];
     const holds: Hold[] = [];
 
     // ── ПОЛОСА. Решается до всего остального: от неё зависит, кто впереди
     if (rules && m.park === null && entered[index] <= 0)
-      m.lane = changing ? wantLane(world, net, movers, m) : 0;
+      m.lane = changing ? wantLane(world, net, наДороге[m.shape], m) : 0;
 
     // ── поворот дороги впереди: смотрим на несколько шагов вперёд.
     // Внутри перекрёстка смотреть некуда: там своя кривая, а не дорога
@@ -1413,8 +1478,8 @@ export function moveTraffic(
     // ── машина впереди. Припаркованная стоит в кармане и полосу не держит:
     // мешает только тот, кто примерно на моей линии движения
     if (headway) {
-      for (const other of movers) {
-        if (other === m || other.shape !== m.shape) continue;
+      for (const other of наДороге[m.shape]) {
+        if (other === m) continue;
         // сбитая стоит поперёк и смотрит куда попало: она препятствие,
         // а не лидер, и «в какую сторону она едет» смысла не имеет
         const stray = other.knocked !== null;
@@ -1532,7 +1597,7 @@ export function moveTraffic(
        * меркой простоя: старая, по пройденному пути, этого не видела.
        */
       const объехать = laneCount(net.lanes, r.shape, r.dir as 1 | -1) > 1;
-      const jam = movers.some((o) => o !== m && o.shape === r.shape && o.dir === r.dir
+      const jam = наДороге[r.shape].some((o) => o !== m && o.dir === r.dir
         && (объехать ? !стоит(o) : true) && o.speed < 1.5
         && (o.s - outMouth) * r.dir < LENGTH + GAP0
         && (o.s - outMouth) * r.dir > -LENGTH);
@@ -1551,8 +1616,8 @@ export function moveTraffic(
        * расстояние по выездной дороге.
        */
       if (headway) {
-        for (const o of movers) {
-          if (o === m || o.shape !== r.shape || o.dir !== r.dir) continue;
+        for (const o of наДороге[r.shape]) {
+          if (o === m || o.dir !== r.dir) continue;
           if (Math.abs(o.across - laneAcross(net.lanes, r.shape, r.dir as 1 | -1, r.lane)) > 2.2) continue;
           const gap = (mine.len - myAt) + (o.s - outMouth) * r.dir - LENGTH;
           if (gap > 0 && gap < 60) holds.push({ gap, speed: o.speed, why: 'машина впереди' });
@@ -1568,7 +1633,7 @@ export function moveTraffic(
        * поперечный или встречный — препятствие, перед ним останавливаемся.
        */
       const bodies: { x: number; z: number; yaw: number; speed: number; why: string }[] = [];
-      for (let k = 0; k < movers.length; k++) {
+      for (const k of тела) {
         const o = movers[k];
         if (o === m) continue;
         /**
@@ -1615,9 +1680,11 @@ export function moveTraffic(
        * нынешний кузов — и она успевала выехать наперерез тому, кто по
        * старому расчёту «успевал». Въезд не отменяет предсказания.
        */
-      for (let k = 0; k < movers.length; k++) {
+      for (const k of уУзла[r.junction]) {
         const o = movers[k], his = paths[k];
         if (o === m || his === null) continue;
+        // маршрут за шаг может только СНЯТЬСЯ, поэтому полка — заведомо
+        // с запасом, и живую проверку надо оставить
         if (o.route?.junction !== r.junction) continue;
         if (o.shape === m.shape && o.dir === m.dir) continue; // сзади — это дистанция, а не перекрёсток
         if (onRed[k] && entered[k] <= 0) continue;             // ему красный, он и не тронется
@@ -1763,7 +1830,7 @@ export function moveTraffic(
           m.lane = options.выезд === 'по своей полосе'
             ? 0
             : Math.min(1, Math.max(0, laneCount(net.lanes, m.shape, m.dir as 1 | -1) - 1));
-          if (laneClear(world, net, movers, m)) m.park.phase = 'выезжает';
+          if (laneClear(world, net, наДороге[m.shape], m)) m.park.phase = 'выезжает';
         }
         const want = wantAcross(world, net, m);
         m.across += Math.max(-0.9 * dt, Math.min(0.9 * dt, want - m.across));
@@ -1776,7 +1843,7 @@ export function moveTraffic(
          */
         const lane = laneMid(net, m);
         if (Math.abs(m.across - lane) < 0.15) { net.bays[m.park.bay].taken = -1; m.park = null; }
-        else if (!laneClear(world, net, movers, m)) {
+        else if (!laneClear(world, net, наДороге[m.shape], m)) {
           m.speed = 0;
           m.reason = 'выезжает, ждёт';
           return;
@@ -1834,7 +1901,9 @@ export function moveTraffic(
       const at = inside(world, net, m);
       if (at >= path.len) {
         const r = m.route;
+        const был = m.shape;
         m.shape = r.shape;
+        переехал(m, был);
         m.dir = r.dir;
         m.s = mouthAt(net, r.junction, r.shape, r.s, -r.dir) + r.dir * (at - path.len);
         m.lane = r.lane;
@@ -1862,7 +1931,7 @@ export function moveTraffic(
        */
       const куда = laneAcross(net.lanes, m.shape, back, 0);
       const сюда = Math.max(3, Math.min(tail - 3, m.s + back * 2));
-      const busy = movers.some((o) => o !== m && o.shape === m.shape
+      const busy = наДороге[m.shape].some((o) => o !== m
         && o.dir === back && Math.abs(o.s - сюда) < LENGTH + 2
         && Math.abs(o.across - куда) < 2.4);
       if (busy) { m.speed = 0; m.s = Math.max(2, Math.min(tail - 2, m.s)); }
@@ -1895,7 +1964,7 @@ export function moveTraffic(
        * полосы — на «каше» съездов с проезжей части стало 157 вместо 13.
        */
       const БОРТ = 2.4;
-      const away = sideBlockers(movers, m)
+      const away = sideBlockers(наДороге[m.shape], m)
         .filter((рядом) => Math.abs(m.across - рядом) < БОРТ)
         .every((рядом) => Math.abs(m.across + step - рядом) >= Math.abs(m.across - рядом));
       if (away) m.across += step;
