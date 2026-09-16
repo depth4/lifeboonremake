@@ -24,7 +24,7 @@ import { laneAcross } from './city/lanes.ts';
 import { lightFor } from './city/signals.ts';
 import { type Walker, moveWalkers, placeWalkers, walkerPose, фазаШага } from './city/walkers.ts';
 import { СЕКУНД_В_ЧАСЕ, type Расселение, расселить, часСуток } from './city/житель.ts';
-import { машиныЖителей } from './city/жизнь.ts';
+import { машиныЖителей, пешеходыЖителей } from './city/жизнь.ts';
 
 const query = new URLSearchParams(location.search);
 const startView = query.get('view') ?? 'road';
@@ -343,8 +343,9 @@ let traffic: Mover[] = [];
 let walkers: Walker[] = [];
 const TRAFFIC_COUNT = 18;
 const WALKER_COUNT = 26;
-/** Сколько машин жителей показывать разом. Дальше — вопрос уровней подробности. */
+/** Сколько машин и пешеходов жителей показывать разом: дальше нужны уровни подробности. */
 const ГОРОДСКИХ_МАШИН = 180;
+const ГОРОДСКИХ_ПЕШЕХОДОВ = 220;
 /** С какого часа начинается городской день на странице: утро, все выезжают. */
 const УТРО = 7.8;
 /** Расселение посёлка: кто где живёт. null — сцена без домов. */
@@ -570,12 +571,13 @@ function заселить(): void {
   const посёлок = посёлокСцены(sceneName);
   if (посёлок === null) {
     traffic = placeTraffic(world, network, TRAFFIC_COUNT);
+    walkers = placeWalkers(world, network, WALKER_COUNT);
   } else {
     жизнь = расселить(посёлок);
-    traffic = машиныЖителей(world, network, жизнь, часСуток(cityTime + УТРО * СЕКУНД_В_ЧАСЕ),
-      ГОРОДСКИХ_МАШИН).машины;
+    const час = часСуток(cityTime + УТРО * СЕКУНД_В_ЧАСЕ);
+    traffic = машиныЖителей(world, network, жизнь, час, ГОРОДСКИХ_МАШИН).машины;
+    walkers = пешеходыЖителей(world, network, жизнь, час, ГОРОДСКИХ_ПЕШЕХОДОВ);
   }
-  walkers = placeWalkers(world, network, WALKER_COUNT);
 }
 
 // город из адреса: ровно то же, что делает кнопка «трафик»

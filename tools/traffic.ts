@@ -9,7 +9,7 @@
 
 import { дорогиСцены, посёлокСцены } from '../src/scenes.ts';
 import { расселить } from '../src/city/житель.ts';
-import { машиныЖителей } from '../src/city/жизнь.ts';
+import { машиныЖителей, пешеходыЖителей } from '../src/city/жизнь.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
 import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { laneAcross, sideOf } from '../src/city/lanes.ts';
@@ -57,7 +57,9 @@ const жизнь = посёлок === null ? null : расселить(посё�
 const movers = жизнь === null
   ? placeTraffic(world, net, Math.max(18, Math.round(улиц / 51)))
   : машиныЖителей(world, net, жизнь, ЧАС, Math.max(18, Math.round(улиц / 51))).машины;
-const walkers = placeWalkers(world, net, Math.max(26, Math.round(улиц / 35)));
+const walkers = жизнь === null
+  ? placeWalkers(world, net, Math.max(26, Math.round(улиц / 35)))
+  : пешеходыЖителей(world, net, жизнь, ЧАС, Math.max(26, Math.round(улиц / 35)));
 const DT = 1 / 60;
 
 let offRoad = 0, worstOff = 0, tooFast = 0, fastest = 0, stuck = 0, worstSpeeding = -99;
