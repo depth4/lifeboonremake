@@ -27,7 +27,8 @@
     "report": "node --experimental-strip-types tools/report.ts",
     "site": "node tools/site.mjs",
     "deploy": "node tools/deploy.mjs",
-    "life": "node --experimental-strip-types tools/life.ts"
+    "life": "node --experimental-strip-types tools/life.ts",
+    "морфология": "node --experimental-strip-types tools/морфология.ts"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",
