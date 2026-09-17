@@ -11,6 +11,7 @@ import { EYE_HEIGHT } from './person/person.ts';
 import { type Дом, ДВЕРЬ, ОКНО, ЭТАЖ } from './city/дом.ts';
 import type { Площадка } from './city/площадка.ts';
 import type { Дерево } from './city/зелень.ts';
+import { ПОДЪЁМ_ПОДХОДА, type Подход } from './city/двор.ts';
 import { type Sight, createSight } from './person/sight.ts';
 
 const COLORS: Record<Material, number> = {
@@ -219,6 +220,12 @@ export interface Viewer {
    * не додумывает, поэтому «дерево на асфальте» здесь записать негде.
    */
   setTrees(деревья: readonly { дерево: Дерево; низ: number }[]): void;
+  /**
+   * Дорожки от тротуара к подъездам. Один вызов ставит все: дорожка
+   * не двигается. Место приходит готовым из `city/двор.ts`, показ только
+   * кладёт плиту на землю и наклоняет её по уклону.
+   */
+  setPaths(подходы: readonly { подход: Подход; отY: number; доY: number }[]): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -564,6 +571,8 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   let застройка: THREE.InstancedMesh[] | null = null;
   /** Деревья улиц и дворов: те же пачки, что у домов. */
   let зелень: THREE.InstancedMesh[] | null = null;
+  /** Дорожки к подъездам: одна пачка на весь город. */
+  let дорожки: THREE.InstancedMesh | null = null;
   let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
@@ -984,6 +993,47 @@ export function show(surface: Surface, startView: string, custom: View | null = 
         signGroup.add(pole, plate);
       }
       scene.add(signGroup);
+    },
+    setPaths(подходы) {
+      if (дорожки !== null) { scene.remove(дорожки); дорожки.dispose(); дорожки = null; }
+      if (подходы.length === 0) return;
+
+      /**
+       * Дорожка — плита, лежащая НА земле и наклонённая по её уклону.
+       * Не вровень: настоящая дорожка тоже выступает над газоном, и это
+       * не украшение — иначе её грани мерцали бы сквозь землю.
+       */
+      const плита = new THREE.BoxGeometry(1, 1, 1);
+      плита.translate(0, -0.5, 0);           // начало координат на ВЕРХНЕЙ грани
+      const пачкаДорожек = new THREE.InstancedMesh(плита,
+        new THREE.MeshStandardMaterial({ roughness: 0.92 }), подходы.length);
+      пачкаДорожек.receiveShadow = true;
+      пачкаДорожек.count = подходы.length;
+      дорожки = пачкаДорожек;
+      scene.add(пачкаДорожек);
+
+      const м = new THREE.Matrix4();
+      const кв = new THREE.Quaternion();
+      const эйлер = new THREE.Euler();
+      const место = new THREE.Vector3();
+      const размер = new THREE.Vector3();
+      const тон2 = new THREE.Color();
+      подходы.forEach(({ подход: п, отY, доY }, i) => {
+        const dx = п.доX - п.отX, dz = п.доZ - п.отZ;
+        const поЗемле = Math.hypot(dx, dz);
+        const длина = Math.hypot(поЗемле, доY - отY);
+        // наклон плиты по уклону земли: дорожка не висит и не тонет
+        эйлер.set(0, -Math.atan2(dz, dx), Math.asin((доY - отY) / Math.max(0.001, длина)));
+        кв.setFromEuler(эйлер);
+        место.set((п.отX + п.доX) / 2, (отY + доY) / 2 + ПОДЪЁМ_ПОДХОДА, (п.отZ + п.доZ) / 2);
+        размер.set(длина, 0.16, п.ширина);
+        м.compose(место, кв, размер);
+        пачкаДорожек.setMatrixAt(i, м);
+        // плитка светлее асфальта и темнее тротуара: её видно, но она не кричит
+        пачкаДорожек.setColorAt(i, тон2.setHSL(0.09, 0.05, 0.62));
+      });
+      пачкаДорожек.instanceMatrix.needsUpdate = true;
+      if (пачкаДорожек.instanceColor) пачкаДорожек.instanceColor.needsUpdate = true;
     },
     setTrees(деревья) {
       if (зелень !== null) {

@@ -4,6 +4,7 @@ import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
 import { домНаУчастке } from './city/дом.ts';
 import { деревьяУлиц } from './city/зелень.ts';
+import { подПодходом, подходыПосёлка } from './city/двор.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
@@ -171,10 +172,24 @@ function застройка(): void {
  */
 function зеленьСцены(): void {
   const посёлок = посёлокСцены(sceneName);
-  if (посёлок === null || !viewer) { viewer?.setTrees([]); return; }
+  if (посёлок === null || !viewer) { viewer?.setTrees([]); viewer?.setPaths([]); return; }
+
+  /**
+   * Дорожки к подъездам. Считаются ДО деревьев: дерево растёт в газоне,
+   * а дорожка — не газон, и зелень обязана про неё знать.
+   */
+  const дома = посёлок.объекты.map((о) => домНаУчастке(о, посёлок.вид, посёлок.сид));
+  const подходы = подходыПосёлка(посёлок, дома);
+  viewer.setPaths(подходы.map((подход) => ({
+    подход,
+    отY: ground.sample(подход.отX, подход.отZ).height,
+    доY: ground.sample(подход.доX, подход.доZ).height,
+  })));
   // сеть уже собрана для трафика: второй такой же завести значило бы
   // держать две правды об одних и тех же дорогах
-  viewer.setTrees(деревьяУлиц(world, network, посёлок.сид).map((дерево) => ({
+  viewer.setTrees(деревьяУлиц(world, network, посёлок.сид, {
+    занято: (x, z) => подПодходом(подходы, x, z, 0.6),
+  }).map((дерево) => ({
     дерево, низ: ground.sample(дерево.x, дерево.z).height,
   })));
 }
