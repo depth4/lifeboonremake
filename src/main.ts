@@ -10,6 +10,7 @@ import { DEFAULT_VARIANT, VARIANTS, buildGhost, buildSurface } from './surface/i
 import { VIEWS, show, viewFromQuery } from './render.ts';
 import { createBuilder } from './build.ts';
 import { GroundIndex } from './car/ground.ts';
+import { площадкаПодСледом } from './city/площадка.ts';
 import { SETUPS, VIPER } from './car/passport.ts';
 import { P_ZERO } from './car/tyre.ts';
 import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.ts';
@@ -144,7 +145,19 @@ function застройка(): void {
   // объекты, а не участки: школа на четырёх участках — ОДНО здание
   viewer.setBuildings(посёлок.объекты.map((о) => {
     const дом = домНаУчастке(о, посёлок.вид, посёлок.сид);
-    return { дом, низ: ground.sample(дом.x, дом.z).height };
+    /**
+     * Дом спрашивает землю ПОД ВСЕМ СВОИМ СЛЕДОМ, а не в одной точке своей
+     * середины. Одна точка — это то, из-за чего у 635 домов из 676 на холмах
+     * угол висел в воздухе: дом ровный, земля нет, и разницу никто не брал.
+     * Ту же самую землю щупает колесо и нога — второй земли не существует.
+     */
+    return {
+      дом,
+      площадка: площадкаПодСледом(
+        { x: дом.x, z: дом.z, курс: дом.курс, ширина: дом.ширина, глубина: дом.глубина },
+        (x, z) => ground.sample(x, z).height,
+      ),
+    };
   }));
 }
 
