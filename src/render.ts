@@ -10,6 +10,7 @@ import type { Point2 } from './world/road.ts';
 import { EYE_HEIGHT } from './person/person.ts';
 import { type Дом, ДВЕРЬ, ОКНО, ЭТАЖ } from './city/дом.ts';
 import type { Площадка } from './city/площадка.ts';
+import type { Дерево } from './city/зелень.ts';
 import { type Sight, createSight } from './person/sight.ts';
 
 const COLORS: Record<Material, number> = {
@@ -212,6 +213,12 @@ export interface Viewer {
    * «на картинке четыре этажа, а в расчёте три» невыразимо.
    */
   setBuildings(дома: readonly { дом: Дом; площадка: Площадка }[]): void;
+  /**
+   * Деревья улиц и дворов. Один вызов ставит всю зелень: дерево не двигается.
+   * Место и размеры приходят готовыми из `city/зелень.ts` — показ ничего
+   * не додумывает, поэтому «дерево на асфальте» здесь записать негде.
+   */
+  setTrees(деревья: readonly { дерево: Дерево; низ: number }[]): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -555,6 +562,8 @@ export function show(surface: Surface, startView: string, custom: View | null = 
    * отрисовки независимо от числа домов (решение 053).
    */
   let застройка: THREE.InstancedMesh[] | null = null;
+  /** Деревья улиц и дворов: те же пачки, что у домов. */
+  let зелень: THREE.InstancedMesh[] | null = null;
   let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
@@ -709,6 +718,20 @@ export function show(surface: Surface, startView: string, custom: View | null = 
     }
     controls.update();
     renderer.render(scene, camera);
+  });
+
+  /**
+   * Чего стоит кадр — проверкам из терминала.
+   *
+   * Меряются ВЫЗОВЫ ОТРИСОВКИ и треугольники, а не миллисекунды. В контейнере
+   * рисует программный отрисовщик, и абсолютное время там ничего не значит —
+   * это записано ещё в решении 053. А вызовы отрисовки значат: именно их
+   * число решает, потянет ли город слабое железо, и именно ради них дома
+   * и деревья разложены по пачкам.
+   */
+  (window as unknown as { __стоимостьКадра?: () => unknown }).__стоимостьКадра = () => ({
+    вызовов: renderer.info.render.calls,
+    треугольников: renderer.info.render.triangles,
   });
 
   return {
@@ -961,6 +984,87 @@ export function show(surface: Surface, startView: string, custom: View | null = 
         signGroup.add(pole, plate);
       }
       scene.add(signGroup);
+    },
+    setTrees(деревья) {
+      if (зелень !== null) {
+        for (const меш of зелень) { scene.remove(меш); меш.dispose(); }
+        зелень = null;
+      }
+      if (деревья.length === 0) return;
+
+      /**
+       * Дерево — те же пачки, что у домов: три вызова отрисовки на весь
+       * город, а не по одному на дерево.
+       *
+       * **Крона — двадцатигранник, а не коробка.** Первая редакция ставила
+       * коробки, и ряд деревьев с уровня глаз читался зелёным ЗАБОРОМ:
+       * плоские грани соседних крон сходились в сплошную стену, и никакие
+       * размеры этого не спасали — дело было в форме. Двадцатигранник стоит
+       * ровно столько же треугольников, сколько коробка триангулированная,
+       * но силуэт у него дерева, а не ящика. Крон две, вторая мельче
+       * и сдвинута: тогда и силуэт неровный, и одинаковых деревьев нет.
+       */
+      const снизу = (g: THREE.BufferGeometry): THREE.BufferGeometry => {
+        g.translate(0, 0.5, 0);
+        return g;
+      };
+      const пачка = (
+        g: THREE.BufferGeometry, n: number, m: THREE.Material,
+      ): THREE.InstancedMesh => {
+        const меш = new THREE.InstancedMesh(g, m, Math.max(1, n));
+        меш.castShadow = true;
+        меш.receiveShadow = true;
+        меш.count = n;
+        return меш;
+      };
+      const ствол = пачка(снизу(new THREE.BoxGeometry(1, 1, 1)), деревья.length,
+        new THREE.MeshStandardMaterial({ roughness: 0.95 }));
+      const крона1 = пачка(снизу(new THREE.IcosahedronGeometry(0.5, 0)), деревья.length,
+        new THREE.MeshStandardMaterial({ roughness: 0.85, flatShading: true }));
+      const крона2 = пачка(снизу(new THREE.IcosahedronGeometry(0.5, 0)), деревья.length,
+        new THREE.MeshStandardMaterial({ roughness: 0.85, flatShading: true }));
+      зелень = [ствол, крона1, крона2];
+      scene.add(...зелень);
+
+      const м = new THREE.Matrix4();
+      const кв = new THREE.Quaternion();
+      const эйлер = new THREE.Euler();
+      const место = new THREE.Vector3();
+      const размер = new THREE.Vector3();
+      const цвет = new THREE.Color();
+
+      деревья.forEach(({ дерево: д, низ }, i) => {
+        эйлер.set(0, -д.курс, 0);
+        кв.setFromEuler(эйлер);
+        место.set(д.x, низ - 0.15, д.z);
+        размер.set(д.толщина, д.ствол + д.крона * 0.35, д.толщина);
+        м.compose(место, кв, размер);
+        ствол.setMatrixAt(i, м);
+        // кора: от серо-бурой к тёмной, тем же числом, что и лист
+        ствол.setColorAt(i, цвет.setHSL(0.09, 0.22, 0.20 + д.лист * 0.07));
+
+        // лист: от желтоватой зелени к тёмной. Один и тот же ряд не бывает
+        // одноцветным — иначе улица снова превращается в штамп
+        const лиственный = цвет.setHSL(0.23 + д.лист * 0.06, 0.34 + д.лист * 0.16,
+          0.22 + д.лист * 0.12).getHex();
+        for (const [меш, доворот, доля, подъём] of [
+          [крона1, 0, 1, 0], [крона2, Math.PI / 3, 0.72, 0.45],
+        ] as const) {
+          эйлер.set(доворот * 0.3, -(д.курс + доворот), доворот * 0.2);
+          кв.setFromEuler(эйлер);
+          место.set(д.x, низ + д.ствол + д.крона * подъём, д.z);
+          размер.set(д.ширина * доля, д.крона * (1 - подъём * 0.5), д.ширина * доля);
+          м.compose(место, кв, размер);
+          меш.setMatrixAt(i, м);
+          // вторая крона чуть светлее: видно, что это объём, а не пятно
+          меш.setColorAt(i, цвет.setHex(лиственный).multiplyScalar(1 + подъём * 0.5));
+        }
+      });
+
+      for (const меш of зелень) {
+        меш.instanceMatrix.needsUpdate = true;
+        if (меш.instanceColor) меш.instanceColor.needsUpdate = true;
+      }
     },
     setBuildings(дома) {
       if (застройка !== null) {

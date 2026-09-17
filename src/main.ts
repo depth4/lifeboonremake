@@ -3,6 +3,7 @@
 import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
 import { домНаУчастке } from './city/дом.ts';
+import { деревьяУлиц } from './city/зелень.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
@@ -161,6 +162,23 @@ function застройка(): void {
   }));
 }
 
+/**
+ * Зелень улиц и дворов. Дерево ставится НА ЗЕМЛЮ, и земля та же самая,
+ * по которой едет колесо. Отдельной площадки, как у дома, тут не нужно:
+ * у дома ровный пол на всю ширину, у дерева пола нет вовсе — ствол
+ * в треть метра на предельном уклоне расходится с землёй на три сантиметра,
+ * и это ниже того, что видно глазом.
+ */
+function зеленьСцены(): void {
+  const посёлок = посёлокСцены(sceneName);
+  if (посёлок === null || !viewer) { viewer?.setTrees([]); return; }
+  // сеть уже собрана для трафика: второй такой же завести значило бы
+  // держать две правды об одних и тех же дорогах
+  viewer.setTrees(деревьяУлиц(world, network, посёлок.сид).map((дерево) => ({
+    дерево, низ: ground.sample(дерево.x, дерево.z).height,
+  })));
+}
+
 function rebuild(): void {
   const started = performance.now();
   try {
@@ -184,7 +202,7 @@ function rebuild(): void {
   viewer?.setSigns([]);
   // застройка ставится после того, как заведена опора: дом стоит НА земле,
   // и её высоту надо у кого-то спросить
-  if (опораГотова) застройка();
+  if (опораГотова) { застройка(); зеленьСцены(); }
   if (traffic.length > 0) заселить();
   viewer.setSurface(surface);
   readout();
@@ -885,3 +903,4 @@ viewer.onFrame((dt) => {
 
 // первая застройка: мир собран, опора заведена, смотрелка есть
 застройка();
+зеленьСцены();
