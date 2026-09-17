@@ -35,13 +35,43 @@ const startScene = query.get('scene') ?? DEFAULT_SCENE;
 /** На каком расстоянии инструмент начинает распознавать намерение, метры. */
 const SNAP_RADIUS = 14;
 
+/**
+ * Куда страница записывает, что не поняла имени и взяла своё.
+ *
+ * Человеку, промахнувшемуся в адресе, белый экран не нужен — подмена
+ * для него правильное поведение. А инструменту, снимающему доказательство,
+ * она смертельна: 17.09 `npm run shot -- наводка город холмы` снял ПЛАТО,
+ * и подсказка самого инструмента предлагала писать именно `холмы`.
+ * Снимок не той земли хуже отказа: он выглядит как доказательство.
+ *
+ * Это уже ловили 15 сентября на сценах. Второй раз тот же корень — значит
+ * чинится корень: список имён никуда не переписывается, страница просто
+ * ПРИЗНАЁТСЯ, что подменила, а проверки отказываются работать с подменой.
+ */
+const подмены: string[] = [];
+const подменено = (что: string, просили: string, взяли: string): void => {
+  подмены.push(`${что}: «${просили}» не знаю, взял «${взяли}»`);
+};
+
 let sceneName = ИМЕНА_СЦЕН.includes(startScene) ? startScene : DEFAULT_SCENE;
+if (sceneName !== startScene) подменено('сцена', startScene, sceneName);
 const roads: Road[] = [...дорогиСцены(sceneName)];
+/**
+ * Рельеф по имени. Принимается и ключ (`hills`), и подпись с кнопки
+ * (`холмы`) — человек пишет в адресе то, что видит на экране, и это
+ * не два имени, а одно: подпись кнопки и есть источник.
+ */
 let terrainName = query.get('terrain') ?? DEFAULT_TERRAIN;
-if (!TERRAINS[terrainName]) terrainName = DEFAULT_TERRAIN;
+if (!TERRAINS[terrainName]) {
+  // принимается и ключ (`hills`), и подпись с кнопки (`холмы`): человек
+  // пишет в адресе то, что видит на экране, и это одно имя, а не два
+  const поПодписи = Object.keys(TERRAINS).find((k) => TERRAINS[k].label === terrainName);
+  if (поПодписи !== undefined) terrainName = поПодписи;
+  else { подменено('рельеф', terrainName, DEFAULT_TERRAIN); terrainName = DEFAULT_TERRAIN; }
+}
 
 let variant = query.get('variant')?.toUpperCase() ?? DEFAULT_VARIANT;
-if (!VARIANTS[variant]) variant = DEFAULT_VARIANT;
+if (!VARIANTS[variant]) { подменено('вариант', variant, DEFAULT_VARIANT); variant = DEFAULT_VARIANT; }
 
 let world = buildWorld(roads, terrainName);
 let surface = buildSurface(world, variant);
@@ -84,7 +114,14 @@ if (news && newsList && changes.length > 0 && query.get('bare') !== '1') {
   buildLine?.addEventListener('click', () => news.classList.toggle('open'));
 }
 
-const viewer = show(surface, startView, viewFromQuery(query));
+const наводка = viewFromQuery(query);
+const viewer = show(surface, startView, наводка);
+/**
+ * Какой ракурс показан НА САМОМ ДЕЛЕ. Своя наводка (`from`/`at` в адресе)
+ * бьёт список готовых; неизвестное имя даёт «вдоль».
+ */
+let показанныйРакурс = наводка !== null ? 'наводка' : (VIEWS[startView] ? startView : 'road');
+if (показанныйРакурс !== startView) подменено('ракурс', startView, показанныйРакурс);
 const canvas = document.querySelector('canvas');
 
 /**
@@ -194,7 +231,8 @@ if (views) {
   views.addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-view]');
     if (!button) return;
-    viewer.setView(button.dataset.view ?? 'road');
+    показанныйРакурс = button.dataset.view ?? 'road';
+    viewer.setView(показанныйРакурс);
     views.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
   });
 }
@@ -795,6 +833,26 @@ viewer.onFrame((dt) => {
 /** Сколько раз машина игрока стукнулась о чужую и как сильно в последний раз. */
 (window as unknown as { __crash?: () => unknown }).__crash = () => ({
   count: crashes, force: Number(lastCrash.toFixed(2)),
+});
+
+/**
+ * Что страница ПОКАЗАЛА на самом деле — проверкам из терминала.
+ *
+ * Нужно вот зачем. Страница по неизвестному имени берёт значение
+ * по умолчанию и молчит: человеку, промахнувшемуся в адресе, белый экран
+ * не нужен. Но инструменту, который снимает доказательство, подмена
+ * смертельна: 17.09 `npm run shot -- наводка город холмы` снял ПЛАТО,
+ * и в подсказке самого инструмента написано именно `холмы`. Снимок не той
+ * земли хуже отказа — он выглядит как доказательство.
+ *
+ * Это уже ловили 15 сентября на сценах (`traffic город` полгода гонял
+ * «решётку»). Второй раз тот же корень — значит чинится корень, а не случай:
+ * список имён не переписывается в инструмент, страница просто ОТВЕЧАЕТ,
+ * что у неё вышло, и инструмент сверяет с заказом. Тогда любая молчаливая
+ * подмена — сцены, рельефа, варианта, ракурса — видна сразу и вся.
+ */
+(window as unknown as { __чтоПоказано?: () => unknown }).__чтоПоказано = () => ({
+  scene: sceneName, terrain: terrainName, variant, view: показанныйРакурс, подмены,
 });
 
 (window as unknown as { __car?: () => unknown }).__car = () => (car === null ? null : {
