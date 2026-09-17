@@ -29,10 +29,17 @@ const OUT = 'build/сравнение.html';
  * перестала быть выразимой.
  */
 const КАРТИНКИ = {
-  'переход': { scene: 'крест', view: 'node', terrain: 'plateau' },
+  // «перекрёсток» наведён на узел в стороне от начала координат, а у «креста»
+  // узел ровно в центре: отсюда и брался кадр, на котором одна трава
+  'переход': { scene: 'крест', view: 'close', terrain: 'plateau' },
   'с-дороги': { scene: 'крест', view: 'curb', terrain: 'plateau' },
   'вблизи-A': { scene: 'крест', view: 'close', terrain: 'hills', variant: 'A' },
-  'выемка': { scene: 'крест', view: 'close', terrain: 'mountain' },
+  // выемку видно только сбоку от неё самой: гора в «горах» стоит на (-38, -8),
+  // и любой общий ракурс показывает её склон, а не срез
+  'выемка': {
+    scene: 'крест', view: 'наводка', terrain: 'mountain',
+    params: { from: '-38,34,-62', at: '-30,6,-2' },
+  },
   'острый-A': { scene: 'острый', view: 'close', terrain: 'plateau', variant: 'A' },
   'острый-B': { scene: 'острый', view: 'close', terrain: 'plateau', variant: 'B' },
   'звезда': { scene: 'звезда', view: 'over', terrain: 'plateau' },
@@ -65,7 +72,7 @@ if (!process.argv.includes('быстро')) {
       scene: к.scene,
       view: к.view,
       terrain: к.terrain,
-      params: к.variant ? { variant: к.variant, bare: '1' } : { bare: '1' },
+      params: { bare: '1', ...(к.variant ? { variant: к.variant } : {}), ...(к.params ?? {}) },
     })),
     { тихо: true },
   );

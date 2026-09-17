@@ -144,12 +144,28 @@ export interface View {
   readonly from: [number, number, number];
   readonly at: [number, number, number];
   readonly fog: number;
+  /**
+   * Числа этого ракурса — В ДОЛЯХ МИРА, а не в метрах.
+   *
+   * Общие виды («план», «сверху») должны показывать ВЕСЬ мир, какой бы он
+   * ни был. Метрами это записать нельзя: мир перестал быть постоянного
+   * размера — рукотворные сцены 130 м, город 316, большой 616. Пока камера
+   * стояла в метрах, «большой город» уходил за край кадра, а «решётка»
+   * болталась островком посреди неба.
+   *
+   * Размер мира при этом НЕ ПЕРЕДАЁТСЯ снаружи, а меряется по самому
+   * полотну: оно и есть мир. Второму числу о размере мира взяться неоткуда,
+   * значит и разойтись нечему.
+   */
+  readonly поМиру?: true;
 }
 
 /** Ракурсы: и для кнопок на странице, и для снимков из терминала. */
 export const VIEWS: Record<string, View> = {
-  plan: { label: 'план', from: [0, 275, 0.2], at: [0, 0, 0], fog: 900 },
-  over: { label: 'сверху', from: [-210, 155, -205], at: [0, -2, 0], fog: 900 },
+  // высота 2.3 полумира — это ровно столько, чтобы квадратный мир влезал
+  // в кадр по короткой стороне: при поле зрения 48° видно 0.89 высоты
+  plan: { label: 'план', from: [0, 2.3, 0.002], at: [0, 0, 0], fog: 7, поМиру: true },
+  over: { label: 'сверху', from: [-1.25, 0.95, -1.25], at: [0, -0.02, 0], fog: 7, поМиру: true },
   road: { label: 'вдоль', from: [-118, 52, -128], at: [15, 2, 8], fog: 480 },
   close: { label: 'вблизи', from: [-52, 14, -34], at: [-4, 4, 4], fog: 320 },
   curb: { label: 'с дороги', from: [-48.1, 1.1, -12.7], at: [-8.8, 2.5, 10.0], fog: 200 },
@@ -384,6 +400,18 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.prepend(renderer.domElement);
 
+  /**
+   * Полразмера мира — по самому полотну. Общие виды отсчитываются от него,
+   * поэтому любая сцена кадрируется одинаково, от «решётки» до города.
+   */
+  let радиусМира = 128;
+  {
+    let r = 0;
+    for (let i = 0; i < surface.positions.length; i += 3)
+      r = Math.max(r, Math.abs(surface.positions[i]), Math.abs(surface.positions[i + 2]));
+    if (r > 1) радиусМира = r;
+  }
+
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x9fc4dd);
   const fog = new THREE.Fog(0x9fc4dd, 200, 480);
@@ -540,7 +568,12 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   shadowBox.near = 1; shadowBox.far = 420;
   scene.add(sun);
 
-  const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.5, 1400);
+  // дальняя плоскость — тоже от размера мира: с высоты над большим городом
+  // его дальние углы дальше полутора километров, и на постоянных 1400
+  // они бы просто исчезали
+  const camera = new THREE.PerspectiveCamera(
+    48, innerWidth / innerHeight, 0.5, Math.max(1400, радиусМира * 3.4),
+  );
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.maxPolarAngle = Math.PI * 0.495;
@@ -554,18 +587,19 @@ export function show(surface: Surface, startView: string, custom: View | null = 
   /** Дымка последнего ракурса: пешеход ставит свою и обязан вернуть эту. */
   let viewFog = 480;
   const apply = (view: View, instant: boolean): void => {
-    viewFog = view.fog;
-    const to = new THREE.Vector3(...view.from);
-    const at = new THREE.Vector3(...view.at);
+    const k = view.поМиру === true ? радиусМира : 1;
+    viewFog = view.fog * k;
+    const to = new THREE.Vector3(...view.from).multiplyScalar(k);
+    const at = new THREE.Vector3(...view.at).multiplyScalar(k);
     if (instant) {
       camera.position.copy(to);
       controls.target.copy(at);
-      fog.far = view.fog;
-      fog.near = view.fog * 0.42;
+      fog.far = viewFog;
+      fog.near = viewFog * 0.42;
       controls.update();
       return;
     }
-    flight = { from: camera.position.clone(), to, look: controls.target.clone(), at, fog: view.fog, t: 0 };
+    flight = { from: camera.position.clone(), to, look: controls.target.clone(), at, fog: viewFog, t: 0 };
   };
   apply(custom ?? VIEWS[startView] ?? VIEWS.road, true);
 
