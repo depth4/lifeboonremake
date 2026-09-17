@@ -1257,7 +1257,14 @@ export function show(surface: Surface, startView: string, custom: View | null = 
         // но умеренно: дальше начинает врать глубина, и глаз мылит весь кадр
         camera.far = 1500;
         camera.updateProjectionMatrix();
-        sight ??= createSight(renderer, scene, camera);
+        /**
+         * `?глаз-лучом=1` в адресе возвращает наводку лучом по всей сцене,
+         * как было до 18.09. Это заведомо сломанный вариант для проверки,
+         * и на живой странице его никто не наберёт случайно.
+         */
+        sight ??= createSight(renderer, scene, camera, {
+          наводкаЛучом: new URLSearchParams(location.search).get('глаз-лучом') === '1',
+        });
         sight.resize(innerWidth, innerHeight);
       }
       if (next === null && wasWalking) {
