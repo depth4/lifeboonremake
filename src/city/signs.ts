@@ -59,6 +59,35 @@ export const QUIET_LIMIT = 40;
 /** Уже какой дороги считаем её тихой улицей: одна полоса в сторону. */
 const QUIET_LANES = 1;
 
+/**
+ * Насколько дорога ЗНАЧИМА — шириной полос движения, а не шириной асфальта.
+ *
+ * Разница появилась 18 сентября вместе со стоянкой: у внутриквартального
+ * проезда шесть метров движения плюс два машиноместа по краям — одиннадцать
+ * метров полотна против семи с небольшим у местной улицы. По ширине асфальта
+ * выезд из двора оказывался ГЛАВНЕЕ улицы, в которую он выезжает. Стоянка
+ * старшинства не даёт: по ней не едут.
+ */
+function ширинаДвижения(world: World, shape: number): number {
+  return world.shapes[shape].type.lanes
+    .filter((l) => l.kind === 'travel')
+    .reduce((сумма, l) => сумма + l.width, 0);
+}
+
+/**
+ * Улица это или внутриквартальный проезд.
+ *
+ * Отличие не в ширине и не в имени типа, а в ОСЕВОЙ: у улицы между
+ * встречными потоками разметка или разделительная полоса (ГОСТ Р 52289,
+ * линии 1.1 и 1.3), у проезда во дворе её нет и в жизни не бывает.
+ * Определение одно на весь проект: им же решает светофор, им же меряет
+ * проверка. Пока определений было бы два, они бы разошлись.
+ */
+export function улица(world: World, shape: number): boolean {
+  return world.shapes[shape].type.lanes
+    .some((l) => l.kind === 'marking' || l.kind === 'median');
+}
+
 /** Главная, второстепенная или равнозначная — для одного подъезда к узлу. */
 export type Priority = 'главная' | 'второстепенная' | 'равнозначная';
 
@@ -84,6 +113,13 @@ export function buildSigns(
   atJunction: readonly { shape: number; s: number }[][],
   signalled: ReadonlySet<number>,
   lanesPerSide: (shape: number) => number,
+  /**
+   * `старшинство: 'по ширине асфальта'` — мерить старшинство полотном,
+   * как было до 18.09. Заведомо сломанный вариант: проезд во дворе со
+   * стоянками по краям шире местной улицы, и выезд из двора становится
+   * ГЛАВНЫМ по отношению к улице, в которую выезжает.
+   */
+  как: { старшинство?: 'по ширине асфальта' } = {},
 ): Signs {
   const all: Sign[] = [];
   const rank = new Map<string, Priority>();
@@ -109,20 +145,33 @@ export function buildSigns(
    */
   atJunction.forEach((roads, ji) => {
     if (signalled.has(ji) || roads.length < 3) return;
-    let best = -1, bestLanes = -1, bestWidth = -1;
+    /**
+     * ГЛАВНАЯ — ЭТО РАНГ, А НЕ ОДНА ДОРОГА.
+     *
+     * Первая редакция назначала главной РОВНО ОДНУ дорогу — первую
+     * с наибольшим рангом. На Т-образном узле улица разрезана узлом
+     * на два куска, ранг у них один и тот же, и второй кусок получал
+     * «уступи дорогу» сам себе: машина, едущая по улице прямо, тормозила
+     * перед выездом из двора. Замерено 18.09 на «городе»: улица уступала
+     * двору 106.8 секунды за прогон. Главная дорога по ПДД 13.9 ПРОХОДИТ
+     * через перекрёсток, а второстепенные к ней примыкают, — значит
+     * главными должны быть все дороги старшего ранга сразу.
+     */
+    const ранг = (si: number): number => как.старшинство === 'по ширине асфальта'
+      ? world.shapes[si].halfWidth : ширинаДвижения(world, si);
+    let bestLanes = -1, bestWidth = -1;
     for (const link of roads) {
       const n = lanesPerSide(link.shape);
-      const w = world.shapes[link.shape].halfWidth;
-      if (n > bestLanes || (n === bestLanes && w > bestWidth)) {
-        best = link.shape; bestLanes = n; bestWidth = w;
-      }
+      const w = ранг(link.shape);
+      if (n > bestLanes || (n === bestLanes && w > bestWidth)) { bestLanes = n; bestWidth = w; }
     }
+    const старший = (si: number): boolean => lanesPerSide(si) === bestLanes
+      && Math.abs(ранг(si) - bestWidth) < 0.01;
     // все дороги одинаковые — перекрёсток равнозначный, и знаков тут нет
-    const same = roads.every((l) => lanesPerSide(l.shape) === bestLanes
-      && Math.abs(world.shapes[l.shape].halfWidth - bestWidth) < 0.01);
+    const same = roads.every((l) => старший(l.shape));
     for (const link of roads) {
       const kind: Priority = same ? 'равнозначная'
-        : link.shape === best ? 'главная' : 'второстепенная';
+        : старший(link.shape) ? 'главная' : 'второстепенная';
       rank.set(`${ji}:${link.shape}`, kind);
       if (kind === 'равнозначная') continue;
       const total = world.shapes[link.shape].stations.at(-1)?.s ?? 0;

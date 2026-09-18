@@ -5,6 +5,10 @@
  *   npm run traffic -- каша    — другая сцена
  *   npm run traffic -- город стоянка-в-полосе — карман на полосе движения,
  *                                как было до 17.09: ОБЯЗАНА упасть
+ *   npm run traffic -- город старшинство-по-асфальту — старшинство дорог
+ *                                по ширине полотна: ОБЯЗАНА упасть
+ *   npm run traffic -- город светофор-везде — светофор на каждом узле,
+ *                                как было до 18.09: ОБЯЗАНА упасть
  *   npm run traffic -- решётка сломать   — выключить объезд, проверка обязана упасть
  *   npm run traffic -- решётка шаг-по-часам — походка от часов, обязана упасть
  */
@@ -14,10 +18,10 @@ import { расселить } from '../src/city/житель.ts';
 import {
   ЧАС_УТРА, машиныЖителей, пешеходыЖителей, сколькоМашин, сколькоПешеходов,
 } from '../src/city/жизнь.ts';
-import { buildWorld, nearestRoad } from '../src/world/world.ts';
-import { WIDE, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
+import { type World, buildWorld, nearestRoad } from '../src/world/world.ts';
+import { type Route, WIDE, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { laneAcross, sideOf } from '../src/city/lanes.ts';
-import { TOWN_LIMIT, priorityOf } from '../src/city/signs.ts';
+import { TOWN_LIMIT, priorityOf, улица } from '../src/city/signs.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
 import { lightFor, walkLight } from '../src/city/signals.ts';
 import { judge, newWatchdog, tally } from '../src/city/offence.ts';
@@ -35,8 +39,21 @@ const oneLane = mode === 'одна-полоса';
  * и запирающий сам себя ряд припаркованных.
  */
 const вПолосе = mode === 'стоянка-в-полосе';
+/**
+ * Заведомо сломанный вариант: старшинство дорог меряется шириной АСФАЛЬТА.
+ * Проезд во дворе со стоянками по краям шире местной улицы — и выезд
+ * из двора становится главным по отношению к улице.
+ */
+const поАсфальту = mode === 'старшинство-по-асфальту';
+/**
+ * Заведомо сломанный вариант: светофор на каждом узле, где сходятся три
+ * конца, — как было до 18.09. Тогда его получает каждый выезд из двора.
+ */
+const светофорВезде = mode === 'светофор-везде';
 const world = buildWorld(дорогиСцены(scene), 'plain');
-const net = buildNetwork(world, вПолосе ? { стоянка: 'в полосе движения' as const } : {});
+const net = buildNetwork(world, вПолосе ? { стоянка: 'в полосе движения' as const }
+  : поАсфальту ? { старшинство: 'по ширине асфальта' as const }
+    : светофорВезде ? { светофор: 'на каждом узле' as const } : {});
 
 // сколько машин и пешеходов ставить — одна плотность на весь проект,
 // она же и у страницы: см. `сколькоМашин` в `жизнь.ts`
@@ -62,6 +79,52 @@ const walkers = жизнь === null
   ? placeWalkers(world, net, пешком)
   : пешеходыЖителей(world, net, жизнь, ЧАС, пешком);
 const DT = 1 / 60;
+
+/**
+ * Едет ли машина через узел ПРЯМО — или поворачивает.
+ *
+ * Нужно затем, что уступать положено и главной: ПДД 13.12, поворачивая
+ * налево, пропусти встречных, кто едет прямо. Без этого различия проверка
+ * «главная не уступает» была бы неправдой и ловила бы честное поведение.
+ * Считается по направлениям дорог, а не по знакам, — иначе это был бы
+ * пересказ того же правила.
+ */
+function прямо(w: World, m: { shape: number; s: number; dir: number; route: Route | null }): boolean {
+  if (m.route === null) return true;
+  const своя = along(w, m.shape, m.s);
+  const чужая = along(w, m.route.shape, m.route.s);
+  const скаляр = (своя.fx * m.dir) * (чужая.fx * m.route.dir)
+    + (своя.fz * m.dir) * (чужая.fz * m.route.dir);
+  return скаляр > Math.cos(Math.PI / 4);
+}
+
+/**
+ * Узлы, где внутриквартальный проезд встречается с улицей. Считаются один
+ * раз: это свойство сети, а не кадра.
+ */
+const устьяДворов = new Set<number>();
+world.junctions.forEach((_, ji) => {
+  const дороги = net.atJunction[ji];
+  if (!дороги.some((l) => !улица(world, l.shape))) return;      // двора тут нет
+  const улицы = дороги.filter((l) => улица(world, l.shape));
+  if (улицы.length === 0) return;                               // и улицы тоже
+  /**
+   * Берём только устья на ОДНОЙ улице: «Т», а не перекрёсток, на который
+   * двор попал заодно. Узлы ближе одиннадцати метров сеть сливает в один,
+   * и два двора напротив друг друга могут сойтись с уличным перекрёстком.
+   * На таком узле улица честно уступает ДРУГОЙ улице, и считать это
+   * «улица уступила двору» было бы враньём проверки.
+   */
+  const курсы = улицы.map((l) => {
+    const т = along(world, l.shape, l.s);
+    return Math.atan2(т.fz, т.fx);
+  });
+  const вдольОдной = курсы.every((a) => курсы.every((b) => {
+    const d = Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+    return d < Math.PI / 4 || d > (3 * Math.PI) / 4;
+  }));
+  if (вдольОдной) устьяДворов.add(ji);
+});
 
 let offRoad = 0, worstOff = 0, tooFast = 0, fastest = 0, stuck = 0, worstSpeeding = -99;
 /** Кто именно встал: без имени цифра «шесть застряло» ничего не даёт. */
@@ -101,6 +164,32 @@ const прежнее = new Map<number, { x: number; z: number; путь: number 
 let parkedEver = 0, leftEver = 0, maxParked = 0;
 /** Сколько раз стоящая машина оказалась кузовом в полосе движения. */
 let вПолосеДвижения = 0, худшийЗаход = 0, ктоВПолосе = '';
+/**
+ * Кто кому уступает у выезда из двора. Меряется не знак, а ДЕЛО:
+ * сколько кадров машина простояла со словом «уступает» на узле, где
+ * двор встречается с улицей. Проверять сам знак было бы пересказом
+ * того же правила другими словами.
+ */
+let дворУступил = 0, улицаУступилаДвору = 0;
+/**
+ * Старшинство у устья двора: сколько раз двор оказался главным и сколько
+ * раз улица — не главной. Считается один раз по знакам, а не по кадрам.
+ *
+ * Почему утверждение про ЗНАКИ, а не про «улица ни разу не уступила».
+ * Уступают не только по старшинству: на Т-образном узле двое встречных,
+ * идущих прямо, разводятся «ничьёй» — тем, кто подъехал позже. Замерено
+ * 18.09: 6.3 секунды за прогон, и ни одного двора рядом. Это не про двор
+ * и чинится не здесь; число остаётся на виду строкой ниже, чтобы не росло
+ * молча.
+ */
+let дворГлавный = 0, улицаНеГлавная = 0;
+for (const ji of устьяДворов) {
+  for (const l of net.atJunction[ji]) {
+    const р = priorityOf(net.signs, ji, l.shape);
+    if (улица(world, l.shape)) { if (р !== 'главная') улицаНеГлавная++; }
+    else if (р === 'главная') дворГлавный++;
+  }
+}
 const wasParked = movers.map(() => false);
 const walked = walkers.map(() => 0);
 const wasBefore = movers.map(() => true); // ещё не пересекли стоп-линию
@@ -160,6 +249,15 @@ for (let t = 0; t < 120; t += DT) {
     wasParked[i] = parked;
   });
   maxParked = Math.max(maxParked, movers.filter((m) => m.park?.phase === 'стоит').length);
+
+  /** ── КТО КОМУ УСТУПАЕТ У ВЫЕЗДА ИЗ ДВОРА. */
+  for (const m of movers) {
+    const узел = m.route?.junction;
+    if (узел === undefined || m.reason !== 'уступает' || !устьяДворов.has(узел)) continue;
+    if (!улица(world, m.shape)) { дворУступил++; continue; }
+    // главная уступает честно, когда поворачивает налево (ПДД 13.12)
+    if (прямо(world, m)) улицаУступилаДвору++;
+  }
 
   /**
    * ── СТОЯЩАЯ МАШИНА НЕ ПЕРЕКРЫВАЕТ ПОЛОСУ ДВИЖЕНИЯ.
@@ -581,7 +679,7 @@ function priorityScene(): { signs: number; mainWaits: number; sideWaits: number;
     if (junction < 0) continue;
     for (const m of cars) {
       if (m.route?.junction !== junction || m.reason !== 'уступает') continue;
-      if (priorityOf(n2.signs, junction, m.shape) === 'главная') mainWaits++;
+      if (priorityOf(n2.signs, junction, m.shape) === 'главная' && прямо(w2, m)) mainWaits++;
       if (priorityOf(n2.signs, junction, m.shape) === 'второстепенная') sideWaits++;
     }
   }
@@ -605,7 +703,7 @@ const blind = playerScene(true);
 const dольше = (): number[] => [...дольшеВсего.values()];
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(38, '.')} ${value}`);
-console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : byClock ? '   [СЛОМАНО: походка по часам]' : lawless ? '   [СЛОМАНО: правила выключены]' : oneLane ? '   [СЛОМАНО: перестроений нет, все в правой полосе]' : вПолосе ? '   [СЛОМАНО: стоянка — правая полоса движения]' : ''}\n`);
+console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : byClock ? '   [СЛОМАНО: походка по часам]' : lawless ? '   [СЛОМАНО: правила выключены]' : oneLane ? '   [СЛОМАНО: перестроений нет, все в правой полосе]' : вПолосе ? '   [СЛОМАНО: стоянка — правая полоса движения]' : поАсфальту ? '   [СЛОМАНО: старшинство по ширине асфальта]' : светофорВезде ? '   [СЛОМАНО: светофор на каждом узле]' : ''}\n`);
 line('дорог в сети / узлов', `${world.shapes.length} / ${world.junctions.length}`);
 line('свернули на другую дорогу', `${turns} из ${movers.length}`);
 line('сдвинулись с места', `${moved} из ${movers.length}`);
@@ -637,6 +735,21 @@ const checks: [string, boolean, string][] = [
     `${вПолосеДвижения} случаев, худший заход ${худшийЗаход.toFixed(2)} м`
     + `${ктоВПолосе === '' ? '' : '\n      ' + ктоВПолосе}`],
   ['кто-то свернул на перекрёстке', world.junctions.length === 0 || turns > 0, `${turns} поворотов`],
+  /**
+   * Двор уступает улице, а не наоборот. Если устий дворов на сцене нет
+   * (рукотворные сцены без посёлка) — проверять нечего, и это не поблажка:
+   * состояния, которое она ловит, на такой сцене не существует.
+   */
+  ['у выезда из двора двор второстепенный, а улица главная',
+    устьяДворов.size === 0 || (дворГлавный === 0 && улицаНеГлавная === 0 && дворУступил > 0),
+    устьяДворов.size === 0 ? 'устий дворов на сцене нет'
+      : `${устьяДворов.size} устий; двор главным ${дворГлавный} раз, улица не главной `
+        + `${улицаНеГлавная} раз; уступали: двор ${(дворУступил * DT).toFixed(1)} с, `
+        + `улица ${(улицаУступилаДвору * DT).toFixed(1)} с`],
+  ['у выезда из двора нет светофора',
+    устьяДворов.size === 0 || ![...устьяДворов].some((ji) => net.signals.some((sg) => sg.junction === ji)),
+    `${устьяДворов.size} устий, со светофором `
+      + `${[...устьяДворов].filter((ji) => net.signals.some((sg) => sg.junction === ji)).length}`],
   ['никто не проехал на красный', ranRed === 0,
     `${ranRed} проездов${красные.length > 0 ? '\n      ' + красные.join('\n      ') : ''}`],
   ['на перекрёстке не столкнулись', inBoxTogether === 0,

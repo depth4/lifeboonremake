@@ -254,7 +254,21 @@ export function buildNetwork(
    * до 17.09: на правую полосу движения. Заведомо сломанный вариант,
    * и он же — всё устройство, которое этот шаг убрал.
    */
-  как: { стоянка?: 'в полосе движения' } = {},
+  как: {
+    стоянка?: 'в полосе движения';
+    /**
+     * `старшинство: 'по ширине асфальта'` — мерить старшинство дорог
+     * полотном, как было до 18.09. Заведомо сломанный вариант: выезд
+     * из двора становится главным по отношению к улице.
+     */
+    старшинство?: 'по ширине асфальта';
+    /**
+     * `светофор: 'на каждом узле'` — светофор везде, где сходятся три конца,
+     * как было до 18.09. Заведомо сломанный вариант: светофор у каждого
+     * выезда из двора.
+     */
+    светофор?: 'на каждом узле';
+  } = {},
 ): Network {
   const length = world.shapes.map((sh) => sh.stations.at(-1)?.s ?? 0);
   const atJunction: Link[][] = world.junctions.map(() => []);
@@ -280,7 +294,8 @@ export function buildNetwork(
    * От него, а не от своей ширины, отсчитываются все стоп-линии.
    */
   const reach = world.junctions.map((_, ji) => junctionReach(world, atJunction[ji]));
-  const signals = buildSignals(world, reach);
+  const signals = buildSignals(world, reach,
+    как.светофор === undefined ? {} : { светофор: как.светофор });
   const ends: (End | null)[][] = world.shapes.map(() => [null, null]);
   world.shapes.forEach((shape, si) => {
     const total = length[si];
@@ -343,7 +358,8 @@ export function buildNetwork(
 
   const signalled = new Set(signals.map((sg) => sg.junction));
   const signs = buildSigns(world, atJunction, signalled,
-    (si) => Math.max(lanes[si].forward.length, lanes[si].backward.length));
+    (si) => Math.max(lanes[si].forward.length, lanes[si].backward.length),
+    как.старшинство === undefined ? {} : { старшинство: как.старшинство });
 
   return { length, atJunction, nodes, signals, ends, bays, lanes, signs, reach };
 }
