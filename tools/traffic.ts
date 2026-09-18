@@ -3,6 +3,8 @@
  *
  *   npm run traffic            — сцена «решётка»
  *   npm run traffic -- каша    — другая сцена
+ *   npm run traffic -- город стоянка-в-полосе — карман на полосе движения,
+ *                                как было до 17.09: ОБЯЗАНА упасть
  *   npm run traffic -- решётка сломать   — выключить объезд, проверка обязана упасть
  *   npm run traffic -- решётка шаг-по-часам — походка от часов, обязана упасть
  */
@@ -13,7 +15,7 @@ import {
   ЧАС_УТРА, машиныЖителей, пешеходыЖителей, сколькоМашин, сколькоПешеходов,
 } from '../src/city/жизнь.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
-import { along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
+import { WIDE, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { laneAcross, sideOf } from '../src/city/lanes.ts';
 import { TOWN_LIMIT, priorityOf } from '../src/city/signs.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
@@ -27,8 +29,14 @@ const lawless = mode === 'без-правил';
 /** Заведомо сломанный вариант: походка считается часами, а не пройденным путём. */
 const byClock = mode === 'шаг-по-часам';
 const oneLane = mode === 'одна-полоса';
+/**
+ * Заведомо сломанный вариант: карман — правая ПОЛОСА ДВИЖЕНИЯ, как было
+ * до 17.09. Ровно то устройство, из которого росли объезд по встречной
+ * и запирающий сам себя ряд припаркованных.
+ */
+const вПолосе = mode === 'стоянка-в-полосе';
 const world = buildWorld(дорогиСцены(scene), 'plain');
-const net = buildNetwork(world);
+const net = buildNetwork(world, вПолосе ? { стоянка: 'в полосе движения' as const } : {});
 
 // сколько машин и пешеходов ставить — одна плотность на весь проект,
 // она же и у страницы: см. `сколькоМашин` в `жизнь.ts`
@@ -91,6 +99,8 @@ let offKerb = 0, worstKerb = 0, crossedOnRed = 0, yieldedToWalker = 0, crossings
 let худшийРазлад = 0, кадровПоходки = 0;
 const прежнее = new Map<number, { x: number; z: number; путь: number }>();
 let parkedEver = 0, leftEver = 0, maxParked = 0;
+/** Сколько раз стоящая машина оказалась кузовом в полосе движения. */
+let вПолосеДвижения = 0, худшийЗаход = 0, ктоВПолосе = '';
 const wasParked = movers.map(() => false);
 const walked = walkers.map(() => 0);
 const wasBefore = movers.map(() => true); // ещё не пересекли стоп-линию
@@ -150,6 +160,28 @@ for (let t = 0; t < 120; t += DT) {
     wasParked[i] = parked;
   });
   maxParked = Math.max(maxParked, movers.filter((m) => m.park?.phase === 'стоит').length);
+
+  /**
+   * ── СТОЯЩАЯ МАШИНА НЕ ПЕРЕКРЫВАЕТ ПОЛОСУ ДВИЖЕНИЯ.
+   *
+   * Это и есть главное утверждение всей стоянки, и меряется оно не
+   * «в кармане ли она», а кузовом: насколько кузов залез в полосу, по
+   * которой кто-то едет. Пока карманом была правая полоса, это число
+   * равнялось всей ширине машины — и отсюда росло всё остальное.
+   */
+  for (const m of movers) {
+    if (m.park?.phase !== 'стоит') continue;
+    let худшее = 0;
+    for (const l of net.lanes[m.shape].all) {
+      const перекрытие = Math.min(m.across + WIDE, l.across + l.width / 2)
+        - Math.max(m.across - WIDE, l.across - l.width / 2);
+      худшее = Math.max(худшее, перекрытие);
+    }
+    if (худшее > 0.05) {
+      вПолосеДвижения++;
+      if (худшее > худшийЗаход) { худшийЗаход = худшее; ктоВПолосе = tell(m, movers.indexOf(m)); }
+    }
+  }
 
   walkers.forEach((w, i) => {
     walked[i] += w.speed * DT;
@@ -573,7 +605,7 @@ const blind = playerScene(true);
 const dольше = (): number[] => [...дольшеВсего.values()];
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(38, '.')} ${value}`);
-console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : byClock ? '   [СЛОМАНО: походка по часам]' : lawless ? '   [СЛОМАНО: правила выключены]' : oneLane ? '   [СЛОМАНО: перестроений нет, все в правой полосе]' : ''}\n`);
+console.log(`\nТрафик по сцене «${scene}»: ${movers.length} машин, две минуты${broken ? '   [СЛОМАНО: дистанция не держится]' : byClock ? '   [СЛОМАНО: походка по часам]' : lawless ? '   [СЛОМАНО: правила выключены]' : oneLane ? '   [СЛОМАНО: перестроений нет, все в правой полосе]' : вПолосе ? '   [СЛОМАНО: стоянка — правая полоса движения]' : ''}\n`);
 line('дорог в сети / узлов', `${world.shapes.length} / ${world.junctions.length}`);
 line('свернули на другую дорогу', `${turns} из ${movers.length}`);
 line('сдвинулись с места', `${moved} из ${movers.length}`);
@@ -596,6 +628,14 @@ const checks: [string, boolean, string][] = [
       .sort((a, b) => Number(b.голова) - Number(a.голова)).slice(0, 6)
       .map((x) => (x.голова ? 'ГОЛОВА ' : 'хвост  ') + x.что).join('\n      ') : ''}`],
   ['габариты нигде не наложились', closest > 1, `самое тесное ${(closest * 100).toFixed(0)}% от касания`],
+  /**
+   * Стоянка — не полоса движения. Пока это было не так, стоящую машину
+   * приходилось объезжать по встречной, и весь механизм объезда рождался
+   * из одной этой строки данных.
+   */
+  ['стоящие не перекрывают полосу движения', вПолосеДвижения === 0,
+    `${вПолосеДвижения} случаев, худший заход ${худшийЗаход.toFixed(2)} м`
+    + `${ктоВПолосе === '' ? '' : '\n      ' + ктоВПолосе}`],
   ['кто-то свернул на перекрёстке', world.junctions.length === 0 || turns > 0, `${turns} поворотов`],
   ['никто не проехал на красный', ranRed === 0,
     `${ranRed} проездов${красные.length > 0 ? '\n      ' + красные.join('\n      ') : ''}`],
