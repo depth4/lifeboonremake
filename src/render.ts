@@ -178,6 +178,8 @@ export const VIEWS: Record<string, View> = {
 
 export interface Viewer {
   setView(name: string): void;
+  /** Все ракурсы, какие есть у этого мира. Кнопки строятся отсюда и больше ниоткуда. */
+  ракурсы(): Record<string, View>;
   setSurface(surface: Surface): void;
   setGhost(mesh: { positions: Float32Array; indices: Uint32Array } | null): void;
   setBuilding(on: boolean): void;
@@ -405,7 +407,21 @@ function двускатная(): THREE.BufferGeometry {
   return g;
 }
 
-export function show(surface: Surface, startView: string, custom: View | null = null): Viewer {
+export function show(
+  surface: Surface, startView: string, custom: View | null = null,
+  /**
+   * Ракурсы, которые нельзя записать постоянными числами, потому что они
+   * наводятся на ТО, ЧТО ПОКАЗЫВАЮТ, а не на точку карты.
+   *
+   * Заведено 18.09 после прямого «где дворы, их нету». Дворы были на месте
+   * все тридцать шесть, соединённые и с машинами, — но ни один ракурс в меню
+   * на них не смотрел: каждый из них это пара постоянных координат, зашитая
+   * в код. Город менялся, ракурсы смотрели в одно и то же место.
+   */
+  ещё: Record<string, View> = {},
+): Viewer {
+  /** Все ракурсы: постоянные и наведённые. Один список, других нет. */
+  const ВСЕ: Record<string, View> = { ...VIEWS, ...ещё };
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
@@ -618,7 +634,7 @@ export function show(surface: Surface, startView: string, custom: View | null = 
     }
     flight = { from: camera.position.clone(), to, look: controls.target.clone(), at, fog: viewFog, t: 0 };
   };
-  apply(custom ?? VIEWS[startView] ?? VIEWS.road, true);
+  apply(custom ?? ВСЕ[startView] ?? ВСЕ.road, true);
 
   addEventListener('resize', () => {
     sight?.resize(innerWidth, innerHeight);
@@ -745,9 +761,10 @@ export function show(surface: Surface, startView: string, custom: View | null = 
 
   return {
     setView(name) {
-      const view = name === 'наводка' && custom ? custom : VIEWS[name];
+      const view = name === 'наводка' && custom ? custom : ВСЕ[name];
       if (view) apply(view, false);
     },
+    ракурсы: () => ВСЕ,
     setSurface(next) {
       applySurface(next);
     },

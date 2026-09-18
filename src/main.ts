@@ -4,12 +4,12 @@ import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
 import { домНаУчастке } from './city/дом.ts';
 import { деревьяУлиц } from './city/зелень.ts';
-import { подПодходом, подходыПосёлка } from './city/двор.ts';
+import { откудаСмотретьВоДвор, подПодходом, подходыПосёлка } from './city/двор.ts';
 import { roadWidth } from './world/road.ts';
-import { MAX_GRADE, buildWorld, snapPoint } from './world/world.ts';
+import { MAX_GRADE, buildWorld, nearestRoad, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
 import { DEFAULT_VARIANT, VARIANTS, buildGhost, buildSurface } from './surface/index.ts';
-import { VIEWS, show, viewFromQuery } from './render.ts';
+import { type View, show, viewFromQuery } from './render.ts';
 import { createBuilder } from './build.ts';
 import { GroundIndex } from './car/ground.ts';
 import { площадкаПодСледом } from './city/площадка.ts';
@@ -117,13 +117,46 @@ if (news && newsList && changes.length > 0 && query.get('bare') !== '1') {
   buildLine?.addEventListener('click', () => news.classList.toggle('open'));
 }
 
+/**
+ * Ракурс «двор» — единственный, который нельзя записать постоянными числами.
+ *
+ * ЗАЧЕМ. 18 сентября Алекс открыл выложенный мир и сказал: «где дворы,
+ * их нету блять». Дворы были — все тридцать шесть, соединённые с улицами,
+ * с проездами, стоянками и машинами жителей. Но ни один ракурс в меню
+ * на них не смотрел: каждый из них это пара координат, зашитая в код
+ * (`вдоль` всегда глядит из −118,52,−128 в 15,2,8). Город менялся,
+ * ракурсы смотрели в одно и то же место. Построить и не показать —
+ * то же самое, что не построить.
+ *
+ * Камера стоит У ВЪЕЗДА, НА УРОВНЕ ГЛАЗ и смотрит вглубь двора. Высота
+ * берётся у той же земли, что под колесом и на экране, — второй земли нет.
+ */
+const ГЛАЗА = 1.7;
+function ракурсДвора(): Record<string, View> {
+  const посёлок = посёлокСцены(sceneName);
+  if (посёлок === null) return {};
+  const место = откудаСмотретьВоДвор(посёлок);
+  if (место === null) return {};
+  const высота = (p: { x: number; z: number }): number =>
+    (nearestRoad(world, p.x, p.z)?.roadHeight ?? 0) + ГЛАЗА;
+  return {
+    двор: {
+      label: 'двор',
+      from: [место.от.x, высота(место.от), место.от.z],
+      at: [место.до.x, высота(место.до), место.до.z],
+      fog: 320,
+    },
+  };
+}
+
 const наводка = viewFromQuery(query);
-const viewer = show(surface, startView, наводка);
+const viewer = show(surface, startView, наводка, ракурсДвора());
 /**
  * Какой ракурс показан НА САМОМ ДЕЛЕ. Своя наводка (`from`/`at` в адресе)
  * бьёт список готовых; неизвестное имя даёт «вдоль».
  */
-let показанныйРакурс = наводка !== null ? 'наводка' : (VIEWS[startView] ? startView : 'road');
+let показанныйРакурс = наводка !== null ? 'наводка'
+  : (viewer.ракурсы()[startView] ? startView : 'road');
 if (показанныйРакурс !== startView) подменено('ракурс', startView, показанныйРакурс);
 const canvas = document.querySelector('canvas');
 
@@ -271,7 +304,7 @@ const builder = createBuilder({
 // --- кнопки ракурса ---
 const views = document.getElementById('views');
 if (views) {
-  views.innerHTML = Object.entries(VIEWS)
+  views.innerHTML = Object.entries(viewer.ракурсы())
     .map(([key, v]) => `<button type="button" data-view="${key}" aria-pressed="${key === startView}">${v.label}</button>`)
     .join('');
   views.addEventListener('click', (event) => {
