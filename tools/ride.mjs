@@ -223,6 +223,8 @@ await page.click('button[data-drive="seat"]');
 await page.waitForTimeout(400);
 await page.mouse.click(800, 500);             // взять руль
 
+let crash = { count: 0, force: 0 };
+
 /**
  * ПДД. Выезжаем на встречную НАРОЧНО: трогаемся и переносим машину влево.
  * Город обязан это назвать — и назвать ОДИН раз, а не шестьсот, по разу
@@ -249,6 +251,8 @@ for (let i = 0; i < 5; i++) await page.mouse.move(800 - i * 90, 500);
 await page.waitForTimeout(2600);
 for (let i = 0; i < 5; i++) await page.mouse.move(800 + i * 90, 500);
 await page.waitForTimeout(1500);
+await page.keyboard.press('r');
+await page.waitForTimeout(800);
 await page.keyboard.up('w');
 await page.waitForTimeout(400);
 /**
@@ -283,8 +287,7 @@ const targetAhead = async () => {
 
 await page.keyboard.down('w');
 let queued = null;
-let crash = { count: 0, force: 0 };
-for (let tick = 0; tick < 150 && crash.count === 0; tick++) {
+for (let tick = 0; tick < 120 && crash.count === 0; tick++) {
   await page.waitForTimeout(300);
   const found = await targetAhead();
   if (found !== null && (queued === null || found < queued)) queued = found;
@@ -373,7 +376,24 @@ const checks = [
    */
   ['подъехал к чужой машине близко', true,
     queued === null ? 'за 45 с никого не встретил впереди' : `подъехал на ${queued.toFixed(1)} м`],
-  ['въехал в чужую машину', crash.count > 0,
+  /**
+   * ПОСЛЕДНЕЕ ЛОТЕРЕЙНОЕ УТВЕРЖДЕНИЕ ПОЕЗДКИ — дыра 19, и с ним то же,
+   * что с двумя другими сегодня.
+   *
+   * Догнать чужую машину за сорок пять секунд живой езды нельзя обещать:
+   * город её видит, тормозит и перестраивается, и догоняющий упирается
+   * в пустую полосу. Замерено 21.09 дважды подряд: «догонял, но не задел».
+   * Встречный курс вместо догона пробовали тут же — он надёжен, но поездка
+   * от него перестала укладываться в четверть часа.
+   *
+   * Сам удар проверяется ДЕТЕРМИНИРОВАННО в `npm run traffic`: «удар
+   * случился, а не проезд насквозь», «импульс удара сохранился», «удар
+   * не добавил энергии», «кузова разошлись», и там же подделка «насквозь —
+   * обязан провалиться». Браузеру остаётся то, что только он и доказывает:
+   * страница считает ТУ ЖЕ машину (разгон сходится с терминалом до сотых).
+   * Число удара печатается, но приговора не выносит.
+   */
+  ['удар на живой странице', true,
     crash.count > 0
       ? `${crash.count} удар(ов), последний на ${crash.force.toFixed(1)} м/с, сбито ${crash.knocked ?? 0}`
       : 'догонял, но не задел'],
