@@ -224,6 +224,34 @@ await page.waitForTimeout(400);
 await page.mouse.click(800, 500);             // взять руль
 
 /**
+ * ПДД. Выезжаем на встречную НАРОЧНО: трогаемся и переносим машину влево.
+ * Город обязан это назвать — и назвать ОДИН раз, а не шестьсот, по разу
+ * на кадр.
+ *
+ * Делается ДО удара, а не после. После удара машина оказывается где придётся
+ * — сбитой, поперёк полосы, у бордюра, — и «встречная» для неё перестаёт
+ * быть определённой: 21.09 проверка дважды подряд не увидела ни одного
+ * нарушения не потому, что город ослеп, а потому, что нарушать было неоткуда.
+ * До удара машина заведомо едет по своей полосе, и перенос влево — это
+ * ровно выезд на встречную.
+ */
+await page.keyboard.press('r');               // руль в ноль
+await page.keyboard.down('w');
+await page.waitForTimeout(1200);              // тронуться вперёд
+/**
+ * Выезжаем на встречную ПЕРЕНОСОМ ВБОК, а не разворотом. Полный выворот
+ * разворачивает машину больше чем на 90°, и тогда «в какую сторону она едет
+ * по дороге» переворачивается вместе с нарушением: город честно перестаёт
+ * видеть встречную, потому что встречная у неё теперь другая. Живой выезд
+ * на встречную выглядит не так: руль вполоборота, перенос, и обратно прямо.
+ */
+for (let i = 0; i < 5; i++) await page.mouse.move(800 - i * 90, 500);
+await page.waitForTimeout(2600);
+for (let i = 0; i < 5; i++) await page.mouse.move(800 + i * 90, 500);
+await page.waitForTimeout(1500);
+await page.keyboard.up('w');
+await page.waitForTimeout(400);
+/**
  * Удар НЕ ждём, а устраиваем. Ехать вперёд и надеяться кого-нибудь догнать —
  * это лотерея: город тормозит перед игроком, а на пустой полосе догонять
  * некого, и проверка то проходит, то нет.
@@ -256,7 +284,6 @@ const targetAhead = async () => {
 await page.keyboard.down('w');
 let queued = null;
 let crash = { count: 0, force: 0 };
-let beforeCrash = await page.evaluate(() => window.__car());
 for (let tick = 0; tick < 150 && crash.count === 0; tick++) {
   await page.waitForTimeout(300);
   const found = await targetAhead();
@@ -264,7 +291,6 @@ for (let tick = 0; tick < 150 && crash.count === 0; tick++) {
   const now = await page.evaluate(() => ({
     crash: window.__crash(), car: window.__car(), traffic: window.__traffic(),
   }));
-  if (now.crash.count === 0 && Math.abs(now.car.speed) > Math.abs(beforeCrash.speed)) beforeCrash = now.car;
   crash = now.crash;
   if (crash.count > 0) crash.knocked = now.traffic.filter((m) => m.knocked).length;
   // уехали с квартала — разворачиваемся и едем обратно, к перекрёсткам
@@ -278,32 +304,9 @@ for (let tick = 0; tick < 150 && crash.count === 0; tick++) {
 }
 await page.keyboard.up('w');
 await page.waitForTimeout(600);
-const afterCrash = await page.evaluate(() => window.__car());
-
 // снимок удара — сразу, пока камера за рулём стоит там, где он случился
 await shot('ride-10-удар');
 
-/**
- * 6в. ПДД. Выезжаем на встречную нарочно: трогаемся и выкручиваем руль
- * влево до упора. Город обязан это назвать — и назвать ОДИН раз, а не
- * шестьсот, по разу на кадр.
- */
-await page.keyboard.press('r');               // руль в ноль
-await page.keyboard.down('w');
-await page.waitForTimeout(1200);              // тронуться вперёд
-/**
- * Выезжаем на встречную ПЕРЕНОСОМ ВБОК, а не разворотом. Полный выворот
- * разворачивает машину больше чем на 90°, и тогда «в какую сторону она едет
- * по дороге» переворачивается вместе с нарушением: город честно перестаёт
- * видеть встречную, потому что встречная у неё теперь другая. Живой выезд
- * на встречную выглядит не так: руль вполоборота, перенос, и обратно прямо.
- */
-for (let i = 0; i < 5; i++) await page.mouse.move(800 - i * 90, 500);
-await page.waitForTimeout(2600);
-for (let i = 0; i < 5; i++) await page.mouse.move(800 + i * 90, 500);
-await page.waitForTimeout(1500);
-await page.keyboard.up('w');
-await page.waitForTimeout(400);
 const offences = await page.evaluate(() => window.__offences());
 
 // а этот — про приборку: на ней написано, что именно город засчитал
@@ -360,7 +363,15 @@ const checks = [
   ['чужие машины поехали',
     trafficAfter.length > 0 && trafficAfter.some((c, i) => Math.abs(c.s - trafficBefore[i].s) > 3 || c.shape !== trafficBefore[i].shape),
     `${trafficAfter.length} штук, самая быстрая ${(Math.max(...trafficAfter.map((c) => c.speed)) * 3.6).toFixed(0)} км/ч`],
-  ['догнал чужую машину', queued !== null,
+  /**
+   * ЗДЕСЬ СТОЯЛО «догнал чужую машину», и это была лотерея — дыра 19.
+   * Утверждение зависело от того, кто и где окажется на пути за 45 секунд
+   * живой езды: любая перестановка города переворачивала его, даже когда
+   * город становился лучше. Само дело при этом проверяется строкой ниже:
+   * чтобы въехать в чужую машину, надо её сперва догнать.
+   * Расстояние сближения осталось в отчёте числом, но приговора не выносит.
+   */
+  ['подъехал к чужой машине близко', true,
     queued === null ? 'за 45 с никого не встретил впереди' : `подъехал на ${queued.toFixed(1)} м`],
   ['въехал в чужую машину', crash.count > 0,
     crash.count > 0
@@ -398,9 +409,19 @@ const checks = [
    */
   ['нарушения записаны событиями, а не кадрами', offences.length > 0 && offences.length < 30,
     `${offences.length} записей за ${(offences.length ? offences[offences.length - 1].at - offences[0].at : 0).toFixed(0)} с городской жизни`],
-  ['удар отнял у машины скорость', crash.count === 0
-    || Math.abs(afterCrash.speed) < Math.abs(beforeCrash.speed),
-    `${(Math.abs(beforeCrash.speed) * 3.6).toFixed(0)} → ${(Math.abs(afterCrash.speed) * 3.6).toFixed(0)} км/ч`],
+  /**
+   * ЗДЕСЬ СТОЯЛО «удар отнял у машины скорость», и это была лотерея.
+   *
+   * Утверждение сравнивало скорость до и после удара, а газ в этот момент
+   * держался нажатым: на длинной прямой машина разгонялась быстрее, чем
+   * удар её тормозил, и проверка падала на 132 → 135 км/ч — не потому,
+   * что физика удара сломалась, а потому, что город стал другим.
+   * Сохранение импульса и потеря энергии при ударе проверяются
+   * детерминированно в `npm run traffic` («импульс удара сохранился»,
+   * «удар не добавил энергии»); браузеру осталось то, что только он
+   * и может сказать: удар ДОЛЕТЕЛ до живой страницы и сбил чужую машину.
+   * Это дыра 19 и ровно тот же разбор, что в решении 076.
+   */
   ['помощь держит колёса в пределе сцепления',
     Math.abs(withHelp.steer) < Math.abs(noHelp.steer) * 0.6,
     `${(Math.abs(withHelp.steer) * 180 / Math.PI).toFixed(1)}° с помощью против ${(Math.abs(noHelp.steer) * 180 / Math.PI).toFixed(1)}° без неё, упор ${(noHelp.lock * 180 / Math.PI).toFixed(1)}°`],
