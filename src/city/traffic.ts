@@ -510,13 +510,23 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
       route: null,
       knocked: null,
       haste: next(),
-      cruise: CRUISE,
+      /**
+       * Желаемая скорость СРАЗУ по знаку той дороги, где машина родилась,
+       * а не постоянная на всех.
+       *
+       * Постоянная пересчитывалась только при смене дороги (`retune`), и
+       * машина, родившаяся во дворе, ехала по нему на девяноста километрах:
+       * двор длинный, съезжать с него незачем, и пересчёт не наступал
+       * никогда. Замерено 21.09: 91 км/ч при знаке 20.
+       */
+      cruise: 0,
       yaw: Math.atan2(spot.fz * dir, spot.fx * dir),
       colour: COLOURS[Math.floor(next() * COLOURS.length) % COLOURS.length],
     });
     // полоса выбирается из тех, что есть у этой дороги в эту сторону,
     // и кузов сразу ставится в её середину
     const last = movers[movers.length - 1];
+    retune(net, last);
     const count = laneCount(net.lanes, shape, dir as 1 | -1);
     last.lane = count <= 1 ? 0 : Math.floor(next() * count) % count;
     last.across = laneAcross(net.lanes, shape, dir as 1 | -1, last.lane);
@@ -1647,6 +1657,25 @@ export function moveTraffic(
      *  13.8         — тому, кто уже в перекрёстке, уступают все.
      */
     const ahead = nextJunction(world, net, m);
+
+    /**
+     * ── ЗНАК СЛЕДУЮЩЕЙ ДОРОГИ. Скорость сбрасывается ДО въезда, а не после.
+     *
+     * Без этого машина сворачивала с магистрали на тихую улицу, не сбавив:
+     * `retune` меняет ей желаемую скорость в миг смены дороги, а настоящая
+     * падает потом, метров через полсотни. Замерено 21.09: 91 км/ч при знаке
+     * 40, то есть +51 при пределе приличия +40. Это не лихачество, а то,
+     * что тормозить было негде.
+     *
+     * Смотрим туда же, куда и на поворот дороги, — на маршрут через
+     * ближайший узел; своя дорога тут ни при чём.
+     */
+    if (rules && m.route !== null && ahead !== null && ahead.stopGap > -0.5) {
+      const дальше = desiredSpeed(m.haste, net.signs.limit[m.route.shape]);
+      if (дальше < m.cruise) {
+        holds.push({ gap: Math.max(0.4, ahead.centreGap), speed: дальше, why: 'знак впереди' });
+      }
+    }
     const mine = paths[index];
     let yielded = false;
 
