@@ -13,6 +13,7 @@ import type { Площадка } from './city/площадка.ts';
 import type { Дерево } from './city/зелень.ts';
 import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from './city/двор.ts';
 import { type Sight, createSight } from './person/sight.ts';
+import { подключитьСтиль } from './стиль.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
@@ -617,6 +618,8 @@ export function show(
   const LOOKING = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
   const BUILDING = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
   controls.mouseButtons = { ...LOOKING };
+  const стиль = подключитьСтиль(new URLSearchParams(location.search).get('стиль'), renderer, scene, camera, sun, fog);
+  const рисовать = (): void => { if (стиль) стиль(); else renderer.render(scene, camera); };
 
   let flight: { from: THREE.Vector3; to: THREE.Vector3; look: THREE.Vector3; at: THREE.Vector3; fog: number; t: number } | null = null;
 
@@ -701,7 +704,7 @@ export function show(
       // крен на шаге — последним, поверх взгляда: качается голова, не мир
       camera.rotateZ(walkEye.roll);
       if (sight && sightOn) sight.render(walkEye.headRate, dt);
-      else renderer.render(scene, camera);
+      else рисовать();
       return;
     }
     if (chase && carGroup.visible && eye === 'из салона') {
@@ -716,7 +719,7 @@ export function show(
       camera.position.copy(head);
       camera.up.copy(body.localToWorld(new THREE.Vector3(-0.52, 2.16, -0.38)).sub(head).normalize());
       camera.lookAt(look);
-      renderer.render(scene, camera);
+      рисовать();
       return;
     }
     if (chase && carGroup.visible) {
@@ -732,7 +735,7 @@ export function show(
       chaseAim.lerp(aim, k);
       camera.position.copy(chaseEye);
       camera.lookAt(chaseAim);
-      renderer.render(scene, camera);
+      рисовать();
       return;
     }
     if (flight) {
@@ -745,7 +748,7 @@ export function show(
       if (flight.t >= 1) flight = null;
     }
     controls.update();
-    renderer.render(scene, camera);
+    рисовать();
   });
 
   /**
