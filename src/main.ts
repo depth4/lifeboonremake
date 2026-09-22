@@ -4,7 +4,7 @@ import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
 import { вДоме, домНаУчастке } from './city/дом.ts';
 import { деревьяУлиц } from './city/зелень.ts';
-import { откудаСмотретьВоДвор, подПодходом, подходыПосёлка } from './city/двор.ts';
+import { вещиПосёлка, откудаСмотретьВоДвор, подПодходом, подходыПосёлка } from './city/двор.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, nearestRoad, snapPoint } from './world/world.ts';
 import { DEFAULT_TERRAIN, TERRAINS } from './world/terrain.ts';
@@ -205,7 +205,7 @@ function застройка(): void {
  */
 function зеленьСцены(): void {
   const посёлок = посёлокСцены(sceneName);
-  if (посёлок === null || !viewer) { viewer?.setTrees([]); viewer?.setPaths([]); return; }
+  if (посёлок === null || !viewer) { viewer?.setTrees([]); viewer?.setPaths([]); viewer?.setВещи([]); return; }
 
   /**
    * Дорожки к подъездам. Считаются ДО деревьев: дерево растёт в газоне,
@@ -220,9 +220,18 @@ function зеленьСцены(): void {
   })));
   // сеть уже собрана для трафика: второй такой же завести значило бы
   // держать две правды об одних и тех же дорогах
+  /**
+   * ВЕЩИ ВО ДВОРЕ. Ставятся ДО деревьев: дерево спрашивает, занято ли место,
+   * и площадка с лавками для него такое же занятое место, как дорожка и дом.
+   */
+  const занятоДляДвора = (x: number, z: number): boolean =>
+    подПодходом(подходы, x, z, 0.6) || вДоме(дома, x, z, 1.5);
+  const вещи = вещиПосёлка(посёлок, занятоДляДвора);
+  viewer.setВещи(вещи.map((вещь) => ({ вещь, низ: ground.sample(вещь.x, вещь.z).height })));
   viewer.setTrees(деревьяУлиц(world, network, посёлок.сид, {
-    // дерево растёт там, где НИЧЕГО нет: ни дорожки, ни дома
-    занято: (x, z) => подПодходом(подходы, x, z, 0.6) || вДоме(дома, x, z, 1.2),
+    // дерево растёт там, где НИЧЕГО нет: ни дорожки, ни дома, ни вещи двора
+    занято: (x, z) => занятоДляДвора(x, z)
+      || вещи.some((в) => Math.abs(x - в.x) < в.длина / 2 + 1.5 && Math.abs(z - в.z) < в.ширина / 2 + 1.5),
   }).map((дерево) => ({
     дерево, низ: ground.sample(дерево.x, дерево.z).height,
   })));

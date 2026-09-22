@@ -355,9 +355,24 @@ for (let t = 0; t < 120; t += DT) {
     const lights = signalsOf(world, net, m, t);
     if (lights.brake) braked++;
     const has = m.route !== null;
-    if (has && !hadRoute[i]) { yawAt[i] = poseOf(world, net, m).yaw; blinkOf[i] = 0; }
+    if (has && !hadRoute[i]) { yawAt[i] = NaN; blinkOf[i] = 0; }
+    /**
+     * Курс «до поворота» берётся НА ПОДЪЕЗДЕ К УЗЛУ, а не в миг, когда машина
+     * взяла маршрут: маршрут берётся за сорок пять метров, и в это окно
+     * попадает всё, что дорога успеет накрутить сама. 22.09 внутриквартальный
+     * проезд получил поворот буквой «Г» — и его дуга подменила знак поворота
+     * у тринадцати машин из двухсот двадцати семи. Поворотник при этом был
+     * правильный: врала мерка, а не город.
+     */
+    if (has && Number.isNaN(yawAt[i])) {
+      const j = world.junctions[(m.route as { junction: number }).junction];
+      const до = Math.hypot(poseOf(world, net, m).x - j.x, poseOf(world, net, m).z - j.z);
+      if (до < net.reach[(m.route as { junction: number }).junction] + 10) {
+        yawAt[i] = poseOf(world, net, m).yaw;
+      }
+    }
     if (has && lights.blink !== 0) blinkOf[i] = lights.blink;
-    if (!has && hadRoute[i] && blinkOf[i] !== 0) {
+    if (!has && hadRoute[i] && blinkOf[i] !== 0 && !Number.isNaN(yawAt[i])) {
       const now = poseOf(world, net, m).yaw;
       const turn = Math.atan2(Math.sin(now - yawAt[i]), Math.cos(now - yawAt[i]));
       if (Math.abs(turn) > 0.35) {
