@@ -24,7 +24,14 @@ import * as THREE from 'three';
 import {
   КЛЕТКА, КЛЕТКА_СЛЕДА, СТОРОНА_СЛЕДА, type Поле, Примятость, высотаПоля,
 } from './поле.ts';
-import type { ОбщийВетер } from './листва.ts';
+
+/** Ветер, время и шум травы — те же для деревьев: один ветер на всё, что растёт. */
+export interface ОбщийВетер {
+  readonly uTime: { value: number };
+  readonly uWind: { value: number };
+  readonly uWindDir: { value: THREE.Vector2 };
+  readonly uNoise: { value: THREE.Texture };
+}
 
 /** Сторона плитки, м. Меньше — больше вызовов отрисовки; больше — больше лишней работы у ног. */
 const ПЛИТКА = 12;

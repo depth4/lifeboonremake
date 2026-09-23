@@ -15,7 +15,7 @@ import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from '.
 import { type Sight, createSight } from './person/sight.ts';
 import { подключитьСтиль } from './стиль.ts';
 import { type Трава, создатьТраву } from './растения/показ.ts';
-import { type Листва, создатьЛиству } from './растения/листва.ts';
+import { type Деревья, создатьДеревья } from './растения/деревья.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
@@ -259,8 +259,8 @@ export interface Viewer {
    * main отдаёт, откуда брать поле, и мнёт траву ногами и колёсами.
    */
   трава(): Трава;
-  /** Листва ближних деревьев. Деревья приходят через setTrees, форму листа выбирает main. */
-  листва(): Листва;
+  /** Деревья и кусты из веток. Где стоят — приходит через setTrees; форму листа выбирает main. */
+  деревья(): Деревья;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -598,7 +598,6 @@ export function show(
    */
   let застройка: THREE.InstancedMesh[] | null = null;
   /** Деревья улиц и дворов: те же пачки, что у домов. */
-  let зелень: THREE.InstancedMesh[] | null = null;
   /** Дорожки к подъездам: одна пачка на весь город. */
   let дорожки: THREE.InstancedMesh | null = null;
   let дворовое: THREE.InstancedMesh | null = null;
@@ -634,20 +633,13 @@ export function show(
    * а не берутся с часов: остановили мир — замер и ветер.
    */
   const трава = создатьТраву(scene, sun);
-  const листва = создатьЛиству(scene, sun, трава.ветерОбщий);
+  const деревья = создатьДеревья(scene, sun, трава.ветерОбщий);
   let времяТравы = 0;
   /** Съёмка ролика ставит время сама: тогда кадры идут ровно через её шаг. */
   let времяЗадано = false;
   const кадрТравы = (): void => {
     трава.кадр(camera, времяТравы);
-    листва.кадр(camera);
-    /**
-     * Под листьями крона — тень внутри дерева, а не его поверхность:
-     * с листвой она темнеет, иначе светлый многогранник торчит сквозь
-     * листья и дерево читается конфетти на камне (снимок 23.09).
-     */
-    const тень = листва.котораяФорма() !== null ? 0.5 : 1;
-    if (зелень !== null) for (const меш of зелень.slice(1)) (меш.material as THREE.MeshStandardMaterial).color.setScalar(тень);
+    деревья.кадр(camera);
   };
   const рисовать = (): void => { кадрТравы(); if (стиль) стиль(); else renderer.render(scene, camera); };
 
@@ -813,7 +805,7 @@ export function show(
     вызовов: renderer.info.render.calls,
     треугольников: renderer.info.render.triangles,
     трава: трава.цена(),
-    листва: листва.цена(),
+    деревья: деревья.цена(),
   });
 
   return {
@@ -987,7 +979,7 @@ export function show(
       if (signalHeads?.instanceColor) signalHeads.instanceColor.needsUpdate = true;
     },
     трава: () => трава,
-    листва: () => листва,
+    деревья: () => деревья,
     setSigns(signs) {
       /**
        * Знаки рисуются НЕ пачкой одинаковых: у каждого своя картинка,
@@ -1159,91 +1151,15 @@ export function show(
       пачка.instanceMatrix.needsUpdate = true;
       if (пачка.instanceColor) пачка.instanceColor.needsUpdate = true;
     },
-    setTrees(деревья) {
-      if (зелень !== null) {
-        for (const меш of зелень) { scene.remove(меш); меш.dispose(); }
-        зелень = null;
-      }
-      листва.деревья([]);
-      if (деревья.length === 0) return;
-
+    setTrees(посадки) {
       /**
-       * Дерево — те же пачки, что у домов: три вызова отрисовки на весь
-       * город, а не по одному на дерево.
-       *
-       * **Крона — двадцатигранник, а не коробка.** Первая редакция ставила
-       * коробки, и ряд деревьев с уровня глаз читался зелёным ЗАБОРОМ:
-       * плоские грани соседних крон сходились в сплошную стену, и никакие
-       * размеры этого не спасали — дело было в форме. Двадцатигранник стоит
-       * ровно столько же треугольников, сколько коробка триангулированная,
-       * но силуэт у него дерева, а не ящика. Крон две, вторая мельче
-       * и сдвинута: тогда и силуэт неровный, и одинаковых деревьев нет.
+       * Дерево — из веток (`растения/дерево.ts`), а не многогранник на палке:
+       * многогранник с листьями Алекс назвал «шаром с листьями» (23.09),
+       * и был прав — форму дереву дают ветки. Вид и вариант — данные города
+       * (`city/зелень.ts`); показ только растит и ставит.
        */
-      const снизу = (g: THREE.BufferGeometry): THREE.BufferGeometry => {
-        g.translate(0, 0.5, 0);
-        return g;
-      };
-      const пачка = (
-        g: THREE.BufferGeometry, n: number, m: THREE.Material,
-      ): THREE.InstancedMesh => {
-        const меш = new THREE.InstancedMesh(g, m, Math.max(1, n));
-        меш.castShadow = true;
-        меш.receiveShadow = true;
-        меш.count = n;
-        return меш;
-      };
-      const ствол = пачка(снизу(new THREE.BoxGeometry(1, 1, 1)), деревья.length,
-        new THREE.MeshStandardMaterial({ roughness: 0.95 }));
-      const крона1 = пачка(снизу(new THREE.IcosahedronGeometry(0.5, 0)), деревья.length,
-        new THREE.MeshStandardMaterial({ roughness: 0.85, flatShading: true }));
-      const крона2 = пачка(снизу(new THREE.IcosahedronGeometry(0.5, 0)), деревья.length,
-        new THREE.MeshStandardMaterial({ roughness: 0.85, flatShading: true }));
-      зелень = [ствол, крона1, крона2];
-      scene.add(...зелень);
-
-      const м = new THREE.Matrix4();
-      const кв = new THREE.Quaternion();
-      const эйлер = new THREE.Euler();
-      const место = new THREE.Vector3();
-      const размер = new THREE.Vector3();
-      const цвет = new THREE.Color();
-
-      деревья.forEach(({ дерево: д, низ }, i) => {
-        эйлер.set(0, -д.курс, 0);
-        кв.setFromEuler(эйлер);
-        место.set(д.x, низ - 0.15, д.z);
-        размер.set(д.толщина, д.ствол + д.крона * 0.35, д.толщина);
-        м.compose(место, кв, размер);
-        ствол.setMatrixAt(i, м);
-        // кора: от серо-бурой к тёмной, тем же числом, что и лист
-        ствол.setColorAt(i, цвет.setHSL(0.09, 0.22, 0.20 + д.лист * 0.07));
-
-        // лист: от желтоватой зелени к тёмной. Один и тот же ряд не бывает
-        // одноцветным — иначе улица снова превращается в штамп
-        const лиственный = цвет.setHSL(0.23 + д.лист * 0.06, 0.34 + д.лист * 0.16,
-          0.22 + д.лист * 0.12).getHex();
-        for (const [меш, доворот, доля, подъём] of [
-          [крона1, 0, 1, 0], [крона2, Math.PI / 3, 0.72, 0.45],
-        ] as const) {
-          эйлер.set(доворот * 0.3, -(д.курс + доворот), доворот * 0.2);
-          кв.setFromEuler(эйлер);
-          место.set(д.x, низ + д.ствол + д.крона * подъём, д.z);
-          размер.set(д.ширина * доля, д.крона * (1 - подъём * 0.5), д.ширина * доля);
-          м.compose(место, кв, размер);
-          меш.setMatrixAt(i, м);
-          // вторая крона чуть светлее: видно, что это объём, а не пятно
-          меш.setColorAt(i, цвет.setHex(лиственный).multiplyScalar(1 + подъём * 0.5));
-        }
-      });
-
-      for (const меш of зелень) {
-        меш.instanceMatrix.needsUpdate = true;
-        if (меш.instanceColor) меш.instanceColor.needsUpdate = true;
-      }
-      // листья того же цвета, что крона: крона вдали и листья вблизи — одно дерево
-      листва.деревья(деревья.map(({ дерево: д, низ }) => ({
-        дерево: д, низ,
-        цвет: new THREE.Color().setHSL(0.23 + д.лист * 0.06, 0.34 + д.лист * 0.16, 0.22 + д.лист * 0.12),
+      деревья.поставить(посадки.map(({ дерево: д, низ }) => ({
+        x: д.x, z: д.z, низ, вид: д.вид, вариант: д.вариант, курс: д.курс, масштаб: д.масштаб,
       })));
     },
     setBuildings(дома) {

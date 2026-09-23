@@ -30,7 +30,8 @@
     "life": "node --experimental-strip-types tools/life.ts",
     "морфология": "node --experimental-strip-types tools/морфология.ts",
     "глаз": "node tools/глаз.mjs",
-    "трава": "node --experimental-strip-types tools/трава.ts"
+    "трава": "node --experimental-strip-types tools/трава.ts",
+    "деревья": "node --experimental-strip-types tools/деревья.ts"
   },
   "dependencies": {
     "cdt2d": "^1.0.0",

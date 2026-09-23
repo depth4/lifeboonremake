@@ -6,7 +6,7 @@ import { домНаУчастке } from './city/дом.ts';
 import { ЗАПАС_ДЕРЕВА, деревьяУлиц } from './city/зелень.ts';
 import { полеТравы } from './растения/поле.ts';
 import { ПОРЯДОК as ТРАВЫ } from './растения/показ.ts';
-import { ПОРЯДОК_ЛИСТВЫ as ЛИСТВЫ } from './растения/листва.ts';
+import { ПОРЯДОК_ЛИСТВЫ as ЛИСТВЫ } from './растения/деревья.ts';
 import { занято, наЗемлеПосёлка, откудаСмотретьВоДвор } from './city/двор.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, nearestRoad, snapPoint } from './world/world.ts';
@@ -373,7 +373,7 @@ const ИМЕНА_ВЕТРА = ['штиль', 'слабый', 'средний', '
 }
 {
   const спрошено = query.get('листва');
-  viewer.листва().форма(спрошено === 'нет' ? null
+  viewer.деревья().форма(спрошено === 'нет' ? null
     : (спрошено && (ЛИСТВЫ as readonly string[]).includes(спрошено) ? спрошено : ЛИСТВЫ[0]));
 }
 const leavesBox = document.getElementById('leaves');
@@ -385,7 +385,7 @@ function травяныеКнопки(): void {
     b.setAttribute('aria-pressed', String((b.dataset.grass === 'нет' ? null : b.dataset.grass) === т.которыйВариант()));
   });
   if (leavesBox) leavesBox.querySelectorAll<HTMLButtonElement>('button[data-leaf]').forEach((b) => {
-    b.setAttribute('aria-pressed', String((b.dataset.leaf === 'нет' ? null : b.dataset.leaf) === viewer.листва().котораяФорма()));
+    b.setAttribute('aria-pressed', String((b.dataset.leaf === 'нет' ? null : b.dataset.leaf) === viewer.деревья().котораяФорма()));
   });
   if (windBox) windBox.querySelectorAll<HTMLButtonElement>('button[data-wind]').forEach((b) => {
     b.setAttribute('aria-pressed', String(Math.abs(Number(b.dataset.wind) - т.силаВетра()) < 1e-6));
@@ -405,7 +405,7 @@ if (leavesBox) {
   leavesBox.addEventListener('click', (event) => {
     const b = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-leaf]');
     if (!b) return;
-    viewer.листва().форма(b.dataset.leaf === 'нет' ? null : (b.dataset.leaf ?? null));
+    viewer.деревья().форма(b.dataset.leaf === 'нет' ? null : (b.dataset.leaf ?? null));
     травяныеКнопки();
   });
 }
@@ -448,7 +448,7 @@ addEventListener('keydown', (event) => {
     травяныеКнопки();
   } else if (event.code === 'KeyL') {
     const все: (string | null)[] = [...ЛИСТВЫ, null];
-    viewer.листва().форма(все[(все.indexOf(viewer.листва().котораяФорма()) + 1) % все.length]);
+    viewer.деревья().форма(все[(все.indexOf(viewer.деревья().котораяФорма()) + 1) % все.length]);
     травяныеКнопки();
   } else if (event.code === 'KeyV') {
     const i = ВЕТРА.findIndex((в) => Math.abs(в - т.силаВетра()) < 1e-6);
