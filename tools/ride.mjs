@@ -97,7 +97,13 @@ async function until(name, mark, limit = 45000) {
   return page.evaluate(() => window.__hit ?? window.__car());
 }
 
-const url = `http://localhost:${PORT}/?scene=${encodeURIComponent(scene)}&terrain=${terrain}&view=close`;
+/**
+ * Без травы: поездка меряет машину и город, а не траву. Трава ничего
+ * не меняет в мире (решение 093), а программный отрисовщик тратит на неё
+ * секунды кадра — и поездка превратилась бы в ожидание. Траву проверяют
+ * `трава` (без экрана) и выкладка (в собранном файле).
+ */
+const url = `http://localhost:${PORT}/?scene=${encodeURIComponent(scene)}&terrain=${terrain}&view=close&трава=нет`;
 await page.goto(url, { waitUntil: 'load' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });
 await page.click('button[data-drive="seat"]');

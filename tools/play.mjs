@@ -110,7 +110,8 @@ let bad = 0;
 console.log('инструмент строительства: настоящие клики мышью\n');
 
 for (const c of CASES) {
-  await page.goto(`http://localhost:${PORT}/?view=plan&scene=${encodeURIComponent(c.scene)}&terrain=plateau`, { waitUntil: 'load' });
+  // без травы: сценарии меряют строительство дорог, а не траву (решение 093)
+  await page.goto(`http://localhost:${PORT}/?view=plan&scene=${encodeURIComponent(c.scene)}&terrain=plateau&трава=нет`, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });
   const before = await facts();
   await page.click('button[data-tool="road"]');

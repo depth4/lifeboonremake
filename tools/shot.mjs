@@ -45,6 +45,14 @@ export async function снять(работы, { тихо = false } = {}) {
 
   const беды = [];
   page.on('pageerror', (e) => беды.push('ошибка в коде: ' + String(e).split('\n')[0]));
+  /**
+   * Шейдер, который не собрался, не бросает исключения: three пишет в
+   * консоль и рисует дальше без него. 23.09 трава так и не появлялась
+   * молча — нашлось только чтением консоли руками. Теперь это беда снимка.
+   */
+  page.on('console', (m) => {
+    if (m.type() === 'error' && /WebGLProgram|Shader Error/.test(m.text())) беды.push('шейдер не собрался: ' + m.text().split('\n')[0]);
+  });
   page.on('requestfailed', (r) => {
     if (!OPTIONAL.test(r.url())) беды.push('не загрузилось: ' + r.url());
   });
@@ -57,8 +65,9 @@ export async function снять(работы, { тихо = false } = {}) {
     for (const [k, v] of Object.entries(job.params ?? {})) url.searchParams.set(k, v);
     mkdirSync(dirname(job.out), { recursive: true });
     try {
-      await page.goto(url.href, { waitUntil: 'load' });
-      await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });
+      // тяжёлый кадр прошлой страницы держит и переход — ждём столько же, сколько снимок
+      await page.goto(url.href, { waitUntil: 'load', timeout: 120000 });
+      await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
       /**
        * Страница отвечает, ЧТО она показала, и это сверяется с заказом.
        * Списки имён сюда не переписываются: подмену ловит сама страница,
@@ -80,7 +89,12 @@ export async function снять(работы, { тихо = false } = {}) {
         беды.push(`${job.out}: снято не то, что заказано — ${показано.подмены.join('; ')}`);
         continue;
       }
-      await page.screenshot({ path: job.out });
+      /**
+       * Кадр ждём до двух минут. В контейнере рисует программный отрисовщик:
+       * город с травой — секунды на кадр, и стандартных 30 с снимку не хватало,
+       * хотя страница жива (23.09). Это цена контейнера, а не страницы.
+       */
+      await page.screenshot({ path: job.out, timeout: 120000 });
       if (!тихо) console.log(`снимок: ${job.out}`);
     } catch (e) {
       беды.push(`${job.out}: страница не ожила — ${e.message.split('\n')[0]}`);

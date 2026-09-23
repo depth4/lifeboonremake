@@ -49,7 +49,9 @@ const say = (имя, ок, что) => { checks.push([имя, ок, что]); };
 
 const замер = async (сцена) => {
   const url = `http://localhost:${PORT}/?scene=${encodeURIComponent(сцена)}`
-    + `&terrain=plateau&view=close${лучом ? '&глаз-лучом=1' : ''}`;
+    // без травы: меряется СВОЯ работа глаза, а трава на программном
+    // отрисовщике растянула бы каждый кадр в секунды (решение 093)
+    + `&terrain=plateau&view=close&трава=нет${лучом ? '&глаз-лучом=1' : ''}`;
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 180000 });
   /**
