@@ -49,16 +49,18 @@ async function itDrives(path) {
      */
     await page.goto('file://' + process.cwd() + '/' + path + '?scene=город&view=двор', { timeout: 120000 });
     await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
-    await page.waitForFunction(() => (window.__стоимостьКадра?.().трава?.живых ?? 0) > 1000, null, { timeout: 120000 });
+    await page.waitForFunction(() => (window.__стоимостьКадра?.().трава?.живых ?? 0) > 1000
+      && (window.__стоимостьКадра?.().деревья?.листьев ?? 0) > 1000, null, { timeout: 120000 });
     if (errors.length > 0) throw new Error(errors.join('; '));
-    const трава = await page.evaluate(() => window.__стоимостьКадра().трава);
-    console.log(`проверено в собранном файле: трава растёт — ${трава.живых} травинок в кадре, ${трава.плиток} вызовов`);
+    const { трава, деревья } = await page.evaluate(() => window.__стоимостьКадра());
+    console.log(`проверено в собранном файле: трава растёт — ${трава.живых} травинок в кадре; `
+      + `деревьев ${деревья.деревьев}, листьев ${деревья.листьев}`);
     /**
-     * Потом машина — без травы: разгон меряет физику, а кадр с травой на
+     * Потом машина — без травы и листвы: разгон меряет физику, а кадр с ними на
      * программном отрисовщике длится секунды, и 60 км/ч не успели бы
      * набраться за время ожидания. Мир от травы не меняется (решение 093).
      */
-    await page.goto('file://' + process.cwd() + '/' + path + '?трава=нет');
+    await page.goto('file://' + process.cwd() + '/' + path + '?трава=нет&листва=нет');
     await page.waitForFunction(() => window.__ready === true, null, { timeout: 60000 });
     await page.click('button[data-drive="seat"]');
     await page.waitForFunction(() => window.__car() !== null, null, { timeout: 15000 });
