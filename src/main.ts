@@ -6,6 +6,7 @@ import { домНаУчастке } from './city/дом.ts';
 import { ЗАПАС_ДЕРЕВА, деревьяУлиц } from './city/зелень.ts';
 import { полеТравы } from './трава/поле.ts';
 import { ПОРЯДОК as ТРАВЫ } from './трава/показ.ts';
+import { ПОРЯДОК_ЛИСТВЫ as ЛИСТВЫ } from './трава/листва.ts';
 import { занято, наЗемлеПосёлка, откудаСмотретьВоДвор } from './city/двор.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, nearestRoad, snapPoint } from './world/world.ts';
@@ -370,12 +371,21 @@ const ИМЕНА_ВЕТРА = ['штиль', 'слабый', 'средний', '
   const ветер = Number(query.get('ветер'));
   т.ветер(Number.isFinite(ветер) && query.has('ветер') ? ветер : ВЕТРА[2]);
 }
+{
+  const спрошено = query.get('листва');
+  viewer.листва().форма(спрошено === 'нет' ? null
+    : (спрошено && (ЛИСТВЫ as readonly string[]).includes(спрошено) ? спрошено : ЛИСТВЫ[0]));
+}
+const leavesBox = document.getElementById('leaves');
 const grassBox = document.getElementById('grass');
 const windBox = document.getElementById('wind');
 function травяныеКнопки(): void {
   const т = viewer.трава();
   if (grassBox) grassBox.querySelectorAll<HTMLButtonElement>('button[data-grass]').forEach((b) => {
     b.setAttribute('aria-pressed', String((b.dataset.grass === 'нет' ? null : b.dataset.grass) === т.которыйВариант()));
+  });
+  if (leavesBox) leavesBox.querySelectorAll<HTMLButtonElement>('button[data-leaf]').forEach((b) => {
+    b.setAttribute('aria-pressed', String((b.dataset.leaf === 'нет' ? null : b.dataset.leaf) === viewer.листва().котораяФорма()));
   });
   if (windBox) windBox.querySelectorAll<HTMLButtonElement>('button[data-wind]').forEach((b) => {
     b.setAttribute('aria-pressed', String(Math.abs(Number(b.dataset.wind) - т.силаВетра()) < 1e-6));
@@ -387,6 +397,15 @@ if (grassBox) {
     const b = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-grass]');
     if (!b) return;
     viewer.трава().вариант(b.dataset.grass === 'нет' ? null : (b.dataset.grass ?? null));
+    травяныеКнопки();
+  });
+}
+if (leavesBox) {
+  leavesBox.innerHTML = [...ЛИСТВЫ, 'нет'].map((и) => `<button type="button" data-leaf="${и}">${и}</button>`).join('');
+  leavesBox.addEventListener('click', (event) => {
+    const b = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-leaf]');
+    if (!b) return;
+    viewer.листва().форма(b.dataset.leaf === 'нет' ? null : (b.dataset.leaf ?? null));
     травяныеКнопки();
   });
 }
@@ -426,6 +445,10 @@ addEventListener('keydown', (event) => {
   if (event.code === 'KeyT') {
     const все: (string | null)[] = [...ТРАВЫ, null];
     т.вариант(все[(все.indexOf(т.которыйВариант()) + 1) % все.length]);
+    травяныеКнопки();
+  } else if (event.code === 'KeyL') {
+    const все: (string | null)[] = [...ЛИСТВЫ, null];
+    viewer.листва().форма(все[(все.indexOf(viewer.листва().котораяФорма()) + 1) % все.length]);
     травяныеКнопки();
   } else if (event.code === 'KeyV') {
     const i = ВЕТРА.findIndex((в) => Math.abs(в - т.силаВетра()) < 1e-6);
@@ -807,8 +830,8 @@ let hundredAt: number | null = null;
 let следНог: { x: number; z: number } | null = null;
 let следКолёс: ({ x: number; z: number } | null)[] = [];
 viewer.onFrame((dt) => {
+  // здесь только мнём; распрямляется трава сама, по своим часам (трава/показ.ts)
   const примятость = viewer.трава().примятость;
-  примятость.жить(dt);
   if (traffic.length > 0) {
     const step = Math.min(dt, 0.1);
     cityTime += step;

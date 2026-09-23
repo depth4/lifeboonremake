@@ -15,6 +15,7 @@ import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from '.
 import { type Sight, createSight } from './person/sight.ts';
 import { подключитьСтиль } from './стиль.ts';
 import { type Трава, создатьТраву } from './трава/показ.ts';
+import { type Листва, создатьЛиству } from './трава/листва.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
@@ -258,6 +259,8 @@ export interface Viewer {
    * main отдаёт, откуда брать поле, и мнёт траву ногами и колёсами.
    */
   трава(): Трава;
+  /** Листва ближних деревьев. Деревья приходят через setTrees, форму листа выбирает main. */
+  листва(): Листва;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -631,10 +634,21 @@ export function show(
    * а не берутся с часов: остановили мир — замер и ветер.
    */
   const трава = создатьТраву(scene, sun);
+  const листва = создатьЛиству(scene, sun, трава.ветерОбщий);
   let времяТравы = 0;
   /** Съёмка ролика ставит время сама: тогда кадры идут ровно через её шаг. */
   let времяЗадано = false;
-  const кадрТравы = (): void => трава.кадр(camera, времяТравы);
+  const кадрТравы = (): void => {
+    трава.кадр(camera, времяТравы);
+    листва.кадр(camera);
+    /**
+     * Под листьями крона — тень внутри дерева, а не его поверхность:
+     * с листвой она темнеет, иначе светлый многогранник торчит сквозь
+     * листья и дерево читается конфетти на камне (снимок 23.09).
+     */
+    const тень = листва.котораяФорма() !== null ? 0.5 : 1;
+    if (зелень !== null) for (const меш of зелень.slice(1)) (меш.material as THREE.MeshStandardMaterial).color.setScalar(тень);
+  };
   const рисовать = (): void => { кадрТравы(); if (стиль) стиль(); else renderer.render(scene, camera); };
 
   let flight: { from: THREE.Vector3; to: THREE.Vector3; look: THREE.Vector3; at: THREE.Vector3; fog: number; t: number } | null = null;
@@ -782,10 +796,24 @@ export function show(
     времяЗадано = t !== null;
     if (t !== null) времяТравы = t;
   };
+  /**
+   * Съёмке: навести камеру облёта и примять траву тем же вызовом, каким мнут
+   * ноги и колёса. Нужно, чтобы снять след сбоку, а не глазами идущего:
+   * своего следа с уровня глаз почти не видно.
+   */
+  (window as unknown as { __навести?: (от: number[], на: number[]) => void }).__навести = (от, на) => {
+    flight = null;
+    camera.position.set(от[0], от[1], от[2]);
+    controls.target.set(на[0], на[1], на[2]);
+    controls.update();
+  };
+  (window as unknown as { __примять?: (ax: number, az: number, bx: number, bz: number, r: number, вдоль: boolean) => void })
+    .__примять = (ax, az, bx, bz, r, вдоль) => трава.примятость.примять(ax, az, bx, bz, r, вдоль);
   (window as unknown as { __стоимостьКадра?: () => unknown }).__стоимостьКадра = () => ({
     вызовов: renderer.info.render.calls,
     треугольников: renderer.info.render.triangles,
     трава: трава.цена(),
+    листва: листва.цена(),
   });
 
   return {
@@ -959,6 +987,7 @@ export function show(
       if (signalHeads?.instanceColor) signalHeads.instanceColor.needsUpdate = true;
     },
     трава: () => трава,
+    листва: () => листва,
     setSigns(signs) {
       /**
        * Знаки рисуются НЕ пачкой одинаковых: у каждого своя картинка,
@@ -1135,6 +1164,7 @@ export function show(
         for (const меш of зелень) { scene.remove(меш); меш.dispose(); }
         зелень = null;
       }
+      листва.деревья([]);
       if (деревья.length === 0) return;
 
       /**
@@ -1210,6 +1240,11 @@ export function show(
         меш.instanceMatrix.needsUpdate = true;
         if (меш.instanceColor) меш.instanceColor.needsUpdate = true;
       }
+      // листья того же цвета, что крона: крона вдали и листья вблизи — одно дерево
+      листва.деревья(деревья.map(({ дерево: д, низ }) => ({
+        дерево: д, низ,
+        цвет: new THREE.Color().setHSL(0.23 + д.лист * 0.06, 0.34 + д.лист * 0.16, 0.22 + д.лист * 0.12),
+      })));
     },
     setBuildings(дома) {
       if (застройка !== null) {
