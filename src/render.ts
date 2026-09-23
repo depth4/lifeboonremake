@@ -14,8 +14,8 @@ import type { Дерево } from './city/зелень.ts';
 import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from './city/двор.ts';
 import { type Sight, createSight } from './person/sight.ts';
 import { подключитьСтиль } from './стиль.ts';
-import { type Трава, создатьТраву } from './трава/показ.ts';
-import { type Листва, создатьЛиству } from './трава/листва.ts';
+import { type Трава, создатьТраву } from './растения/показ.ts';
+import { type Листва, создатьЛиству } from './растения/листва.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
@@ -255,7 +255,7 @@ export interface Viewer {
     x: number; y: number; z: number; yaw: number; kind: string; value: number;
   }[]): void;
   /**
-   * Трава. Где ей расти, решает не показ, а `трава/поле.ts`; сюда
+   * Трава. Где ей расти, решает не показ, а `растения/поле.ts`; сюда
    * main отдаёт, откуда брать поле, и мнёт траву ногами и колёсами.
    */
   трава(): Трава;

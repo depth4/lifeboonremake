@@ -17,7 +17,7 @@ import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
 import { GroundIndex } from '../src/car/ground.ts';
 import { наЗемлеПосёлка, занято } from '../src/city/двор.ts';
-import { Примятость, полеТравы, растётЛи, высотаПоля } from '../src/трава/поле.ts';
+import { Примятость, полеТравы, растётЛи, высотаПоля } from '../src/растения/поле.ts';
 
 const режим = process.argv[2] ?? '';
 const СЦЕНА = 'город';

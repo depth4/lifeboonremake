@@ -4,9 +4,9 @@ import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
 import { домНаУчастке } from './city/дом.ts';
 import { ЗАПАС_ДЕРЕВА, деревьяУлиц } from './city/зелень.ts';
-import { полеТравы } from './трава/поле.ts';
-import { ПОРЯДОК as ТРАВЫ } from './трава/показ.ts';
-import { ПОРЯДОК_ЛИСТВЫ as ЛИСТВЫ } from './трава/листва.ts';
+import { полеТравы } from './растения/поле.ts';
+import { ПОРЯДОК as ТРАВЫ } from './растения/показ.ts';
+import { ПОРЯДОК_ЛИСТВЫ as ЛИСТВЫ } from './растения/листва.ts';
 import { занято, наЗемлеПосёлка, откудаСмотретьВоДвор } from './city/двор.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, nearestRoad, snapPoint } from './world/world.ts';
@@ -830,7 +830,7 @@ let hundredAt: number | null = null;
 let следНог: { x: number; z: number } | null = null;
 let следКолёс: ({ x: number; z: number } | null)[] = [];
 viewer.onFrame((dt) => {
-  // здесь только мнём; распрямляется трава сама, по своим часам (трава/показ.ts)
+  // здесь только мнём; распрямляется трава сама, по своим часам (растения/показ.ts)
   const примятость = viewer.трава().примятость;
   if (traffic.length > 0) {
     const step = Math.min(dt, 0.1);
