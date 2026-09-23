@@ -14,6 +14,7 @@ import type { Дерево } from './city/зелень.ts';
 import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from './city/двор.ts';
 import { type Sight, createSight } from './person/sight.ts';
 import { подключитьСтиль } from './стиль.ts';
+import { type Трава, создатьТраву } from './трава/показ.ts';
 
 const COLORS: Record<Material, number> = {
   grass: 0x5f8a4a,
@@ -252,6 +253,11 @@ export interface Viewer {
   setSigns(signs: readonly {
     x: number; y: number; z: number; yaw: number; kind: string; value: number;
   }[]): void;
+  /**
+   * Трава. Где ей расти, решает не показ, а `трава/поле.ts`; сюда
+   * main отдаёт, откуда брать поле, и мнёт траву ногами и колёсами.
+   */
+  трава(): Трава;
 }
 
 /** Ракурс, заданный числами в адресе: ?from=x,y,z&at=x,y,z — чтобы навестись куда угодно. */
@@ -619,7 +625,17 @@ export function show(
   const BUILDING = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
   controls.mouseButtons = { ...LOOKING };
   const стиль = подключитьСтиль(new URLSearchParams(location.search).get('стиль'), renderer, scene, camera, sun, fog);
-  const рисовать = (): void => { if (стиль) стиль(); else renderer.render(scene, camera); };
+  /**
+   * Трава обновляется в том же месте, где рисуется кадр, — когда камера
+   * уже стоит, где стоит. Время травы — секунды мира, копятся из шагов,
+   * а не берутся с часов: остановили мир — замер и ветер.
+   */
+  const трава = создатьТраву(scene, sun);
+  let времяТравы = 0;
+  /** Съёмка ролика ставит время сама: тогда кадры идут ровно через её шаг. */
+  let времяЗадано = false;
+  const кадрТравы = (): void => трава.кадр(camera, времяТравы);
+  const рисовать = (): void => { кадрТравы(); if (стиль) стиль(); else renderer.render(scene, camera); };
 
   let flight: { from: THREE.Vector3; to: THREE.Vector3; look: THREE.Vector3; at: THREE.Vector3; fog: number; t: number } | null = null;
 
@@ -691,6 +707,7 @@ export function show(
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
     const dt = Math.min(0.1, clock.getDelta());
+    if (!времяЗадано) времяТравы += dt;
     if (onFrameCb) onFrameCb(dt);
     if (walkEye) {
       camera.up.set(0, 1, 0);
@@ -703,7 +720,7 @@ export function show(
       );
       // крен на шаге — последним, поверх взгляда: качается голова, не мир
       camera.rotateZ(walkEye.roll);
-      if (sight && sightOn) sight.render(walkEye.headRate, dt);
+      if (sight && sightOn) { кадрТравы(); sight.render(walkEye.headRate, dt); }
       else рисовать();
       return;
     }
@@ -760,9 +777,15 @@ export function show(
    * число решает, потянет ли город слабое железо, и именно ради них дома
    * и деревья разложены по пачкам.
    */
+  /** Съёмке: поставить время травы, чтобы кадры ролика шли ровно через заданный шаг. */
+  (window as unknown as { __времяТравы?: (t: number | null) => void }).__времяТравы = (t) => {
+    времяЗадано = t !== null;
+    if (t !== null) времяТравы = t;
+  };
   (window as unknown as { __стоимостьКадра?: () => unknown }).__стоимостьКадра = () => ({
     вызовов: renderer.info.render.calls,
     треугольников: renderer.info.render.triangles,
+    трава: трава.цена(),
   });
 
   return {
@@ -935,6 +958,7 @@ export function show(
       (signalHeads as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
       if (signalHeads?.instanceColor) signalHeads.instanceColor.needsUpdate = true;
     },
+    трава: () => трава,
     setSigns(signs) {
       /**
        * Знаки рисуются НЕ пачкой одинаковых: у каждого своя картинка,

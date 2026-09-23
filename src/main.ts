@@ -4,6 +4,8 @@ import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
 import { домНаУчастке } from './city/дом.ts';
 import { ЗАПАС_ДЕРЕВА, деревьяУлиц } from './city/зелень.ts';
+import { полеТравы } from './трава/поле.ts';
+import { ПОРЯДОК as ТРАВЫ } from './трава/показ.ts';
 import { занято, наЗемлеПосёлка, откудаСмотретьВоДвор } from './city/двор.ts';
 import { roadWidth } from './world/road.ts';
 import { MAX_GRADE, buildWorld, nearestRoad, snapPoint } from './world/world.ts';
@@ -205,7 +207,12 @@ function застройка(): void {
  */
 function зеленьСцены(): void {
   const посёлок = посёлокСцены(sceneName);
-  if (посёлок === null || !viewer) { viewer?.setTrees([]); viewer?.setPaths([]); viewer?.setВещи([]); return; }
+  if (посёлок === null || !viewer) {
+    viewer?.setTrees([]); viewer?.setPaths([]); viewer?.setВещи([]);
+    // рукотворная сцена: на земле ничего не стоит, трава растёт на всём газоне
+    viewer?.трава().источник((окно) => полеТравы(surface, null, окно));
+    return;
+  }
 
   /**
    * Что стоит на земле — один список на страницу и на все проверки
@@ -213,6 +220,8 @@ function зеленьСцены(): void {
    * дорожки, ни вещи двора.
    */
   const н = наЗемлеПосёлка(посёлок);
+  // трава спрашивает то же, что дерево: что стоит на земле
+  viewer.трава().источник((окно) => полеТравы(surface, н, окно));
   viewer.setPaths(н.подходы.map((подход) => ({
     подход,
     отY: ground.sample(подход.отX, подход.отZ).height,
@@ -344,6 +353,87 @@ if (tools) {
 }
 
 // --- кнопка «сетка»: показать, из чего мир сделан на самом деле ---
+/**
+ * Трава и ветер: кнопками и клавишами T и V — клавишами на ходу, когда мышь
+ * отдана рулю или взгляду. Начальные — из адреса: ?трава=гладкая&ветер=1.
+ * Вариантов четыре при равной цене в вершинах: сравнивается, на что лучше
+ * потратить одни и те же деньги.
+ */
+const ВЕТРА = [0, 0.3, 0.6, 1.1] as const;
+const ИМЕНА_ВЕТРА = ['штиль', 'слабый', 'средний', 'сильный'];
+{
+  const т = viewer.трава();
+  const спрошено = query.get('трава');
+  т.вариант(спрошено === 'нет' ? null : (спрошено && (ТРАВЫ as readonly string[]).includes(спрошено) ? спрошено : ТРАВЫ[0]));
+  const густота = Number(query.get('густота'));
+  if (query.has('густота') && Number.isFinite(густота)) т.густота(густота);
+  const ветер = Number(query.get('ветер'));
+  т.ветер(Number.isFinite(ветер) && query.has('ветер') ? ветер : ВЕТРА[2]);
+}
+const grassBox = document.getElementById('grass');
+const windBox = document.getElementById('wind');
+function травяныеКнопки(): void {
+  const т = viewer.трава();
+  if (grassBox) grassBox.querySelectorAll<HTMLButtonElement>('button[data-grass]').forEach((b) => {
+    b.setAttribute('aria-pressed', String((b.dataset.grass === 'нет' ? null : b.dataset.grass) === т.которыйВариант()));
+  });
+  if (windBox) windBox.querySelectorAll<HTMLButtonElement>('button[data-wind]').forEach((b) => {
+    b.setAttribute('aria-pressed', String(Math.abs(Number(b.dataset.wind) - т.силаВетра()) < 1e-6));
+  });
+}
+if (grassBox) {
+  grassBox.innerHTML = [...ТРАВЫ, 'нет'].map((и) => `<button type="button" data-grass="${и}">${и}</button>`).join('');
+  grassBox.addEventListener('click', (event) => {
+    const b = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-grass]');
+    if (!b) return;
+    viewer.трава().вариант(b.dataset.grass === 'нет' ? null : (b.dataset.grass ?? null));
+    травяныеКнопки();
+  });
+}
+if (windBox) {
+  windBox.innerHTML = ВЕТРА.map((в, i) => `<button type="button" data-wind="${в}">${ИМЕНА_ВЕТРА[i]}</button>`).join('');
+  windBox.addEventListener('click', (event) => {
+    const b = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-wind]');
+    if (!b) return;
+    viewer.трава().ветер(Number(b.dataset.wind));
+    травяныеКнопки();
+  });
+}
+травяныеКнопки();
+/**
+ * Сколько кадров в секунду и сколько травинок в кадре — рядом с кнопками
+ * травы. Видеокарты Алекса Клод не видит: это единственный способ узнать,
+ * тянет ли его компьютер, не спрашивая «а как у тебя».
+ */
+{
+  const метка = document.querySelector<HTMLElement>('#grass')?.previousElementSibling as HTMLElement | null;
+  let кадров = 0, с = performance.now();
+  const считать = (): void => {
+    кадров++;
+    const сейчас = performance.now();
+    if (сейчас - с > 500 && метка) {
+      const ц = viewer.трава().цена();
+      const кс = Math.round((кадров * 1000) / (сейчас - с));
+      метка.textContent = `трава · T · ${кс} к/с · ${Math.round(ц.живых / 1000)} тыс.`;
+      кадров = 0; с = сейчас;
+    }
+    requestAnimationFrame(считать);
+  };
+  requestAnimationFrame(считать);
+}
+addEventListener('keydown', (event) => {
+  const т = viewer.трава();
+  if (event.code === 'KeyT') {
+    const все: (string | null)[] = [...ТРАВЫ, null];
+    т.вариант(все[(все.indexOf(т.которыйВариант()) + 1) % все.length]);
+    травяныеКнопки();
+  } else if (event.code === 'KeyV') {
+    const i = ВЕТРА.findIndex((в) => Math.abs(в - т.силаВетра()) < 1e-6);
+    т.ветер(ВЕТРА[(i + 1) % ВЕТРА.length]);
+    травяныеКнопки();
+  }
+});
+
 const wireBox = document.getElementById('wire');
 if (wireBox) {
   wireBox.innerHTML =
@@ -521,11 +611,11 @@ const grabWalk = (): void => { aim.take(); };
  * Выйти из машины и пойти пешком — или сесть обратно.
  * Человек ставится у левой двери и смотрит туда же, куда смотрела машина.
  */
-function afoot(on: boolean): void {
+function afoot(on: boolean, где: { x: number; z: number; курс: number } | null = null): void {
   if (on) {
     if (driving) seat(false);
     const from = car ?? { x: 0, z: 0, yaw: 0 };
-    walker = createPerson(
+    walker = где !== null ? createPerson(где.x, где.z, ground, где.курс) : createPerson(
       from.x - Math.sin(from.yaw) * 1.7,
       from.z + Math.cos(from.yaw) * 1.7,
       ground, from.yaw,
@@ -713,7 +803,12 @@ if (СРАЗУ_ГОРОД) заселить();
 let gasFrom: number | null = null;
 let hundredAt: number | null = null;
 
+/** Где были ноги и колёса на прошлом кадре: трава мнётся ОТРЕЗКОМ, а не точкой. */
+let следНог: { x: number; z: number } | null = null;
+let следКолёс: ({ x: number; z: number } | null)[] = [];
 viewer.onFrame((dt) => {
+  const примятость = viewer.трава().примятость;
+  примятость.жить(dt);
   if (traffic.length > 0) {
     const step = Math.min(dt, 0.1);
     cityTime += step;
@@ -792,10 +887,13 @@ viewer.onFrame((dt) => {
       run: afootKeys.has('ShiftLeft') || afootKeys.has('ShiftRight'),
     };
     stepPerson(walker, ground, wish, Math.min(dt, 0.1));
+    // нога раздвигает траву в стороны и немного по ходу
+    if (следНог !== null) примятость.примять(следНог.x, следНог.z, walker.x, walker.z, 0.3, false);
+    следНог = { x: walker.x, z: walker.z };
     viewer.setWalk(eyesOf(walker));
     if (lidsTop) lidsTop.style.setProperty('--shut', walker.lids.toFixed(3));
-  }
-  if (car === null) return;
+  } else следНог = null;
+  if (car === null) { следКолёс = []; return; }
   const speed = forwardSpeed(car);
   const controls = driving
     ? driver.read(dt)
@@ -835,6 +933,14 @@ viewer.onFrame((dt) => {
       x: w.x, y: w.y, z: w.z, steer: w.steer, spin: spinAngle[i],
       radius: w.radius, width: i < 2 ? VIPER.wheelFront.width : VIPER.wheelRear.width,
     })),
+  });
+  // колесо на земле кладёт траву по ходу — полосой шириной с шину
+  car.wheels.forEach((w, i) => {
+    const было = следКолёс[i];
+    if (w.down && было) {
+      примятость.примять(было.x, было.z, w.x, w.z, (i < 2 ? VIPER.wheelFront.width : VIPER.wheelRear.width) / 2, true);
+    }
+    следКолёс[i] = { x: w.x, z: w.z };
   });
 
   // приборка
@@ -953,3 +1059,13 @@ viewer.onFrame((dt) => {
 // первая застройка: мир собран, опора заведена, смотрелка есть
 застройка();
 зеленьСцены();
+
+/**
+ * ?пешком=x,z,курс — начать пешком в этом месте мира, курс в радианах
+ * (0 — вдоль x). Снимок оттуда, где стоит игрок (правило 7), без кнопок
+ * и мыши: так снимается след в траве и любой вид с уровня глаз.
+ */
+{
+  const где = query.get('пешком')?.split(',').map(Number) ?? [];
+  if (где.length >= 2 && где.every(Number.isFinite)) afoot(true, { x: где[0], z: где[1], курс: где[2] ?? 0 });
+}
