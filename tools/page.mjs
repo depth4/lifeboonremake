@@ -72,7 +72,8 @@ if (!process.argv.includes('быстро')) {
       scene: к.scene,
       view: к.view,
       terrain: к.terrain,
-      params: { bare: '1', ...(к.variant ? { variant: к.variant } : {}), ...(к.params ?? {}) },
+      // без травы: страница сравнивает полотно дороги, а трава закрыла бы его край (решение 093)
+      params: { bare: '1', трава: 'нет', ...(к.variant ? { variant: к.variant } : {}), ...(к.params ?? {}) },
     })),
     { тихо: true },
   );
