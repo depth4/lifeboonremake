@@ -37,7 +37,8 @@ import { GroundIndex } from '../src/car/ground.ts';
 import { buildSurface } from '../src/surface/index.ts';
 import { buildWorld, nearestRoad } from '../src/world/world.ts';
 import { buildNetwork } from '../src/city/traffic.ts';
-import { деревьяУлиц } from '../src/city/зелень.ts';
+import { ЗАПАС_ДЕРЕВА, деревьяУлиц } from '../src/city/зелень.ts';
+import { занято, наЗемлеПосёлка } from '../src/city/двор.ts';
 import { ОБРАЗЕЦ } from '../src/city/norms.ts';
 import { площадкаПодСледом } from '../src/city/площадка.ts';
 import { дорогиСцены } from '../src/scenes.ts';
@@ -317,9 +318,11 @@ console.log('  ЗЕЛЕНЬ');
 for (const сцена of ['город', 'большой город', 'каша'] as const) {
   const п = посёлокСцены(сцена);
   const мир = buildWorld(дорогиСцены(сцена), 'plateau');
-  const дома = п === null ? [] : п.объекты.map((о) => домНаУчастке(о, п.вид, п.сид));
+  // то же, что стоит на земле на странице: один список, один запас
+  const н = п === null ? null : наЗемлеПосёлка(п);
+  const дома = н?.дома ?? [];
   const деревья = деревьяУлиц(мир, buildNetwork(мир), п?.сид ?? 1,
-    деревоНаДороге ? { газон: false } : { занято: (x, z) => вДоме(дома, x, z, 1.2) });
+    деревоНаДороге ? { газон: false } : { занято: (x, z) => н !== null && занято(н, x, z, ЗАПАС_ДЕРЕВА) });
   let наПолотне = 0, наТротуаре = 0, вДомах = 0;
   for (const д of деревья) {
     if (вДоме(дома, д.x, д.z, 0)) вДомах++;
