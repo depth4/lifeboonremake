@@ -10,7 +10,7 @@ import type { Point2 } from './world/road.ts';
 import { EYE_HEIGHT } from './person/person.ts';
 import { type Дом, ДВЕРЬ, ОКНО, ЭТАЖ } from './city/дом.ts';
 import type { Площадка } from './city/площадка.ts';
-import type { Дерево } from './city/зелень.ts';
+import type { Посадочное } from './city/зелень.ts';
 import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from './city/двор.ts';
 import { type Sight, createSight } from './person/sight.ts';
 import { подключитьСтиль } from './стиль.ts';
@@ -224,7 +224,7 @@ export interface Viewer {
    * Место и размеры приходят готовыми из `city/зелень.ts` — показ ничего
    * не додумывает, поэтому «дерево на асфальте» здесь записать негде.
    */
-  setTrees(деревья: readonly { дерево: Дерево; низ: number }[]): void;
+  setTrees(деревья: readonly { дерево: Посадочное; низ: number }[]): void;
   /**
    * Дорожки от тротуара к подъездам. Один вызов ставит все: дорожка
    * не двигается. Место приходит готовым из `city/двор.ts`, показ только
