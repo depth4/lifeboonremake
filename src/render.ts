@@ -9,7 +9,7 @@ import type { Material, Surface } from './surface/index.ts';
 import type { Point2 } from './world/road.ts';
 import { EYE_HEIGHT } from './person/person.ts';
 import { type Дом, ДВЕРЬ, ОКНО, ЭТАЖ, осиПроёма } from './city/дом.ts';
-import type { Площадка } from './city/площадка.ts';
+import type { Площадка, Плита } from './city/площадка.ts';
 import type { Посадочное } from './city/зелень.ts';
 import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from './city/двор.ts';
 import { type Sight, createSight } from './person/sight.ts';
@@ -233,6 +233,8 @@ export interface Viewer {
   setPaths(подходы: readonly { подход: Подход; отY: number; доY: number }[]): void;
   /** Что стоит во дворе: площадка, горки, лавки, баки. Пусто — убрать всё. */
   setВещи(вещи: readonly { вещь: Вещь; низ: number }[]): void;
+  /** Крыльца всех дверей: площадки и ступени, уже посчитанные по земле (`city/площадка.ts`). */
+  setКрыльца(плиты: readonly Плита[]): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -724,6 +726,7 @@ export function show(
   /** Деревья улиц и дворов: те же пачки, что у домов. */
   /** Дорожки к подъездам: одна пачка на весь город. */
   let дорожки: THREE.InstancedMesh | null = null;
+  let крыльца: THREE.InstancedMesh | null = null;
   let дворовое: THREE.InstancedMesh | null = null;
   let signGroup: THREE.Group | null = null;
 
@@ -1186,6 +1189,28 @@ export function show(
         signGroup.add(pole, plate);
       }
       scene.add(signGroup);
+    },
+    setКрыльца(плиты) {
+      if (крыльца !== null) { scene.remove(крыльца); крыльца.dispose(); крыльца = null; }
+      if (плиты.length === 0) return;
+      // бетон: плита стоит на своём низе, до верха — сплошная, как настоящая
+      const g = new THREE.BoxGeometry(1, 1, 1);
+      g.translate(0, 0.5, 0);
+      const меш = new THREE.InstancedMesh(g, new THREE.MeshStandardMaterial({ color: 0x9c978f, roughness: 0.9 }), плиты.length);
+      меш.castShadow = true;
+      меш.receiveShadow = true;
+      const м = new THREE.Matrix4(), кв = new THREE.Quaternion(), ось = new THREE.Vector3(0, 1, 0);
+      const где = new THREE.Vector3(), размер = new THREE.Vector3();
+      плиты.forEach((п, i) => {
+        кв.setFromAxisAngle(ось, -п.курс);
+        где.set(п.x, п.низ, п.z);
+        размер.set(п.длина, Math.max(0.02, п.верх - п.низ), п.ширина);
+        м.compose(где, кв, размер);
+        меш.setMatrixAt(i, м);
+      });
+      меш.instanceMatrix.needsUpdate = true;
+      крыльца = меш;
+      scene.add(меш);
     },
     setPaths(подходы) {
       if (дорожки !== null) { scene.remove(дорожки); дорожки.dispose(); дорожки = null; }

@@ -2,7 +2,7 @@
 
 import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
-import { домНаУчастке } from './city/дом.ts';
+import { гдеПроём, домНаУчастке } from './city/дом.ts';
 import { ЗАПАС_ДЕРЕВА, деревьяУлиц, кустыДворов } from './city/зелень.ts';
 import { полеТравы } from './растения/поле.ts';
 import { ПОРЯДОК as ТРАВЫ } from './растения/показ.ts';
@@ -15,7 +15,7 @@ import { DEFAULT_VARIANT, VARIANTS, buildGhost, buildSurface } from './surface/i
 import { type View, show, viewFromQuery } from './render.ts';
 import { createBuilder } from './build.ts';
 import { GroundIndex } from './car/ground.ts';
-import { площадкаПодСледом } from './city/площадка.ts';
+import { type Плита, крыльцо, площадкаПодСледом } from './city/площадка.ts';
 import { SETUPS, VIPER } from './car/passport.ts';
 import { P_ZERO } from './car/tyre.ts';
 import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.ts';
@@ -179,8 +179,11 @@ const canvas = document.querySelector('canvas');
  */
 function застройка(): void {
   const посёлок = посёлокСцены(sceneName);
-  if (посёлок === null || !viewer) { viewer?.setBuildings([]); return; }
+  if (посёлок === null || !viewer) { viewer?.setBuildings([]); viewer?.setКрыльца([]); return; }
   // объекты, а не участки: школа на четырёх участках — ОДНО здание
+  const земля = (x: number, z: number): number => ground.sample(x, z).height;
+  const наГазоне = (x: number, z: number): boolean => ground.sample(x, z).material === 'grass';
+  const плиты: Плита[] = [];
   viewer.setBuildings(посёлок.объекты.map((о) => {
     const дом = домНаУчастке(о, посёлок.вид, посёлок.сид);
     /**
@@ -189,14 +192,15 @@ function застройка(): void {
      * угол висел в воздухе: дом ровный, земля нет, и разницу никто не брал.
      * Ту же самую землю щупает колесо и нога — второй земли не существует.
      */
-    return {
-      дом,
-      площадка: площадкаПодСледом(
-        { x: дом.x, z: дом.z, курс: дом.курс, ширина: дом.ширина, глубина: дом.глубина },
-        (x, z) => ground.sample(x, z).height,
-      ),
-    };
+    const площадка = площадкаПодСледом(
+      { x: дом.x, z: дом.z, курс: дом.курс, ширина: дом.ширина, глубина: дом.глубина }, земля);
+    // крыльцо у каждой двери — из пола дома и земли у двери; прямо — только по газону
+    for (const п of дом.двери) {
+      плиты.push(...крыльцо(гдеПроём(дом, п), площадка.пол, земля, наГазоне));
+    }
+    return { дом, площадка };
   }));
+  viewer.setКрыльца(плиты);
 }
 
 /**
