@@ -25,6 +25,7 @@ import {
   type Person, createPerson, eyes as eyesOf, look, step as stepPerson,
 } from './person/person.ts';
 import { type Mover, type Network, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf } from './city/traffic.ts';
+import { КВАРТАЛ } from './city/norms.ts';
 import { judge, newWatchdog, tally } from './city/offence.ts';
 import { laneAcross } from './city/lanes.ts';
 import { lightFor } from './city/signals.ts';
@@ -213,7 +214,7 @@ function застройка(): void {
 function зеленьСцены(): void {
   const посёлок = посёлокСцены(sceneName);
   if (посёлок === null || !viewer) {
-    viewer?.setTrees([]); viewer?.setPaths([]); viewer?.setВещи([]);
+    viewer?.setTrees([]); viewer?.setPaths([]); viewer?.setВещи([]); viewer?.setРазметка([]);
     // рукотворная сцена: на земле ничего не стоит, трава растёт на всём газоне
     viewer?.трава().источник((окно) => полеТравы(surface, null, окно));
     return;
@@ -253,6 +254,20 @@ function зеленьСцены(): void {
   }
   viewer.setPaths(плиты);
   viewer.setВещи(н.вещи.map((вещь) => ({ вещь, низ: ground.sample(вещь.x, вещь.z).height })));
+  /**
+   * Разметка стоянок — из тех же карманов, куда встают машины (`network.bays`):
+   * по черте у каждого края места поперёк полосы стоянки. Второго списка мест
+   * нет, поэтому «нарисовано место, куда никто не встанет» записать нельзя.
+   */
+  const линии: { x: number; z: number; курс: number; длина: number; y: number }[] = [];
+  for (const b of network.bays) {
+    for (const край of [-1, 1]) {
+      const т = along(world, b.shape, b.s + (край * КВАРТАЛ.место.длина) / 2);
+      const x = т.x - b.across * т.fz, z = т.z + b.across * т.fx;
+      линии.push({ x, z, курс: Math.atan2(т.fx, -т.fz), длина: b.ширина, y: ground.sample(x, z).height });
+    }
+  }
+  viewer.setРазметка(линии);
   // сеть уже собрана для трафика: второй такой же завести значило бы
   // держать две правды об одних и тех же дорогах
   const деревья = деревьяУлиц(world, network, посёлок.сид, {

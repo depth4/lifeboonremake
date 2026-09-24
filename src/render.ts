@@ -235,6 +235,8 @@ export interface Viewer {
   setВещи(вещи: readonly { вещь: Вещь; низ: number }[]): void;
   /** Крыльца всех дверей: площадки и ступени, уже посчитанные по земле (`city/площадка.ts`). */
   setКрыльца(плиты: readonly Плита[]): void;
+  /** Белые линии разметки на асфальте: середина, куда вытянута, длина, высота полотна. */
+  setРазметка(линии: readonly { x: number; z: number; курс: number; длина: number; y: number }[]): void;
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /** Трафик: положения чужих машин. Пустой список — убрать всех. */
@@ -727,6 +729,7 @@ export function show(
   /** Дорожки к подъездам: одна пачка на весь город. */
   let дорожки: THREE.InstancedMesh | null = null;
   let крыльца: THREE.InstancedMesh | null = null;
+  let разметка: THREE.InstancedMesh | null = null;
   let дворовое: THREE.InstancedMesh | null = null;
   let signGroup: THREE.Group | null = null;
 
@@ -1189,6 +1192,26 @@ export function show(
         signGroup.add(pole, plate);
       }
       scene.add(signGroup);
+    },
+    setРазметка(линии) {
+      if (разметка !== null) { scene.remove(разметка); разметка.dispose(); разметка = null; }
+      if (линии.length === 0) return;
+      // краска: линия 12 см, чуть над полотном, чтобы не мерцать с асфальтом
+      const g = new THREE.BoxGeometry(1, 0.01, 0.12);
+      const меш = new THREE.InstancedMesh(g, new THREE.MeshStandardMaterial({ color: 0xe8e6df, roughness: 0.7 }), линии.length);
+      меш.receiveShadow = true;
+      const м = new THREE.Matrix4(), кв = new THREE.Quaternion(), ось = new THREE.Vector3(0, 1, 0);
+      const где = new THREE.Vector3(), размер = new THREE.Vector3();
+      линии.forEach((л, i) => {
+        кв.setFromAxisAngle(ось, -л.курс);
+        где.set(л.x, л.y + 0.012, л.z);
+        размер.set(л.длина, 1, 1);
+        м.compose(где, кв, размер);
+        меш.setMatrixAt(i, м);
+      });
+      меш.instanceMatrix.needsUpdate = true;
+      разметка = меш;
+      scene.add(меш);
     },
     setКрыльца(плиты) {
       if (крыльца !== null) { scene.remove(крыльца); крыльца.dispose(); крыльца = null; }
