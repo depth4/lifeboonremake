@@ -15,6 +15,7 @@ import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from '.
 import { type Sight, createSight } from './person/sight.ts';
 import { подключитьСтиль } from './стиль.ts';
 import { type Трава, создатьТраву } from './растения/показ.ts';
+import { модельВещи } from './модели.ts';
 import { type Деревья, создатьДеревья } from './растения/деревья.ts';
 
 const COLORS: Record<Material, number> = {
@@ -730,7 +731,7 @@ export function show(
   let дорожки: THREE.InstancedMesh | null = null;
   let крыльца: THREE.InstancedMesh | null = null;
   let разметка: THREE.InstancedMesh | null = null;
-  let дворовое: THREE.InstancedMesh | null = null;
+  let дворовое: THREE.InstancedMesh[] | null = null;
   let signGroup: THREE.Group | null = null;
 
   scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
@@ -1277,52 +1278,40 @@ export function show(
       if (пачкаДорожек.instanceColor) пачкаДорожек.instanceColor.needsUpdate = true;
     },
     /**
-     * ВЕЩИ ВО ДВОРЕ — одна пачка коробок на весь город, один вызов отрисовки.
+     * ВЕЩИ ВО ДВОРЕ — по пачке на вид, форма из `src/модели.ts`.
      *
-     * Коробка тут не бедность, а мера: с уровня глаз двор читается не формой
-     * горки, а тем, ЧТО В НЁМ ВООБЩЕ ЕСТЬ. Пустой газон и газон с площадкой,
-     * лавками и баками — это разные места, и разница видна с двадцати метров
-     * даже на коробках. Форму можно будет уточнить, когда она станет главным,
-     * что мешает верить.
+     * До 24.09 каждая вещь была коробкой своего размера, и площадка сверху
+     * читалась «странным строением из коробок» (Алекс). Теперь горка — со
+     * скатом и лесенкой, качели — с А-рамой, песочница — с грибком. Вещь
+     * одного вида всегда одного размера, поэтому модель ставится без растяжения;
+     * пачка на вид — вызовов столько, сколько видов, а не сколько вещей.
      */
     setВещи(вещи) {
-      if (дворовое !== null) { scene.remove(дворовое); дворовое.dispose(); дворовое = null; }
+      if (дворовое !== null) { for (const м of дворовое) { scene.remove(м); м.dispose(); } дворовое = null; }
       if (вещи.length === 0) return;
-      const коробка = new THREE.BoxGeometry(1, 1, 1);
-      коробка.translate(0, 0.5, 0);          // начало координат на НИЖНЕЙ грани
-      const пачка = new THREE.InstancedMesh(коробка,
-        new THREE.MeshStandardMaterial({ roughness: 0.85 }), вещи.length);
-      пачка.castShadow = true;
-      пачка.receiveShadow = true;
-      дворовое = пачка;
-      scene.add(пачка);
-
-      const м = new THREE.Matrix4();
-      const кв = new THREE.Quaternion();
-      const эйлер = new THREE.Euler();
-      const место = new THREE.Vector3();
-      const размер = new THREE.Vector3();
-      const тон = new THREE.Color();
-      /** Цвет по назначению: песок, яркая горка, дерево лавки, зелёный бак. */
-      const ЦВЕТ: Record<Вещь['что'], [number, number, number]> = {
-        площадка: [0.10, 0.38, 0.66],
-        горка: [0.02, 0.62, 0.48],
-        качели: [0.58, 0.42, 0.44],
-        лавка: [0.08, 0.34, 0.34],
-        баки: [0.33, 0.30, 0.30],
-      };
-      вещи.forEach(({ вещь: в, низ }, i) => {
-        эйлер.set(0, -в.курс, 0);
-        кв.setFromEuler(эйлер);
-        место.set(в.x, низ, в.z);
-        размер.set(в.длина, в.высота, в.ширина);
-        м.compose(место, кв, размер);
-        пачка.setMatrixAt(i, м);
-        const [h, s2, l] = ЦВЕТ[в.что];
-        пачка.setColorAt(i, тон.setHSL(h, s2, l));
-      });
-      пачка.instanceMatrix.needsUpdate = true;
-      if (пачка.instanceColor) пачка.instanceColor.needsUpdate = true;
+      const поВидам = new Map<Вещь['что'], { вещь: Вещь; низ: number }[]>();
+      for (const в of вещи) {
+        const г = поВидам.get(в.вещь.что);
+        if (г) г.push(в); else поВидам.set(в.вещь.что, [в]);
+      }
+      const материал = new THREE.MeshStandardMaterial({ roughness: 0.8, vertexColors: true });
+      const м = new THREE.Matrix4(), кв = new THREE.Quaternion(), ось = new THREE.Vector3(0, 1, 0);
+      const место = new THREE.Vector3(), один = new THREE.Vector3(1, 1, 1);
+      дворовое = [];
+      for (const [что, список] of поВидам) {
+        const пачка = new THREE.InstancedMesh(модельВещи(что), материал, список.length);
+        пачка.castShadow = true;
+        пачка.receiveShadow = true;
+        список.forEach(({ вещь: в, низ }, i) => {
+          кв.setFromAxisAngle(ось, -в.курс);
+          место.set(в.x, низ, в.z);
+          м.compose(место, кв, один);
+          пачка.setMatrixAt(i, м);
+        });
+        пачка.instanceMatrix.needsUpdate = true;
+        дворовое.push(пачка);
+        scene.add(пачка);
+      }
     },
     setTrees(посадки) {
       /**
