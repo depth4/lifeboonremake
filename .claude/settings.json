@@ -20,5 +20,19 @@
       "Bash(git stash:*)"
     ],
     "deny": []
-  }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/ветки.mjs\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  },
+  "//ветки": "Крючок начала чата печатает, что лежит в ветках и не дошло до main (tools/ветки.mjs). Крючок конца хода, который двигает main, включается словом Алекса."
 }
