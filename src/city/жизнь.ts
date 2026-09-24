@@ -21,7 +21,7 @@ import {
 } from './traffic.ts';
 import { laneAcross, laneCount } from './lanes.ts';
 import type { Посёлок } from './plan.ts';
-import { домНаУчастке } from './дом.ts';
+import { гдеПроём, домНаУчастке } from './дом.ts';
 import { type Житель, type Расселение, где, кто } from './житель.ts';
 import { КОЖА, ОДЕЖДА, ШТАНЫ, type Walker } from './walkers.ts';
 import { type Маршрут, путь } from './путь.ts';
@@ -105,11 +105,8 @@ function уДома(world: World, посёлок: Посёлок, объект: 
   const о = посёлок.объекты[объект];
   if (о === undefined) return null;
   const дом = домНаУчастке(о, посёлок.вид, посёлок.сид);
-  // подъезд, а не середина дома: машина встаёт у входа
-  const cos = Math.cos(дом.курс), sin = Math.sin(дом.курс);
-  const п = дом.двери[0];
-  const x = дом.x + (дом.глубина / 2) * cos - п.вдоль * sin;
-  const z = дом.z + (дом.глубина / 2) * sin + п.вдоль * cos;
+  // подъезд, а не середина дома: машина встаёт у входа — с улицы или со двора
+  const { x, z } = гдеПроём(дом, дом.двери[0]);
   const на = locate(world, x, z);
   return на === null ? null : { shape: на.shape, s: на.s, across: на.across, x, z };
 }
