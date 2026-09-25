@@ -13,12 +13,13 @@ import type { Посадочное } from './city/зелень.ts';
 import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from './city/двор.ts';
 import { type Sight, createSight } from './person/sight.ts';
 import { подключитьСтиль } from './стиль.ts';
-import { type Трава, создатьТраву } from './растения/показ.ts';
+import { type Трава, ГАЗОН, создатьТраву } from './растения/показ.ts';
 import { модельВещи } from './модели.ts';
 import { type Деревья, создатьДеревья } from './растения/деревья.ts';
 
 const COLORS: Record<Material, number> = {
-  grass: 0x5f8a4a,
+  // газон — цвет самой травы, какой её видно издали: один цвет на двоих
+  grass: new THREE.Color().setRGB(...ГАЗОН, THREE.LinearSRGBColorSpace).getHex(),
   asphalt: 0x3c4046,
   // тротуар светлее асфальта, бордюр темнее тротуара: настоящий бордюр
   // читается тёмной линией, потому что его вертикальная грань в тени
