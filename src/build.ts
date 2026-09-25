@@ -47,6 +47,18 @@ export interface BuilderOptions {
    * мышью в пиксель: он распознаёт намерение и подставляет точную точку.
    */
   readonly snap: (point: Point2) => { point: Point2; kind: string } | null;
+  /**
+   * Свободна ли мышь — не держит ли её тело: взгляд пешехода или руль.
+   *
+   * Спрашивается НА КАЖДОМ событии, а не запоминается. До 25.09 инструмент
+   * выключали при входе в машину, а при выходе пешком забыли — и он
+   * оставался включён: на каждое движение взгляда искал на земле точку
+   * под курсором. Это 15 мс на «городе» и 59 мс на «большом» за одно
+   * движение мыши, а пешком мышь движется всегда: у Алекса 20–40 кадров
+   * вместо 60. Теперь «строю, пока хожу» записать нельзя: хозяин мыши
+   * один, и инструмент у него спрашивает.
+   */
+  readonly свободна: () => boolean;
 }
 
 /** Ближе этого точки подряд не ставим — кривая вырождается. */
@@ -59,8 +71,10 @@ const PIXELS_PER_LANE = 70;
 const CURVE_STEPS = 6;
 
 export function createBuilder(options: BuilderOptions): Builder {
-  const { viewer, canvas, roads, onChanged, onState, preview, snap } = options;
+  const { viewer, canvas, roads, onChanged, onState, preview, snap, свободна } = options;
   let snapKind = '';
+  /** Событие мыши — инструменту: он включён и мышь не держит тело. */
+  const моё = (): boolean => phase !== 'off' && свободна();
 
   /** Точка под курсором с учётом привязки. */
   const place = (event: PointerEvent | MouseEvent): Point2 | null => {
@@ -131,14 +145,14 @@ export function createBuilder(options: BuilderOptions): Builder {
   };
 
   canvas.addEventListener('pointerdown', (event) => {
-    if (phase === 'off' || event.button !== 0) return;
+    if (!моё() || event.button !== 0) return;
     pressScreen = { x: event.clientX, y: event.clientY };
     pressGround = place(event);
     handle = null;
   });
 
   canvas.addEventListener('pointermove', (event) => {
-    if (phase === 'off') return;
+    if (!моё()) return;
 
     if (phase === 'width') {
       const next = Math.max(1, Math.min(4, lanesAtAnchor + Math.round((event.clientX - widthAnchor) / PIXELS_PER_LANE)));
@@ -169,7 +183,7 @@ export function createBuilder(options: BuilderOptions): Builder {
   });
 
   canvas.addEventListener('pointerup', (event) => {
-    if (phase === 'off' || event.button !== 0) return;
+    if (!моё() || event.button !== 0) return;
 
     if (phase === 'width') {
       commit();
@@ -204,9 +218,9 @@ export function createBuilder(options: BuilderOptions): Builder {
     onState();
   });
 
-  canvas.addEventListener('dblclick', () => finish());
+  canvas.addEventListener('dblclick', () => { if (моё()) finish(); });
   addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || !моё()) return;
     if (phase === 'width') {
       commit();
       reset();

@@ -356,6 +356,8 @@ const builder = createBuilder({
   preview: (road) => {
     viewer.setGhost(road ? buildGhost(world, road) : null);
   },
+  // мышь держит тело — пешеход или руль; строить можно только со стороны
+  свободна: () => walker === null && !driving,
   snap: (point) => {
     const hit = snapPoint(world, point.x, point.z, SNAP_RADIUS);
     return hit ? { point: hit.point, kind: hit.kind } : null;
@@ -378,7 +380,6 @@ if (views) {
 }
 
 // --- кнопки строительства ---
-let building = false;
 const tools = document.getElementById('tools');
 if (tools) {
   tools.innerHTML =
@@ -395,8 +396,7 @@ if (tools) {
       builder.undo();
       return;
     }
-    building = tool === 'road';
-    builder.setActive(building);
+    builder.setActive(tool === 'road');
     tools.querySelectorAll<HTMLButtonElement>('button[data-tool]').forEach((b) => {
       if (b.dataset.tool !== 'undo') b.setAttribute('aria-pressed', String(b.dataset.tool === tool));
     });
@@ -738,13 +738,6 @@ function seat(on: boolean): void {
   driving = on;
   viewer.setChase(on);
   if (dash) dash.hidden = !on;
-  if (on && building) {
-    building = false;
-    builder.setActive(false);
-    tools?.querySelectorAll<HTMLButtonElement>('button[data-tool]').forEach((b) => {
-      b.setAttribute('aria-pressed', String(b.dataset.tool === 'look'));
-    });
-  }
   drivePanel();
 }
 
