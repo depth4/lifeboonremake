@@ -377,6 +377,39 @@ const РАЗМАХ_РУКИ = 0.19;
  * координат лежит в суставе: тогда «мах» — это просто поворот, и нога не
  * может при повороте уехать из бедра.
  */
+/**
+ * ДОГНАТЬ ДВИЖУЩУЮСЯ ЦЕЛЬ — камера, которая тянется за машиной или за
+ * человеком с жёсткостью λ (1/с).
+ *
+ * Покадровое `lerp(цель, 1 − e^(−λ·dt))` верно только для НЕПОДВИЖНОЙ цели.
+ * У движущейся отставание выходит зависящим от длины кадра: на 20 м/с
+ * камера за машиной отстаёт на 2.78 м при кадре 16.7 мс и на 2.61 м при
+ * 33 мс, и один пропущенный кадр дёргал её на 5% скорости — `плавность.mjs`
+ * падала в двух прогонах из семи. Здесь — точное решение для цели, прошедшей
+ * за кадр ровный отрезок: отставание v/λ одно при любой нарезке времени на
+ * кадры, и где камера в миг t, не зависит от того, сколько кадров было до него.
+ */
+function погоня(λ: number): { шаг(цель: THREE.Vector3, dt: number): THREE.Vector3; сброс(): void } {
+  const x = new THREE.Vector3(), было = new THREE.Vector3();
+  let готова = false;
+  return {
+    шаг(цель, dt) {
+      if (!готова) { x.copy(цель); готова = true; }
+      else if (dt > 0) {
+        const e = Math.exp(-λ * dt), отстать = 1 / (λ * dt);
+        for (const к of ['x', 'y', 'z'] as const) {
+          // (цель − было)·отстать — это v/λ: отставание при скорости цели за кадр
+          const d = (цель[к] - было[к]) * отстать;
+          x[к] = цель[к] - d + e * (x[к] - было[к] + d);
+        }
+      }
+      было.copy(цель);
+      return x;
+    },
+    сброс() { готова = false; },
+  };
+}
+
 function собратьЛюдей(сколько: number): {
   голова: THREE.InstancedMesh; лицо: THREE.InstancedMesh; тело: THREE.InstancedMesh;
   ноги: THREE.InstancedMesh; руки: THREE.InstancedMesh;
@@ -969,12 +1002,10 @@ export function show(
   horizon.visible = false;
   horizon.name = 'горизонт';
   scene.add(horizon);
-  const chaseEye = new THREE.Vector3();
-  const chaseAim = new THREE.Vector3();
-  let chaseReady = false;
+  const chaseEye = погоня(7);
+  const chaseAim = погоня(7);
   let слежка: { x: number; y: number; z: number; yaw: number | null } | null = null;
-  const слежкаГлаз = new THREE.Vector3(), слежкаЦель = new THREE.Vector3();
-  let слежкаГотова = false;
+  const слежкаГлаз = погоня(2.5), слежкаЦель = погоня(6);
   /** Откуда камера смотрит на следимого: сзади по его ходу; стоит он — как смотрела. */
   let слежкаСзади = new THREE.Vector3(-1, 0, 0);
 
@@ -995,9 +1026,17 @@ export function show(
    * `?плавно=нет` — по часам, как было: заведомо сломанный вариант замера.
    */
   const поЧасам = new URLSearchParams(location.search).get('плавно') === 'нет';
+  /**
+   * `?рвано=7` — пропускать каждый седьмой кадр, как пропускает слабая
+   * машина: для `плавность.mjs`, чтобы неровные кадры были в каждом замере,
+   * а не в одном из пяти.
+   */
+  const рвано = Number(new URLSearchParams(location.search).get('рвано') ?? 0);
+  let показов = 0;
   const clock = new THREE.Clock();
   let прошлыйПоказ: number | null = null;
   renderer.setAnimationLoop((когда: number) => {
+    if (рвано > 0 && ++показов % рвано === 0) return;
     const dt = поЧасам ? clock.getDelta() : прошлыйПоказ === null ? 0 : (когда - прошлыйПоказ) / 1000;
     прошлыйПоказ = когда;
     кадр(Math.min(0.1, dt));
@@ -1011,12 +1050,9 @@ export function show(
       if (слежка.yaw !== null) слежкаСзади = new THREE.Vector3(-Math.cos(слежка.yaw), 0, -Math.sin(слежка.yaw));
       const глаз = new THREE.Vector3(слежка.x, слежка.y + 2.6, слежка.z).addScaledVector(слежкаСзади, 6.5);
       const цель = new THREE.Vector3(слежка.x, слежка.y + 1.1, слежка.z);
-      if (!слежкаГотова) { слежкаГлаз.copy(глаз); слежкаЦель.copy(цель); слежкаГотова = true; }
-      слежкаГлаз.lerp(глаз, 1 - Math.exp(-dt * 2.5));
-      слежкаЦель.lerp(цель, 1 - Math.exp(-dt * 6));
       camera.up.set(0, 1, 0);
-      camera.position.copy(слежкаГлаз);
-      camera.lookAt(слежкаЦель);
+      camera.position.copy(слежкаГлаз.шаг(глаз, dt));
+      camera.lookAt(слежкаЦель.шаг(цель, dt));
       рисовать();
       return;
     }
@@ -1057,12 +1093,8 @@ export function show(
       const back = 7.2 + Math.min(4, Math.abs(speed) * 0.11);
       const eye = carGroup.position.clone().addScaledVector(ahead, -back).add(new THREE.Vector3(0, 2.85, 0));
       const aim = carGroup.position.clone().addScaledVector(ahead, 7).add(new THREE.Vector3(0, 0.9, 0));
-      if (!chaseReady) { chaseEye.copy(eye); chaseAim.copy(aim); chaseReady = true; }
-      const k = 1 - Math.exp(-dt * 7);
-      chaseEye.lerp(eye, k);
-      chaseAim.lerp(aim, k);
-      camera.position.copy(chaseEye);
-      camera.lookAt(chaseAim);
+      camera.position.copy(chaseEye.шаг(eye, dt));
+      camera.lookAt(chaseAim.шаг(aim, dt));
       рисовать();
       return;
     }
@@ -1707,12 +1739,12 @@ export function show(
       (body.material as THREE.Material).visible = from === 'сзади';
       glass.visible = from === 'сзади';
       interior.visible = from === 'из салона';
-      chaseReady = false;
+      chaseEye.сброс(); chaseAim.сброс();
       camera.up.set(0, 1, 0);
     },
     setChase(on) {
       chase = on;
-      chaseReady = false;
+      chaseEye.сброс(); chaseAim.сброс();
       controls.enabled = !on;
       if (!on) {
         (body.material as THREE.Material).visible = true;
@@ -1732,7 +1764,7 @@ export function show(
     },
     setСлежка(цель) {
       слежка = цель;
-      if (цель === null) слежкаГотова = false;
+      if (цель === null) { слежкаГлаз.сброс(); слежкаЦель.сброс(); }
     },
     onFrame(cb) {
       onFrameCb = cb;

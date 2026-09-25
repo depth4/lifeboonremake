@@ -29,7 +29,13 @@ import { chromium } from 'playwright';
 const PORT = 5220;
 const ПОТОЛОК = 0.03;
 const сломать = process.argv[2] === 'сломать';
-const адрес = (доп) => `http://localhost:${PORT}/?scene=${encodeURIComponent('решётка')}&трава=нет&кадр=нет&bare=0`
+/**
+ * `рвано=7` — каждый седьмой кадр пропущен, как на слабой машине: неровные
+ * кадры есть в КАЖДОМ замере. Без этого камера, дёргавшаяся на пропущенном
+ * кадре, ловилась в одном прогоне из трёх-пяти — когда контейнер сам
+ * пропускал кадр.
+ */
+const адрес = (доп) => `http://localhost:${PORT}/?scene=${encodeURIComponent('решётка')}&трава=нет&кадр=нет&bare=0&рвано=7`
   + `${сломать ? '&плавно=нет' : ''}${доп}`;
 
 const server = await createServer({ server: { port: PORT, strictPort: true, hmr: false }, logLevel: 'error' });
