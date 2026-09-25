@@ -24,10 +24,24 @@ export const ВАРИАНТОВ = 2;
 const БЛИЖНИЕ = 45;
 /** До этого расстояния листьев полный набор, дальше редеют по квадрату. */
 const ПОЛНО = 22;
-/** Дальше этого кусты не рисуются, м. */
-const КУСТ_ДАЛЬ = 70;
-/** Сколько деревьев одевается листьями. */
-const МАКС = 1024;
+/**
+ * ДАЛЬНОСТЬ И РАСТВОРЕНИЕ.
+ *
+ * До 25.09 деревья обрезались числом (1024 ближайших), кусты — на 70 м,
+ * и на границе дерево появлялось целиком, из пустоты (Алекс: «появляется
+ * слишком резко»). Так в играх не делают: на границе дальности дерево
+ * РАСТВОРЯЕТСЯ точками — пиксель за пикселем по узору (дизеринг, как
+ * в Crysis и RDR2), без прозрачности и сортировки, и тень растворяется вместе
+ * с ним. Здесь то же: в полосе `ПОЛОСА` метров до края доля видимых точек
+ * падает от всех до ни одной.
+ */
+const ДАЛЬ = 230;
+const ПОЛОСА = 40;
+/** Кусты — ближе и уже: полоса растворения своя. */
+const КУСТ_ДАЛЬ = 90;
+const КУСТ_ПОЛОСА = 25;
+/** Сколько деревьев одевается листьями. Потолок двоичного поиска листа — 2^11. */
+const МАКС = 2048;
 /** Ширина текстуры листьев. */
 const ШИР = 2048;
 
@@ -145,16 +159,20 @@ function кора(с: Скелет, даль: boolean): THREE.BufferGeometry {
   return g;
 }
 
-function материалКоры(ветер: ОбщийВетер): THREE.MeshLambertMaterial {
+function материалКоры(ветер: ОбщийВетер, даль: Record<string, THREE.IUniform>): THREE.MeshLambertMaterial {
   const м = new THREE.MeshLambertMaterial({ vertexColors: true });
   м.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, ветер);
-    shader.vertexShader = ОБЩЕЕ + 'attribute vec4 kach;\n' + shader.vertexShader.replace('#include <project_vertex>', /* glsl */`
+    Object.assign(shader.uniforms, ветер, даль);
+    shader.fragmentShader = РАСТВОРИТЬ + shader.fragmentShader.replace('void main() {', РАСТВОРИТЬ_ТОЧКУ);
+    shader.vertexShader = ОБЩЕЕ + 'attribute vec4 kach;\nvarying float vFade;\nuniform vec3 uCam;\nuniform float uTreeFar;\nuniform float uTreeBand;\n'
+      + shader.vertexShader.replace('#include <project_vertex>', /* glsl */`
       vec4 mvPosition = vec4( transformed, 1.0 );
+      vFade = 1.0;
       #ifdef USE_INSTANCING
         mvPosition = instanceMatrix * mvPosition;
         float treeScale = length(instanceMatrix[1].xyz);
         mvPosition.xyz += treeSway(instanceMatrix[3].xz, kach.w * treeScale, kach.xyz);
+        vFade = clamp((uTreeFar - distance(uCam.xz, instanceMatrix[3].xz)) / uTreeBand, 0.0, 1.0);
       #endif
       mvPosition = modelViewMatrix * mvPosition;
       gl_Position = projectionMatrix * mvPosition;
@@ -163,6 +181,18 @@ function материалКоры(ветер: ОбщийВетер): THREE.MeshL
   м.customProgramCacheKey = () => 'кора';
   return м;
 }
+
+/** Узор растворения: порог 4 × 4 по точке экрана (матрица Байера). */
+const РАСТВОРИТЬ = /* glsl */`
+varying float vFade;
+float bayer4(vec2 p) {
+  ivec2 q = ivec2(mod(p, 4.0));
+  int i = q.x + q.y * 4;
+  float m[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
+  return (m[i] + 0.5) / 16.0;
+}
+`;
+const РАСТВОРИТЬ_ТОЧКУ = 'void main() {\n  if (vFade < bayer4(gl_FragCoord.xy)) discard;';
 
 /* ─────────────────────────── листья ─────────────────────────── */
 
@@ -176,6 +206,7 @@ uniform vec3 uCam;
 uniform vec3 uSunDir;
 varying vec3 vLeaf;
 varying float vTrans;
+varying float vFade;
 
 uint leafHash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
 vec4 leafTexel(int i) { return texelFetch(uLeafData, ivec2(i % ${ШИР}, i / ${ШИР}), 0); }
@@ -193,6 +224,8 @@ const ЛИСТ_ТЕЛО = /* glsl */`
   vec4 t0 = texelFetch(uTreeData, ivec2(lo, 0), 0);   // x, низ, z, курс
   vec4 t1 = texelFetch(uTreeData, ivec2(lo, 1), 0);   // масштаб, начало, рост листа, высота шаблона
   vec4 t2 = texelFetch(uTreeData, ivec2(lo, 2), 0);   // цвет листа
+  vec4 t3 = texelFetch(uTreeData, ivec2(lo, 3), 0);   // край дальности и полоса растворения
+  vFade = clamp((t3.x - distance(uCam.xz, t0.xz)) / t3.y, 0.0, 1.0);
   int j = inst - int(texelFetch(uTreeSum, ivec2(lo, 0), 0).r);
   int L = (int(t1.y) + j) * 3;
   vec4 a = leafTexel(L), b = leafTexel(L + 1), c = leafTexel(L + 2);
@@ -279,8 +312,8 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
   листьяТ.magFilter = листьяТ.minFilter = THREE.NearestFilter;
   листьяТ.needsUpdate = true;
 
-  const деревоДанные = new Float32Array(МАКС * 3 * 4);
-  const деревоТ = new THREE.DataTexture(деревоДанные, МАКС, 3, THREE.RGBAFormat, THREE.FloatType);
+  const деревоДанные = new Float32Array(МАКС * 4 * 4);
+  const деревоТ = new THREE.DataTexture(деревоДанные, МАКС, 4, THREE.RGBAFormat, THREE.FloatType);
   деревоТ.magFilter = деревоТ.minFilter = THREE.NearestFilter;
   const суммаДанные = new Float32Array(МАКС * 4);
   const суммаТ = new THREE.DataTexture(суммаДанные, МАКС, 1, THREE.RGBAFormat, THREE.FloatType);
@@ -295,6 +328,9 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
     uCam: { value: new THREE.Vector3() },
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uSunColor: { value: new THREE.Color() },
+    // край дальности деревьев сейчас (он ближе ДАЛИ, когда ближних больше МАКС)
+    uTreeFar: { value: ДАЛЬ },
+    uTreeBand: { value: ПОЛОСА },
   };
   const материалЛиста = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide });
   материалЛиста.onBeforeCompile = (shader) => {
@@ -302,7 +338,8 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
     shader.vertexShader = ЛИСТ_ВЕРШИНА + shader.vertexShader
       .replace('#include <beginnormal_vertex>', ЛИСТ_ТЕЛО)
       .replace('#include <begin_vertex>', 'vec3 transformed = leafP;');
-    shader.fragmentShader = 'varying vec3 vLeaf;\nvarying float vTrans;\nuniform vec3 uSunColor;\n' + shader.fragmentShader
+    shader.fragmentShader = 'varying vec3 vLeaf;\nvarying float vTrans;\nuniform vec3 uSunColor;\n' + РАСТВОРИТЬ + shader.fragmentShader
+      .replace('void main() {', РАСТВОРИТЬ_ТОЧКУ)
       .replace('#include <color_fragment>', 'diffuseColor.rgb *= vLeaf;')
       .replace('#include <normal_fragment_begin>',
         'float faceDirection = 1.0;\nvec3 normal = normalize( vNormal );\nvec3 nonPerturbedNormal = normal;')
@@ -315,10 +352,12 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
     Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = ЛИСТ_ВЕРШИНА + shader.vertexShader
       .replace('#include <begin_vertex>', ЛИСТ_ТЕЛО + '\nvec3 transformed = leafP;');
+    // тень растворяется вместе с листом, иначе на газоне лежала бы тень невидимого дерева
+    shader.fragmentShader = РАСТВОРИТЬ + shader.fragmentShader.replace('void main() {', РАСТВОРИТЬ_ТОЧКУ);
   };
   теньЛиста.customProgramCacheKey = () => 'лист-тень';
 
-  const материалКорыОбщий = материалКоры(ветер);
+  const материалКорыОбщий = материалКоры(ветер, { uCam: uniforms.uCam, uTreeFar: uniforms.uTreeFar, uTreeBand: uniforms.uTreeBand });
 
   let форма: string | null = null;
   let листМеш: THREE.Mesh | null = null;
@@ -355,12 +394,18 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
 
   /** Разложить деревья по дальности: кора вблизи/вдали, сколько листьев каждому. */
   const разложить = (cx: number, cz: number): void => {
-    const по = посадки
-      .map((п) => ({ п, d: Math.hypot(п.x - cx, п.z - cz) }))
-      // куст дальше семидесяти метров — меньше пикселя листвы: не рисуем вовсе
-      .filter(({ п, d }) => d < КУСТ_ДАЛЬ || !КУСТЫ.includes(п.вид))
-      .sort((a, b) => a.d - b.d)
-      .slice(0, МАКС);
+    // сначала отсев по кругу — дешёвым сравнением квадратов, потом сортировка оставшихся
+    const рядом: { п: Посадка; d: number }[] = [];
+    for (const п of посадки) {
+      const dx = п.x - cx, dz = п.z - cz, d2 = dx * dx + dz * dz;
+      const даль = КУСТЫ.includes(п.вид) ? КУСТ_ДАЛЬ : ДАЛЬ;
+      if (d2 < даль * даль) рядом.push({ п, d: Math.sqrt(d2) });
+    }
+    рядом.sort((a, b) => a.d - b.d);
+    const по = рядом.slice(0, МАКС);
+    // ближних больше потолка — край деревьев там, где кончилось последнее взятое
+    const крайДеревьев = рядом.length > МАКС ? Math.min(ДАЛЬ, по[по.length - 1].d) : ДАЛЬ;
+    uniforms.uTreeFar.value = крайДеревьев;
     // кора
     const группы = new Map<string, { п: Посадка }[]>();
     for (const { п, d } of по) {
@@ -402,6 +447,8 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
       деревоДанные.set([п.масштаб, ш.начало, Math.min(2.4, 1 / Math.sqrt(доля)), ш.с.высота], (1 * МАКС + i) * 4);
       const в = 0.9 + 0.2 * ((п.вариант * 0.618) % 1);
       деревоДанные.set([ш.цвет.r * в, ш.цвет.g * в, ш.цвет.b * в, 1], (2 * МАКС + i) * 4);
+      const куст = КУСТЫ.includes(п.вид);
+      деревоДанные.set([куст ? КУСТ_ДАЛЬ : крайДеревьев, куст ? КУСТ_ПОЛОСА : ПОЛОСА, 0, 0], (3 * МАКС + i) * 4);
       суммаДанные[i * 4] = сумма;
       сумма += n;
     });
