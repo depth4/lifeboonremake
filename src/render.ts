@@ -632,7 +632,61 @@ export function show(
 
   let lastGeometry: THREE.BufferGeometry | null = null;
 
+  /**
+   * Земля до горизонта. Мир — плита, и с высоты глаз видно, где он кончается.
+   * Дымкой это не прятать: дымки на пятистах метрах в природе нет. Земля
+   * просто продолжается до горизонта — СНАРУЖИ мира.
+   *
+   * Горизонт — квадрат с дырой РОВНО ПО ГРАНИЦАМ ЗЕМЛИ МИРА, и границы
+   * берутся из самой поверхности, когда её отдают (`applySurface`). Поэтому
+   * накрыть землю мира горизонт не может ни при каком его размере и рельефе.
+   * До 25.09 это было кольцо от 90 м на высоте −0.35, записанное, когда мир
+   * был квадратом 240 м: в «городе» 600 м оно накрывало 41.6% земли (всё,
+   * что ниже −0.35 дальше 90 м от середины) вместе с дорогами и машинами.
+   *
+   * Дальше полутора километров не растягиваем: с большой дальностью камеры
+   * рушится точность глубины, и наводка на резкость начинает мылить всё
+   * подряд — поймано снимком, а не рассуждением.
+   */
+  const ДО_ГОРИЗОНТА = 1400;
+  const horizon = new THREE.Mesh(
+    new THREE.BufferGeometry(),
+    new THREE.MeshLambertMaterial({ color: COLORS.grass, side: THREE.DoubleSide }),
+  );
+  horizon.rotation.x = -Math.PI / 2;
+  horizon.visible = false;
+  horizon.name = 'горизонт';
+  scene.add(horizon);
+  /** Горизонт вокруг этой земли: дыра — её границы, высота — самая низкая земля у края. */
+  const горизонтВокруг = (земля: Surface): void => {
+    const p = земля.positions;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < p.length; i += 3) {
+      x0 = Math.min(x0, p[i]); x1 = Math.max(x1, p[i]);
+      z0 = Math.min(z0, p[i + 2]); z1 = Math.max(z1, p[i + 2]);
+    }
+    let уКрая = Infinity;
+    for (let i = 0; i < p.length; i += 3) {
+      const край = Math.min(p[i] - x0, x1 - p[i], p[i + 2] - z0, z1 - p[i + 2]);
+      if (край < 1) уКрая = Math.min(уКрая, p[i + 1]);
+    }
+    const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    // плоскость фигуры — (x, y); поворот на −90° вокруг x кладёт её так, что z мира = −y фигуры
+    const снаружи = new THREE.Shape();
+    снаружи.moveTo(cx - ДО_ГОРИЗОНТА, -cz - ДО_ГОРИЗОНТА);
+    снаружи.lineTo(cx + ДО_ГОРИЗОНТА, -cz - ДО_ГОРИЗОНТА);
+    снаружи.lineTo(cx + ДО_ГОРИЗОНТА, -cz + ДО_ГОРИЗОНТА);
+    снаружи.lineTo(cx - ДО_ГОРИЗОНТА, -cz + ДО_ГОРИЗОНТА);
+    const мир = new THREE.Path();
+    мир.moveTo(x0, -z1); мир.lineTo(x1, -z1); мир.lineTo(x1, -z0); мир.lineTo(x0, -z0);
+    снаружи.holes.push(мир);
+    horizon.geometry.dispose();
+    horizon.geometry = new THREE.ShapeGeometry(снаружи);
+    horizon.position.y = Number.isFinite(уКрая) ? уКрая : 0;
+  };
+
   const applySurface = (next: Surface): void => {
+    горизонтВокруг(next);
     ground.geometry.dispose();
     (ground.material as THREE.Material[]).forEach((m) => m.dispose());
 
@@ -984,26 +1038,6 @@ export function show(
   let sight: Sight | null = null;
   /** Глаз выключается целиком — чтобы было с чем сравнить. */
   let sightOn = true;
-  /**
-   * Земля до горизонта. Мир — плита в полкилометра, и с высоты глаз видно, где
-   * он кончается. Раньше это пряталось дымкой — но дымки на пятистах метрах
-   * в природе нет, и она читалась как ложь. Теперь земля просто продолжается
-   * до горизонта, как ей и положено, а обрыв смотреть перестало быть на что.
-   */
-  const horizon = new THREE.Mesh(
-    // мир — квадрат 240 м; кольцо начинается внутри него и уходит за горизонт
-    // мир — квадрат 240 м; кольцо начинается внутри него и уходит за горизонт.
-    // Дальше полутора километров не растягиваем: с большой дальностью камеры
-    // рушится точность глубины, и наводка на резкость начинает мылить всё
-    // подряд — поймано снимком, а не рассуждением.
-    new THREE.RingGeometry(90, 1400, 64),
-    new THREE.MeshLambertMaterial({ color: COLORS.grass, side: THREE.DoubleSide }),
-  );
-  horizon.rotation.x = -Math.PI / 2;
-  horizon.position.y = -0.35;
-  horizon.visible = false;
-  horizon.name = 'горизонт';
-  scene.add(horizon);
   const chaseEye = погоня(7);
   const chaseAim = погоня(7);
   let слежка: { x: number; y: number; z: number; yaw: number | null } | null = null;
