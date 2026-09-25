@@ -37,9 +37,9 @@ import { judge, newWatchdog, tally } from './city/offence.ts';
 import { laneAcross } from './city/lanes.ts';
 import { lightFor } from './city/signals.ts';
 import { type Walker, moveWalkers, placeWalkers, walkerPose, фазаШага } from './city/walkers.ts';
-import { СЕКУНД_В_ЧАСЕ, type Расселение, расселить, часСуток } from './city/житель.ts';
+import { СЕКУНД_В_ЧАСЕ, type Расселение, расселить } from './city/житель.ts';
 import {
-  ЧАС_УТРА, машиныЖителей, пешеходыЖителей, сколькоМашин, сколькоПешеходов,
+  ЧАС_УТРА, type Снаружи, вывестиНаУлицу, жить, сколькоМашин, сколькоПешеходов,
 } from './city/жизнь.ts';
 
 const query = new URLSearchParams(location.search);
@@ -687,6 +687,16 @@ let walkers: Walker[] = [];
  */
 /** Расселение посёлка: кто где живёт. null — сцена без домов. */
 let жизнь: Расселение | null = null;
+/** Кто снаружи: улица, которая живёт по распорядку жителей. null — сцена без домов. */
+let снаружи: Снаружи | null = null;
+/**
+ * С какого часа идёт город. `?час=18` — вечер: улица строится сразу такой,
+ * какой она в этот час по распорядку. Часы — настоящие (`СЕКУНД_В_ЧАСЕ`).
+ */
+const ЧАС_СТАРТА = Number.isFinite(Number(query.get('час'))) && query.get('час') !== null
+  ? Number(query.get('час')) : ЧАС_УТРА;
+/** Который час от начала жизни города — не по кругу суток: после полуночи 24, 25… */
+const часЖизни = (): number => ЧАС_СТАРТА + cityTime / СЕКУНД_В_ЧАСЕ;
 /**
  * `?traffic=1` — завести город сразу, без нажатия кнопки. Нужно снимкам из
  * терминала: пустую улицу снять было можно, а живую — только руками, и
@@ -835,7 +845,7 @@ el('drive')?.addEventListener('click', (event) => {
     dog = newWatchdog();
     signsShown = false;
     if (!on) viewer.setSigns([]);
-    if (on) заселить(); else { traffic = []; walkers = []; жизнь = null; }
+    if (on) заселить(); else { traffic = []; walkers = []; жизнь = null; снаружи = null; }
     viewer.setTraffic([]);
     viewer.setSignals([]);
     viewer.setWalkers([]);
@@ -943,9 +953,10 @@ function заселить(): void {
     walkers = placeWalkers(world, network, сколькоПешеходов(network));
   } else {
     жизнь = расселить(посёлок);
-    const час = часСуток(cityTime + ЧАС_УТРА * СЕКУНД_В_ЧАСЕ);
-    traffic = машиныЖителей(world, network, жизнь, час, сколькоМашин(network)).машины;
-    walkers = пешеходыЖителей(world, network, жизнь, час, сколькоПешеходов(network));
+    // улица — по распорядку: все, кто сейчас в пути, и дальше выходы по часам
+    снаружи = вывестиНаУлицу(world, network, жизнь, часЖизни());
+    traffic = снаружи.машины;
+    walkers = снаружи.пешие;
   }
 }
 
@@ -976,8 +987,10 @@ viewer.onFrame((dt) => {
       crossing,
       player: car === null ? null : { x: car.x, z: car.z, speed: forwardSpeed(car), yaw: car.yaw },
       // городской час: по нему стоящая машина понимает, вышел ли хозяин
-      час: часСуток(cityTime + ЧАС_УТРА * СЕКУНД_В_ЧАСЕ),
+      час: часЖизни(),
     });
+    // выходы по распорядку — на улицу, пришедшие — в здания
+    if (жизнь !== null && снаружи !== null) жить(world, network, жизнь, снаружи, часЖизни());
     viewer.setWalkers(walkers.map((w) => {
       const pose = walkerPose(world, w);
       return {
