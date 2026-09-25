@@ -141,6 +141,16 @@ export interface Mover {
    */
   park: { bay: number; phase: 'въезжает' | 'стоит' | 'выезжает'; доЧаса: number } | null;
   /**
+   * ГДЕ ВСТАТЬ В КОНЦЕ ЭТОЙ ПОЕЗДКИ. Номер кармана — своё место у дома
+   * (`своиМеста` в `жизнь.ts`): встаёт в него с любой стороны проезда,
+   * а занят гостем — в первый свободный впереди, как все. `'любой'` —
+   * к чужому зданию: первый свободный впереди по своей стороне. `null` —
+   * нигде: домой без своего места, во двор, которого мы не строим. Одно
+   * поле на поездку — поэтому «дома без места встал в чужое своё»
+   * невыразимо: до 25.09 так занималась треть своих мест.
+   */
+  стоянка: number | 'любой' | null;
+  /**
    * Куда поедем через ближайший перекрёсток. Решение принимается НА ПОДЪЕЗДЕ,
    * а не в точке въезда: пока путь неизвестен, нельзя сказать, пересекается
    * ли он с чужим, и остаётся только запрещать перекрёсток целиком.
@@ -483,7 +493,14 @@ function radius(world: World, shape: number, s: number): number {
   return wrapped < 1e-4 ? 1e5 : 10 / wrapped;
 }
 
-export const COLOURS = [0x9fa5ab, 0x2b3a4a, 0x7d2b2b, 0xd8d3c6, 0x35513f, 0x1c1e22, 0x8a7b4f];
+/** Окраска машин: цвет и как его назовёт человек — одной записью, чтобы не разошлись. */
+export const ОКРАСКА = [
+  { цвет: 0x9fa5ab, имя: 'серебристая' }, { цвет: 0x2b3a4a, имя: 'тёмно-синяя' },
+  { цвет: 0x7d2b2b, имя: 'бордовая' }, { цвет: 0xd8d3c6, имя: 'бежевая' },
+  { цвет: 0x35513f, имя: 'тёмно-зелёная' }, { цвет: 0x1c1e22, имя: 'чёрная' },
+  { цвет: 0x8a7b4f, имя: 'оливковая' },
+] as const;
+export const COLOURS = ОКРАСКА.map((о) => о.цвет);
 
 export function placeTraffic(world: World, net: Network, count: number, seed = 1): Mover[] {
   let rnd = (seed * 16807) % 2147483647;
@@ -508,7 +525,7 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
       lane: 0,
       across: 0,   // ставится ниже, когда полоса выбрана
       // ничья машина: ехать ей есть куда, а вставать негде и незачем
-      хозяин: -1, доЧаса: null, маршрут: null,
+      хозяин: -1, доЧаса: null, маршрут: null, стоянка: null,
       park: null,
       route: null,
       knocked: null,
@@ -1370,8 +1387,11 @@ export function moveTraffic(
      * 25…). По нему припаркованная машина понимает, вышел ли хозяин.
      */
     час?: number;
+    /** Заведомо сломанный вариант: своё место не ищется, встают в первый свободный. */
+    чужоеМесто?: boolean;
   } = {},
 ): void {
+  const чужоеМесто = options.чужоеМесто === true;
   const headway = options.headway ?? true;
   const rules = options.rules ?? true;
   const changing = options.lanes ?? true;
@@ -2037,9 +2057,12 @@ export function moveTraffic(
        * ни цели. Значит «стоит просто так» записать негде.
        */
       const side = Math.sign(m.dir);
-      const found = net.bays.findIndex((b) => b.taken < 0 && b.shape === m.shape
-        && Math.sign(b.across) === side
-        && (b.s - m.s) * m.dir > 8 && (b.s - m.s) * m.dir < 90);
+      const впереди = (b: Network['bays'][number]): boolean => b.taken < 0 && b.shape === m.shape
+        && (b.s - m.s) * m.dir > 8 && (b.s - m.s) * m.dir < 90;
+      // своё место — с любой стороны: проезд двора узкий и без разметки
+      const своё = typeof m.стоянка === 'number' && !чужоеМесто && впереди(net.bays[m.стоянка]) ? m.стоянка : -1;
+      const found = m.стоянка === null ? -1 : своё >= 0 ? своё
+        : net.bays.findIndex((b) => впереди(b) && Math.sign(b.across) === side);
       if (found >= 0) {
         net.bays[found].taken = index;
         m.park = { bay: found, phase: 'въезжает', доЧаса: m.доЧаса };
