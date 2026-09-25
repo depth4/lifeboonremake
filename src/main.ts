@@ -361,7 +361,7 @@ function rebuild(): void {
   // застройка ставится после того, как заведена опора: дом стоит НА земле,
   // и её высоту надо у кого-то спросить
   if (опораГотова) { застройка(); зеленьСцены(); }
-  if (traffic.length > 0) заселить();
+  if (городЖив) заселить();
   viewer.setSurface(surface);
   readout();
   hint();
@@ -690,6 +690,20 @@ let жизнь: Расселение | null = null;
 /** Кто снаружи: улица, которая живёт по распорядку жителей. null — сцена без домов. */
 let снаружи: Снаружи | null = null;
 /**
+ * Живёт ли город. Отдельный флаг, а не «есть ли машины в движении»: ночью
+ * все стоят в карманах, и город по тому признаку выключался бы сам.
+ */
+let городЖив = false;
+/** Стоящие машины, как они нарисованы: позы считаются раз на изменение стоянки. */
+let позыСтоянки: { m: Mover; x: number; y: number; z: number; yaw: number }[] = [];
+/**
+ * Поза стоящей — по карману: пока она в этом кармане, она не двигается,
+ * и поза устареть не может. Встала в другой карман — поза другая: ключ
+ * пары «машина — карман» не даёт взять старую.
+ */
+const позаСтоящей = new WeakMap<Mover, { bay: number; поза: { m: Mover; x: number; y: number; z: number; yaw: number } }>();
+let отрисованаСтоянка = -1;
+/**
  * С какого часа идёт город. `?час=18` — вечер: улица строится сразу такой,
  * какой она в этот час по распорядку. Часы — настоящие (`СЕКУНД_В_ЧАСЕ`).
  */
@@ -815,7 +829,7 @@ function drivePanel(): void {
     (walker === null ? '' : `<button type="button" class="plain" data-drive="sight" aria-pressed="${viewer.sight()}">глаз</button>`) +
     `<button type="button" class="plain" data-drive="assist" aria-pressed="${driver.assist}">помощь рулю</button>` +
     `<button type="button" class="plain" data-drive="setup">подвеска: ${VIPER.suspension.label}</button>` +
-    `<button type="button" class="plain" data-drive="traffic" aria-pressed="${traffic.length > 0}">трафик</button>` +
+    `<button type="button" class="plain" data-drive="traffic" aria-pressed="${городЖив}">трафик</button>` +
     `<button type="button" class="plain" data-drive="eye">вид: ${eye}</button>` +
     (car === null ? '' : '<button type="button" class="plain" data-drive="park">убрать машину</button>');
   const tip = el('d-tip');
@@ -840,13 +854,15 @@ el('drive')?.addEventListener('click', (event) => {
     driver.assist = !driver.assist;
     drivePanel();
   } else if (what === 'traffic') {
-    const on = traffic.length === 0;
+    const on = !городЖив;
     // город заново — и счёт нарушений заново: прошлый был про прошлый город
     dog = newWatchdog();
     signsShown = false;
     if (!on) viewer.setSigns([]);
-    if (on) заселить(); else { traffic = []; walkers = []; жизнь = null; снаружи = null; }
+    if (on) заселить(); else { traffic = []; walkers = []; жизнь = null; снаружи = null; городЖив = false; }
     viewer.setTraffic([]);
+    viewer.setСтоянка([]);
+    позыСтоянки = []; отрисованаСтоянка = -1;
     viewer.setSignals([]);
     viewer.setWalkers([]);
     drivePanel();
@@ -947,6 +963,7 @@ let signsShown = false;
  * и не паркуются: парковаться им не к чему.
  */
 function заселить(): void {
+  городЖив = true;
   const посёлок = посёлокСцены(sceneName);
   if (посёлок === null) {
     traffic = placeTraffic(world, network, сколькоМашин(network));
@@ -957,6 +974,7 @@ function заселить(): void {
     снаружи = вывестиНаУлицу(world, network, жизнь, часЖизни());
     traffic = снаружи.машины;
     walkers = снаружи.пешие;
+    отрисованаСтоянка = -1;
   }
 }
 
@@ -978,7 +996,7 @@ let следКолёс: ({ x: number; z: number } | null)[] = [];
 viewer.onFrame((dt) => {
   // здесь только мнём; распрямляется трава сама, по своим часам (растения/показ.ts)
   const примятость = viewer.трава().примятость;
-  if (traffic.length > 0) {
+  if (городЖив) {
     const step = Math.min(dt, 0.1);
     cityTime += step;
     moveWalkers(world, network, walkers, step, cityTime);
@@ -990,7 +1008,22 @@ viewer.onFrame((dt) => {
       час: часЖизни(),
     });
     // выходы по распорядку — на улицу, пришедшие — в здания
-    if (жизнь !== null && снаружи !== null) жить(world, network, жизнь, снаружи, часЖизни());
+    if (жизнь !== null && снаружи !== null) {
+      жить(world, network, жизнь, снаружи, часЖизни());
+      // стоянка — только когда поменялась: позы и высота земли раз на изменение
+      if (снаружи.стоянка !== отрисованаСтоянка) {
+        отрисованаСтоянка = снаружи.стоянка;
+        позыСтоянки = снаружи.стоят.map((m) => {
+          const было = позаСтоящей.get(m);
+          if (было !== undefined && было.bay === m.park?.bay) return было.поза;
+          const п = poseOf(world, network, m);
+          const поза = { m, x: п.x, y: ground.sample(п.x, п.z).height, z: п.z, yaw: m.yaw };
+          позаСтоящей.set(m, { bay: m.park?.bay ?? -1, поза });
+          return поза;
+        });
+        viewer.setСтоянка(позыСтоянки.map((п) => ({ x: п.x, y: п.y, z: п.z, yaw: п.yaw, colour: п.m.colour })));
+      }
+    }
     viewer.setWalkers(walkers.map((w) => {
       const pose = walkerPose(world, w);
       return {
@@ -1066,7 +1099,11 @@ viewer.onFrame((dt) => {
       side: (afootKeys.has('KeyD') ? 1 : 0) - (afootKeys.has('KeyA') ? 1 : 0),
       run: afootKeys.has('ShiftLeft') || afootKeys.has('ShiftRight'),
     };
-    if (traffic.length === 0) машиныРядом.length = 0;
+    if (!городЖив) машиныРядом.length = 0;
+    // стоящие в кармане рядом — тоже твёрдые, из тех же поз, что нарисованы
+    for (const п of позыСтоянки) {
+      if (Math.hypot(п.x - walker.x, п.z - walker.z) < 8) машиныРядом.push(коробка(п.x, п.z, п.yaw, LENGTH, 2 * WIDE));
+    }
     // своя машина, брошенная у тротуара, тоже твёрдая
     const своя = car === null ? [] : [коробка(car.x, car.z, car.yaw, VIPER.length, VIPER.width)];
     stepPerson(walker, ground, wish, Math.min(dt, 0.1), {
@@ -1105,7 +1142,10 @@ viewer.onFrame((dt) => {
    * и одна общая мера касания. Машине возвращается только толчок — как ей
    * от него ехать, знает она сама.
    */
-  const blow = traffic.length === 0 ? null : bump(world, network, traffic, {
+  // удар — о едущих и о стоящих рядом (стоящие не в списке движения)
+  const я = car;
+  const стоятРядом = позыСтоянки.filter((п) => Math.hypot(п.x - я.x, п.z - я.z) < 12).map((п) => п.m);
+  const blow = !городЖив ? null : bump(world, network, [...traffic, ...стоятРядом], {
     x: car.x, z: car.z, yaw: car.yaw, vx: car.vx, vz: car.vz,
     yawRate: car.yawRate, mass: VIPER.mass, inertia: VIPER.yawInertia,
   });

@@ -1363,11 +1363,6 @@ export function moveTraffic(
     headway?: boolean; rules?: boolean; crossing?: readonly OnCrossing[];
     /** Выключить перестроения: все едут в правой полосе, как было до 13.09. */
     lanes?: boolean;
-    /**
-     * Считать машину, стоящую в кармане, затором за перекрёстком, как было
-     * до 25.09. Заведомо сломанный вариант `life.ts затор-в-кармане`.
-     */
-    карманЗатор?: boolean;
     /** Машина игрока: город обязан её видеть, иначе он едет сквозь неё. */
     player?: { x: number; z: number; speed: number; yaw: number } | null;
     /**
@@ -1380,7 +1375,6 @@ export function moveTraffic(
   const headway = options.headway ?? true;
   const rules = options.rules ?? true;
   const changing = options.lanes ?? true;
-  const карманЗатор = options.карманЗатор ?? false;
 
   /**
    * КТО НА КАКОЙ ДОРОГЕ. Считается один раз за шаг, из самого списка машин.
@@ -1752,7 +1746,7 @@ export function moveTraffic(
        */
       const объехать = laneCount(net.lanes, r.shape, r.dir as 1 | -1) > 1;
       const jam = наДороге[r.shape].some((o) => o !== m && o.dir === r.dir
-        && (карманЗатор || o.park?.phase !== 'стоит')
+        && o.park?.phase !== 'стоит'
         && (объехать ? !стоит(o) : true) && o.speed < 1.5
         && (o.s - outMouth) * r.dir < LENGTH + GAP0
         && (o.s - outMouth) * r.dir > -LENGTH);
