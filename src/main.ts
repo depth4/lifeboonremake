@@ -358,6 +358,10 @@ const builder = createBuilder({
   },
   // мышь держит тело — пешеход или руль; строить можно только со стороны
   свободна: () => walker === null && !driving,
+  наЗемле: (event) => {
+    const { o, d } = viewer.луч(event);
+    return ground.луч(o.x, o.y, o.z, d.x, d.y, d.z);
+  },
   snap: (point) => {
     const hit = snapPoint(world, point.x, point.z, SNAP_RADIUS);
     return hit ? { point: hit.point, kind: hit.kind } : null;

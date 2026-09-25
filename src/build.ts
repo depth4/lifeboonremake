@@ -59,6 +59,8 @@ export interface BuilderOptions {
    * один, и инструмент у него спрашивает.
    */
   readonly свободна: () => boolean;
+  /** Куда на земле показывает курсор; null — мимо земли. */
+  readonly наЗемле: (event: PointerEvent | MouseEvent) => Point2 | null;
 }
 
 /** Ближе этого точки подряд не ставим — кривая вырождается. */
@@ -71,14 +73,14 @@ const PIXELS_PER_LANE = 70;
 const CURVE_STEPS = 6;
 
 export function createBuilder(options: BuilderOptions): Builder {
-  const { viewer, canvas, roads, onChanged, onState, preview, snap, свободна } = options;
+  const { viewer, canvas, roads, onChanged, onState, preview, snap, свободна, наЗемле } = options;
   let snapKind = '';
   /** Событие мыши — инструменту: он включён и мышь не держит тело. */
   const моё = (): boolean => phase !== 'off' && свободна();
 
   /** Точка под курсором с учётом привязки. */
   const place = (event: PointerEvent | MouseEvent): Point2 | null => {
-    const raw = viewer.pick(event);
+    const raw = наЗемле(event);
     if (!raw) {
       snapKind = '';
       return null;

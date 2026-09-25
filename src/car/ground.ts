@@ -28,6 +28,9 @@ const CELL = 6; // м, сторона клетки поискового ящик
 /** Пусто под колесом — так бывает только за краем мира. */
 const VOID: Spot = { height: -1e4, nx: 0, ny: 1, nz: 0, material: 'grass' };
 
+/** Дальше этого луч курсора землю не ищет, м: мир — плита в 1.2 км. */
+const ДАЛЬ_ЛУЧА = 3000;
+
 export class GroundIndex {
   private readonly pos: Float32Array;
   private readonly idx: Uint32Array;
@@ -38,6 +41,9 @@ export class GroundIndex {
   private minX = 0;
   private minZ = 0;
   private cols = 1;
+  /** Слой высот мира: вне его луч землю встретить не может. */
+  private низ = Infinity;
+  private верх = -Infinity;
 
   constructor(surface: Surface) {
     this.pos = surface.positions;
@@ -60,6 +66,8 @@ export class GroundIndex {
       if (this.pos[v] > maxX) maxX = this.pos[v];
       if (this.pos[v + 2] < this.minZ) this.minZ = this.pos[v + 2];
       if (this.pos[v + 2] > maxZ) maxZ = this.pos[v + 2];
+      if (this.pos[v + 1] < this.низ) this.низ = this.pos[v + 1];
+      if (this.pos[v + 1] > this.верх) this.верх = this.pos[v + 1];
     }
     this.cols = Math.max(1, Math.ceil((maxX - this.minX) / CELL) + 1);
 
@@ -101,6 +109,41 @@ export class GroundIndex {
     }
     if (best === null) return VOID;
     return paint ? { ...best, material: 'marking' } : best;
+  }
+
+  /**
+   * Где луч из (o) по направлению (d) впервые уходит под землю. Нужно
+   * курсору строителя: «куда на земле я показываю».
+   *
+   * До 25.09 это искал луч three.js по ВСЕМ треугольникам нарисованной
+   * земли: 16 мс на «городе» и 57 мс на «большом» на одно движение мыши.
+   * Здесь луч идёт шагами не длиннее метра и на каждом спрашивает высоту
+   * там же, где её спрашивает колесо, — у своей клетки ящика. Земля та же
+   * самая: курсор, колесо и нога не могут разойтись во мнении, где она.
+   */
+  луч(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): { x: number; z: number } | null {
+    const над = (t: number): number => oy + dy * t - this.sample(ox + dx * t, oz + dz * t).height;
+    // луч вне слоя высот мира землю не встретит: и начало, и конец берутся из слоя
+    let t0 = 0, t1 = ДАЛЬ_ЛУЧА;
+    if (dy < 0) {
+      t0 = Math.max(0, (oy - this.верх) / -dy);
+      t1 = Math.min(t1, (oy - this.низ) / -dy);
+    } else if (oy > this.верх) return null;
+    // шаг: не больше метра вдоль земли и полуметра по высоте
+    const шаг = Math.min(1 / Math.max(1e-9, Math.hypot(dx, dz)), 0.5 / Math.max(1e-9, Math.abs(dy)));
+    let до = t0;
+    if (над(до) <= 0) return { x: ox + dx * до, z: oz + dz * до };
+    for (let t = t0 + шаг; t <= t1 + шаг; t += шаг) {
+      if (над(t) > 0) { до = t; continue; }
+      // перешли под землю между «до» и t — делим отрезок пополам до сантиметра
+      let под = t;
+      while ((под - до) * Math.hypot(dx, dy, dz) > 0.01) {
+        const м = (до + под) / 2;
+        if (над(м) > 0) до = м; else под = м;
+      }
+      return { x: ox + dx * под, z: oz + dz * под };
+    }
+    return null;
   }
 
   /** Высота и нормаль треугольника в точке — или null, если точка мимо. */

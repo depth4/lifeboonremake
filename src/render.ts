@@ -6,7 +6,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Material, Surface } from './surface/index.ts';
-import type { Point2 } from './world/road.ts';
 import { EYE_HEIGHT } from './person/person.ts';
 import { type Дом, ДВЕРЬ, ОКНО, ЭТАЖ, осиПроёма } from './city/дом.ts';
 import type { Площадка, Плита } from './city/площадка.ts';
@@ -187,8 +186,11 @@ export interface Viewer {
   setSurface(surface: Surface): void;
   setGhost(mesh: { positions: Float32Array; indices: Uint32Array } | null): void;
   setBuilding(on: boolean): void;
-  /** Куда на земле указывает курсор. null — мимо земли. */
-  pick(event: PointerEvent | MouseEvent): Point2 | null;
+  /**
+   * Луч из глаза через курсор. Где он встречает землю, решает сама земля
+   * (`GroundIndex.луч`): она у main, та же, что под колесом.
+   */
+  луч(event: PointerEvent | MouseEvent): { o: THREE.Vector3; d: THREE.Vector3 };
   /** Обратное: где место мира оказывается на экране. */
   project(x: number, z: number): { x: number; y: number };
   /** Показать рёбра треугольников: видно, из чего на самом деле сделан мир. */
@@ -1643,13 +1645,12 @@ export function show(
         y: rect.top + ((1 - point.y) / 2) * rect.height,
       };
     },
-    pick(event) {
+    луч(event) {
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObject(ground, false)[0];
-      return hit ? { x: hit.point.x, z: hit.point.z } : null;
+      return { o: raycaster.ray.origin, d: raycaster.ray.direction };
     },
   };
 }
