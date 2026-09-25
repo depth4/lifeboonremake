@@ -319,6 +319,18 @@ export interface Трава {
 /** Сторона окна поля, м, и насколько камера может от его середины отойти. */
 const ОКНО = 176;
 const ОТХОД = 32;
+/** Число в половинную точность — быстро, через биты, с округлением до ближайшего. */
+const битыЧисла = new Float32Array(1), биты = new Uint32Array(битыЧисла.buffer);
+function вПоловину(x: number): number {
+  битыЧисла[0] = x;
+  const b = биты[0];
+  const знак = (b >>> 16) & 0x8000, порядок = ((b >>> 23) & 0xff) - 112, мантисса = b & 0x7fffff;
+  if (порядок <= 0) return знак;
+  if (порядок >= 31) return знак | 0x7c00;
+  // перенос из мантиссы в порядок при округлении — законный: так и растёт число
+  return знак | ((порядок << 10) + ((мантисса + 0x1000) >>> 13));
+}
+
 /** Сколько миллисекунд кадра отдаётся на постройку следующего поля травы. */
 const БЮДЖЕТ_ПОЛЯ = 2.5;
 
@@ -379,7 +391,7 @@ export function создатьТраву(сцена: THREE.Scene, солнце: 
   let поле: Поле | null = null;
   let серединаX = Infinity, серединаZ = Infinity;
   /** Поле, которое строится про запас, пока показывается старое. */
-  let стройка: { ход: Iterator<void, Поле, void>; x: number; z: number } | null = null;
+  let стройка: { ход: Iterator<void, Упаковка, void>; x: number; z: number } | null = null;
   const плитки = new Map<string, { меш: THREE.Mesh; даль: boolean }>();
   let цена: ЦенаТравы = { вариант: '', плиток: 0, травинок: 0, живых: 0, вершин: 0, примято: 0 };
   const зрение = new THREE.Frustum();
@@ -391,20 +403,43 @@ export function создатьТраву(сцена: THREE.Scene, солнце: 
     плитки.clear();
   };
 
-  const поставитьПоле = (п: Поле): void => {
-    поле = п;
-    uniforms.uHeights.value?.dispose();
-    uniforms.uMask.value?.dispose();
+  /** Поле, упакованное для видеокарты: высоты в половинной точности, маска байтами. */
+  interface Упаковка { п: Поле; h: Uint16Array; m: Uint8Array; опора: number }
+
+  /**
+   * Построить поле И упаковать его — порциями. Упаковка тоже не бесплатна:
+   * полмиллиона высот в половинную точность за раз — 30–60 мс, и 25.09 замер
+   * (`tools/рывки.mjs`) нашёл рывок именно здесь, когда само поле уже
+   * строилось порциями.
+   */
+  function* собратьПоле(ход: Iterator<void, Поле, void>): Generator<void, Упаковка, void> {
+    let r = ход.next();
+    while (!r.done) { yield; r = ход.next(); }
+    const п = r.value;
     const cx = п.nx + 1, cz = п.nz + 1;
     // высоты — от середины окна: половинной точности хватает на ±30 м вокруг неё
     const опора = п.высоты[Math.floor(cz / 2) * cx + Math.floor(cx / 2)];
     const h = new Uint16Array(cx * cz);
-    for (let k = 0; k < h.length; k++) h[k] = THREE.DataUtils.toHalfFloat(п.высоты[k] - опора);
+    for (let k = 0; k < h.length; k++) {
+      h[k] = вПоловину(п.высоты[k] - опора);
+      if ((k & 32767) === 32767) yield;
+    }
+    const m = new Uint8Array(п.nx * п.nz);
+    for (let k = 0; k < m.length; k++) {
+      m[k] = п.растёт[k] * 255;
+      if ((k & 131071) === 131071) yield;
+    }
+    return { п, h, m, опора };
+  }
+
+  const поставитьПоле = ({ п, h, m, опора }: Упаковка): void => {
+    поле = п;
+    uniforms.uHeights.value?.dispose();
+    uniforms.uMask.value?.dispose();
+    const cx = п.nx + 1, cz = п.nz + 1;
     const ht = new THREE.DataTexture(h, cx, cz, THREE.RedFormat, THREE.HalfFloatType);
     ht.magFilter = ht.minFilter = THREE.LinearFilter;
     ht.needsUpdate = true;
-    const m = new Uint8Array(п.nx * п.nz);
-    for (let k = 0; k < m.length; k++) m[k] = п.растёт[k] * 255;
     const mt = new THREE.DataTexture(m, п.nx, п.nz, THREE.RedFormat, THREE.UnsignedByteType);
     mt.magFilter = mt.minFilter = THREE.NearestFilter;
     mt.needsUpdate = true;
@@ -519,7 +554,7 @@ export function создатьТраву(сцена: THREE.Scene, солнце: 
       if (стройка === null && (поле === null || отошли > ОТХОД / 2)) {
         const x0 = Math.floor((cx - ОКНО / 2) / КЛЕТКА) * КЛЕТКА;
         const z0 = Math.floor((cz - ОКНО / 2) / КЛЕТКА) * КЛЕТКА;
-        стройка = { ход: строить({ x0, z0, ширина: ОКНО, глубина: ОКНО }), x: cx, z: cz };
+        стройка = { ход: собратьПоле(строить({ x0, z0, ширина: ОКНО, глубина: ОКНО })), x: cx, z: cz };
       }
       if (стройка !== null) {
         const срочно = поле === null || отошли > ОКНО / 2 - 24;

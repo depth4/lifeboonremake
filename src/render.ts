@@ -772,16 +772,29 @@ export function show(
    * Сколько миллисекунд кадра съела зелень и рамы — по кадрам, для замера
    * рывков (`__работаЗелени`). Рывок — это не средний кадр, а самый долгий.
    */
-  const работаЗелени: number[] = [];
+  const работаЗелени: { трава: number; деревья: number; рамы: number }[] = [];
   const кадрТравы = (): void => {
-    const начало = performance.now();
+    const t0 = performance.now();
     трава.кадр(camera, времяТравы);
+    const t1 = performance.now();
     деревья.кадр(camera);
+    const t2 = performance.now();
     рамыРядом();
-    работаЗелени.push(performance.now() - начало);
+    работаЗелени.push({ трава: t1 - t0, деревья: t2 - t1, рамы: performance.now() - t2 });
     if (работаЗелени.length > 600) работаЗелени.shift();
   };
-  const рисовать = (): void => { кадрТравы(); if (стиль) стиль(); else renderer.render(scene, camera); };
+  /**
+   * `?кадр=нет` — для замера рывков (`tools/рывки.mjs`): всё, что зелень
+   * считает на процессоре, считается, а сама картинка не рисуется.
+   * Программный отрисовщик контейнера тратит на кадр города секунды,
+   * а мерить надо не их.
+   */
+  const безКадра = new URLSearchParams(location.search).get('кадр') === 'нет';
+  const рисовать = (): void => {
+    кадрТравы();
+    if (безКадра) return;
+    if (стиль) стиль(); else renderer.render(scene, camera);
+  };
 
   let flight: { from: THREE.Vector3; to: THREE.Vector3; look: THREE.Vector3; at: THREE.Vector3; fog: number; t: number } | null = null;
 
@@ -941,7 +954,7 @@ export function show(
   };
   (window as unknown as { __примять?: (ax: number, az: number, bx: number, bz: number, r: number, вдоль: boolean) => void })
     .__примять = (ax, az, bx, bz, r, вдоль) => трава.примятость.примять(ax, az, bx, bz, r, вдоль);
-  (window as unknown as { __работаЗелени?: () => number[] }).__работаЗелени = () => работаЗелени.splice(0);
+  (window as unknown as { __работаЗелени?: () => unknown[] }).__работаЗелени = () => работаЗелени.splice(0);
   (window as unknown as { __стоимостьКадра?: () => unknown }).__стоимостьКадра = () => ({
     вызовов: renderer.info.render.calls,
     треугольников: renderer.info.render.triangles,
