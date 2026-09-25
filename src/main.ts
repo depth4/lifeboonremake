@@ -2,7 +2,12 @@
 
 import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
-import { гдеПроём, домНаУчастке } from './city/дом.ts';
+import { ЦОКОЛЬ_ШИРЕ, гдеПроём, домНаУчастке } from './city/дом.ts';
+import {
+  type Форма, type Твердь, ПУСТО, СТУПЕНЬ, коробка, круг, пройти, собратьТвердь, упереть, формыВещи,
+} from './city/твердь.ts';
+import { частиВещи } from './модели.ts';
+import { ВИДЫ, КУСТЫ } from './растения/дерево.ts';
 import { ЗАПАС_ДЕРЕВА, деревьяДворов, деревьяУлиц, кустыДворов } from './city/зелень.ts';
 import { полеПоШагам, полеТравы } from './растения/поле.ts';
 import { ПОРЯДОК as ТРАВЫ } from './растения/показ.ts';
@@ -22,9 +27,11 @@ import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.t
 import { createDriver } from './car/controls.ts';
 import { createAim } from './aim.ts';
 import {
-  type Person, createPerson, eyes as eyesOf, look, step as stepPerson,
+  type Person, ПЛЕЧИ, createPerson, eyes as eyesOf, look, step as stepPerson,
 } from './person/person.ts';
-import { type Mover, type Network, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf } from './city/traffic.ts';
+import {
+  type Mover, type Network, LENGTH, WIDE, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf,
+} from './city/traffic.ts';
 import { КВАРТАЛ } from './city/norms.ts';
 import { judge, newWatchdog, tally } from './city/offence.ts';
 import { laneAcross } from './city/lanes.ts';
@@ -178,14 +185,36 @@ const canvas = document.querySelector('canvas');
  * ни размера. Всё это — свойства объекта, и живут они в `city/дом.ts`.
  * Склейка только спрашивает высоту земли и отдаёт готовое показу.
  */
+/**
+ * ТВЕРДЬ ГОРОДА — из того же, что нарисовано (`city/твердь.ts`). Каждый
+ * кусок собирается там же, где его отдают показу, и из того же массива:
+ * дома и крыльца — в застройке, стволы и вещи двора — в зелени, столбы —
+ * там, где ставят знаки. Отдельного списка преград нет.
+ */
+const твёрдое: { дома: Форма[]; зелень: Форма[]; столбы: Форма[] } = { дома: [], зелень: [], столбы: [] };
+let твердь: Твердь = ПУСТО;
+const пересобратьТвердь = (): void => {
+  твердь = собратьТвердь([...твёрдое.дома, ...твёрдое.зелень, ...твёрдое.столбы]);
+};
+/** Столб знака и светофора в плане, м (радиус). */
+const СТОЛБ = 0.07;
+/** Сколько чего твёрдо — проверкам из терминала. */
+(window as unknown as { __твердь?: () => unknown }).__твердь = () => ({
+  форм: твердь.формы.length, домов: твёрдое.дома.length, зелени: твёрдое.зелень.length, столбов: твёрдое.столбы.length,
+});
+
 function застройка(): void {
   const посёлок = посёлокСцены(sceneName);
-  if (посёлок === null || !viewer) { viewer?.setBuildings([]); viewer?.setКрыльца([]); return; }
+  if (посёлок === null || !viewer) {
+    viewer?.setBuildings([]); viewer?.setКрыльца([]);
+    твёрдое.дома = []; пересобратьТвердь();
+    return;
+  }
   // объекты, а не участки: школа на четырёх участках — ОДНО здание
   const земля = (x: number, z: number): number => ground.sample(x, z).height;
   const наГазоне = (x: number, z: number): boolean => ground.sample(x, z).material === 'grass';
   const плиты: Плита[] = [];
-  viewer.setBuildings(посёлок.объекты.map((о) => {
+  const дома = посёлок.объекты.map((о) => {
     const дом = домНаУчастке(о, посёлок.вид, посёлок.сид);
     /**
      * Дом спрашивает землю ПОД ВСЕМ СВОИМ СЛЕДОМ, а не в одной точке своей
@@ -200,8 +229,15 @@ function застройка(): void {
       плиты.push(...крыльцо(гдеПроём(дом, п), площадка.пол, земля, наГазоне));
     }
     return { дом, площадка };
-  }));
+  });
+  viewer.setBuildings(дома);
   viewer.setКрыльца(плиты);
+  // твёрдо то же, что нарисовано: дом по цоколю, крыльцо — там, где оно выше ступени
+  твёрдое.дома = [
+    ...дома.map(({ дом: д }) => коробка(д.x, д.z, д.курс, д.глубина + ЦОКОЛЬ_ШИРЕ, д.ширина + ЦОКОЛЬ_ШИРЕ)),
+    ...плиты.filter((п) => п.верх - п.низ > СТУПЕНЬ).map((п) => коробка(п.x, п.z, п.курс, п.длина, п.ширина)),
+  ];
+  пересобратьТвердь();
 }
 
 /**
@@ -215,6 +251,7 @@ function зеленьСцены(): void {
   const посёлок = посёлокСцены(sceneName);
   if (посёлок === null || !viewer) {
     viewer?.setTrees([]); viewer?.setPaths([]); viewer?.setВещи([]); viewer?.setРазметка([]);
+    твёрдое.зелень = []; пересобратьТвердь();
     // рукотворная сцена: на земле ничего не стоит, трава растёт на всём газоне
     viewer?.трава().источник((окно) => полеПоШагам(surface, null, окно));
     return;
@@ -283,9 +320,20 @@ function зеленьСцены(): void {
   const дворовые = деревьяДворов(н, посёлок.кварталы, посёлок.сид, (x, z) => ground.sample(x, z).material);
   // кусты — после деревьев: куст не растёт вплотную к стволу
   const кусты = кустыДворов(н, посёлок.сид, (x, z) => ground.sample(x, z).material, [...деревья, ...дворовые]);
-  viewer.setTrees([...деревья, ...дворовые, ...кусты].map((дерево) => ({
+  const посадки = [...деревья, ...дворовые, ...кусты];
+  viewer.setTrees(посадки.map((дерево) => ({
     дерево, низ: ground.sample(дерево.x, дерево.z).height,
   })));
+  /**
+   * Твёрдо: ствол дерева (порода и масштаб — те же, что у нарисованного)
+   * и каждая вещь двора своими частями. Куст мягкий: машина его продавливает,
+   * пешеход раздвигает ветки.
+   */
+  твёрдое.зелень = [
+    ...посадки.filter((д) => !КУСТЫ.includes(д.вид)).map((д) => круг(д.x, д.z, (ВИДЫ[д.вид].толщина / 2) * д.масштаб)),
+    ...н.вещи.flatMap((в) => формыВещи(частиВещи(в.что), в)),
+  ];
+  пересобратьТвердь();
 }
 
 function rebuild(): void {
@@ -309,6 +357,7 @@ function rebuild(): void {
   // дороги стали другими — знаки тоже: старые относились к прежним улицам
   signsShown = false;
   viewer?.setSigns([]);
+  твёрдое.столбы = [];
   // застройка ставится после того, как заведена опора: дом стоит НА земле,
   // и её высоту надо у кого-то спросить
   if (опораГотова) { застройка(); зеленьСцены(); }
@@ -829,6 +878,10 @@ drivePanel();
 
 /** Шаг физики. Не связан с кадрами: на слабой машине счёт тот же. */
 const PHYSICS_STEP = 1 / 300;
+/** Кузов в плане — им машина упирается в твердь. */
+const ГАБАРИТ = { длина: VIPER.length, ширина: VIPER.width };
+/** Чужие машины рядом с пешеходом в этом кадре: подвижная твердь. */
+const машиныРядом: Форма[] = [];
 let bank = 0;
 
 /**
@@ -958,7 +1011,7 @@ viewer.onFrame((dt) => {
      */
     if (!signsShown) {
       signsShown = true;
-      viewer.setSigns(network.signs.all.map((sg) => {
+      const знаки = network.signs.all.map((sg) => {
         const at = along(world, sg.shape, sg.s);
         const side = world.shapes[sg.shape].outerHalf + 0.8;
         const fx = at.fx * sg.dir, fz = at.fz * sg.dir;
@@ -968,7 +1021,11 @@ viewer.onFrame((dt) => {
           yaw: Math.atan2(fz, fx) + Math.PI,
           kind: sg.kind, value: sg.value,
         };
-      }));
+      });
+      viewer.setSigns(знаки);
+      // столбы знаков и светофоров твёрдые — в тех же местах, где нарисованы
+      твёрдое.столбы = [...знаки, ...lamps].map((с) => круг(с.x, с.z, СТОЛБ));
+      пересобратьТвердь();
     }
     // ── ПДД для игрока: те же правила, которыми живёт трафик
     if (driving && car !== null) {
@@ -976,8 +1033,13 @@ viewer.onFrame((dt) => {
         x: car.x, z: car.z, yaw: car.yaw, speed: forwardSpeed(car),
       }, cityTime, walkers);
     }
+    машиныРядом.length = 0;
     viewer.setTraffic(traffic.map((m) => {
       const pose = poseOf(world, network, m);
+      // чужая машина твёрдая для пешехода — в той же позе, в какой нарисована
+      if (walker !== null && Math.hypot(pose.x - walker.x, pose.z - walker.z) < 8) {
+        машиныРядом.push(коробка(pose.x, pose.z, m.yaw, LENGTH, 2 * WIDE));
+      }
       const lights = signalsOf(world, network, m, cityTime);
       return {
         x: pose.x, y: ground.sample(pose.x, pose.z).height, z: pose.z, yaw: m.yaw, colour: m.colour,
@@ -991,7 +1053,12 @@ viewer.onFrame((dt) => {
       side: (afootKeys.has('KeyD') ? 1 : 0) - (afootKeys.has('KeyA') ? 1 : 0),
       run: afootKeys.has('ShiftLeft') || afootKeys.has('ShiftRight'),
     };
-    stepPerson(walker, ground, wish, Math.min(dt, 0.1));
+    if (traffic.length === 0) машиныРядом.length = 0;
+    // своя машина, брошенная у тротуара, тоже твёрдая
+    const своя = car === null ? [] : [коробка(car.x, car.z, car.yaw, VIPER.length, VIPER.width)];
+    stepPerson(walker, ground, wish, Math.min(dt, 0.1), {
+      упор: (x0, z0, x1, z1) => пройти(твердь, x0, z0, x1, z1, ПЛЕЧИ, [...машиныРядом, ...своя]),
+    });
     // нога раздвигает траву в стороны и немного по ходу
     if (следНог !== null) примятость.примять(следНог.x, следНог.z, walker.x, walker.z, 0.3, false);
     следНог = { x: walker.x, z: walker.z };
@@ -1011,6 +1078,8 @@ viewer.onFrame((dt) => {
     // перед последним шагом этого кадра — запомнить, откуда он шагнул
     if (bank < 2 * PHYSICS_STEP) позаДо = позаМашины(car);
     step(car, VIPER, P_ZERO, (x, z) => ground.sample(x, z), controls, PHYSICS_STEP);
+    // твердь — на КАЖДОМ шаге физики: раз в кадр машина успевала зайти в стену на 14 см
+    упереть(твердь, car, ГАБАРИТ, VIPER.mass, VIPER.yawInertia);
     bank -= PHYSICS_STEP;
     simTime += PHYSICS_STEP;
   }

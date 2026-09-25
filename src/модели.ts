@@ -16,7 +16,7 @@
 import * as THREE from 'three';
 import type { ЧтоВоДворе } from './city/двор.ts';
 
-interface Часть {
+export interface Часть {
   readonly форма: 'коробка' | 'цилиндр';
   /** Середина части. */
   readonly x: number; readonly y: number; readonly z: number;
@@ -197,12 +197,18 @@ const СОСТАВ: Record<ЧтоВоДворе, () => Часть[]> = {
   площадка, горка, качели, лавка, баки, песочница, карусель, коробка, беседка, стол, сушилка, клумба, турник,
 };
 
+/**
+ * Из каких частей вещь. Тот же список, из которого собирается её сетка,
+ * отдаётся и тверди (`city/твердь.ts`): твёрдо ровно то, что нарисовано.
+ */
+export const частиВещи = (что: ЧтоВоДворе): readonly Часть[] => СОСТАВ[что]();
+
 /** Собрать вещь в одну сетку с цветами вершин: одна вещь вида — один экземпляр пачки. */
 export function модельВещи(что: ЧтоВоДворе): THREE.BufferGeometry {
   const поз: number[] = [], норм: number[] = [], цвет: number[] = [];
   const с = new THREE.Color();
   const м = new THREE.Matrix4(), кв = new THREE.Quaternion(), эйлер = new THREE.Euler();
-  for (const ч of СОСТАВ[что]()) {
+  for (const ч of частиВещи(что)) {
     const g0 = ч.форма === 'коробка' ? new THREE.BoxGeometry(ч.sx, ч.sy, ч.sz) : new THREE.CylinderGeometry(ч.sx / 2, ч.sx / 2, ч.sy, 10);
     const g = g0.toNonIndexed();
     g0.dispose();

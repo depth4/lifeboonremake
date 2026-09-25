@@ -22,6 +22,9 @@
  */
 
 /** Опора под ногами: столько же, сколько знает колесо машины. */
+/** Человек в плане — круг такого радиуса, м: плечи. Им он упирается в твердь. */
+export const ПЛЕЧИ = 0.3;
+
 export interface Footing {
   sample(x: number, z: number): { height: number; nx: number; ny: number; nz: number };
 }
@@ -193,8 +196,13 @@ export function eyes(person: Person): {
 
 export function step(
   person: Person, ground: Footing, wish: Wish, dt: number,
-  /** `neck: false` — снять предел шеи. Заведомо сломанный вариант для проверки. */
-  options: { neck?: boolean } = {},
+  /**
+   * `neck: false` — снять предел шеи. Заведомо сломанный вариант для проверки.
+   * `упор` — куда удалось дойти из точки в точку. Человек не знает, что такое
+   * стена: стены — это город (`city/твердь.ts`), а он на своих двоих. Поэтому
+   * правило «если дом, то…» здесь написать негде.
+   */
+  options: { neck?: boolean; упор?: (x0: number, z0: number, x1: number, z1: number) => { x: number; z: number } } = {},
 ): void {
   const limit = options.neck === false ? Math.PI : NECK;
   const headWas = person.body + person.neck;
@@ -260,8 +268,18 @@ export function step(
   person.vx += clamp(wx - person.vx, -rate, rate);
   person.vz += clamp(wz - person.vz, -rate, rate);
 
+  const x0 = person.x, z0 = person.z;
   person.x += person.vx * dt;
   person.z += person.vz * dt;
+  if (options.упор && dt > 0) {
+    const дошёл = options.упор(x0, z0, person.x, person.z);
+    person.x = дошёл.x;
+    person.z = дошёл.z;
+    // скорость — из пройденного, а не из задуманного: упёрся в стену —
+    // перестал в неё разгоняться, вдоль неё идёт как шёл
+    person.vx = (person.x - x0) / dt;
+    person.vz = (person.z - z0) / dt;
+  }
   person.ground = ground.sample(person.x, person.z).height;
   /**
    * Ноги гасят ступеньку. Бордюр — это 15 см за один кадр; если посадить

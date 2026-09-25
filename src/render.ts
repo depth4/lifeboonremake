@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Material, Surface } from './surface/index.ts';
 import { EYE_HEIGHT } from './person/person.ts';
-import { type Дом, ДВЕРЬ, ОКНО, ЭТАЖ, осиПроёма } from './city/дом.ts';
+import { type Дом, ДВЕРЬ, ОКНО, ЦОКОЛЬ_ШИРЕ, ЭТАЖ, осиПроёма } from './city/дом.ts';
 import type { Площадка, Плита } from './city/площадка.ts';
 import type { Посадочное } from './city/зелень.ts';
 import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from './city/двор.ts';
@@ -1481,8 +1481,8 @@ export function show(
       дома.forEach(({ дом: д, площадка: пл }, i) => {
         // цоколь: чуть шире стен и темнее. Высота его — не постоянная,
         // а ровно то, что земля под домом требует взять на себя
-        часть(цоколь, i, д, пл.подошва, 0, 0, 0, д.глубина + 0.36, пл.цоколь,
-          д.ширина + 0.36, 0, тон.setHex(д.цвет).multiplyScalar(0.55).getHex());
+        часть(цоколь, i, д, пл.подошва, 0, 0, 0, д.глубина + ЦОКОЛЬ_ШИРЕ, пл.цоколь,
+          д.ширина + ЦОКОЛЬ_ШИРЕ, 0, тон.setHex(д.цвет).multiplyScalar(0.55).getHex());
         часть(стены, i, д, пл.пол, 0, 0, 0, д.глубина, д.высота, д.ширина, 0, д.цвет);
 
         if (д.крыша === 'скатная') {

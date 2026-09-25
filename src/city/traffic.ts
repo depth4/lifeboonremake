@@ -22,6 +22,7 @@ import { type Signal, buildSignals, junctionReach, lightFor, stopLine } from './
 import { type Lanes, buildLanes, laneAcross, laneAt, laneCount } from './lanes.ts';
 import { type Маршрут, дальше } from './путь.ts';
 import { type Signs, buildSigns, priorityOf } from './signs.ts';
+import { ОТСКОК } from './твердь.ts';
 
 const G = 9.80665;
 /** С какой боковой перегрузкой ездит обычный водитель. */
@@ -1214,10 +1215,10 @@ const CAR_MASS = 1500;
 /** Её момент инерции вокруг вертикали, кг·м². */
 const CAR_SPIN = CAR_MASS * 1.2 * 1.2;
 /**
- * Упругость удара кузова о кузов. Почти вся энергия уходит в мятое железо,
- * поэтому машины не отскакивают друг от друга, как бильярдные шары.
+ * Упругость удара кузова о кузов — та же, что о стену (`ОТСКОК`): почти вся
+ * энергия уходит в мятое железо, машины не отскакивают, как бильярдные шары.
  */
-const BOUNCE = 0.12;
+const BOUNCE = ОТСКОК;
 /** С каким замедлением скользит сбитая машина: колёса поперёк, м/с². */
 const SLIDE = 0.8 * G;
 
