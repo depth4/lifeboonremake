@@ -270,10 +270,28 @@ export function кустыДворов(
   деревья: readonly { x: number; z: number }[],
   как: { где?: 'не спрашивая' } = {},
 ): Куст[] {
+  /**
+   * Стволы — по клеткам в ОТ_ДЕРЕВА: куст спрашивает только соседние клетки.
+   * 25.09 каждый куст перебирал все 4500 деревьев «большого города» — 2.8 с загрузки.
+   */
+  const стволы = new Map<string, { x: number; z: number }[]>();
+  const ключ = (i: number, j: number): string => `${i},${j}`;
+  for (const д of деревья) {
+    const к = ключ(Math.floor(д.x / ОТ_ДЕРЕВА), Math.floor(д.z / ОТ_ДЕРЕВА));
+    const был = стволы.get(к);
+    if (был) был.push(д); else стволы.set(к, [д]);
+  }
+  const уСтвола = (x: number, z: number): boolean => {
+    const i = Math.floor(x / ОТ_ДЕРЕВА), j = Math.floor(z / ОТ_ДЕРЕВА);
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      for (const д of стволы.get(ключ(i + di, j + dj)) ?? []) if (Math.hypot(д.x - x, д.z - z) <= ОТ_ДЕРЕВА) return true;
+    }
+    return false;
+  };
   const можно = (x: number, z: number): boolean => как.где === 'не спрашивая' || (
     покрытие(x, z) === 'grass'
     && !занято(н, x, z, ЗАПАС_КУСТА)
-    && деревья.every((д) => Math.hypot(д.x - x, д.z - z) > ОТ_ДЕРЕВА));
+    && !уСтвола(x, z));
   const кусты: Куст[] = [];
   const посадить = (x: number, z: number, вид: Вид, зерно: number): void => {
     if (!можно(x, z)) return;
