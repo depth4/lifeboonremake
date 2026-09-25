@@ -40,14 +40,29 @@ const facts = async () => page.evaluate(() => {
   };
 });
 
-const screenOf = (x, z) => page.evaluate(([x, z]) => window.__project(x, z), [x, z]);
+/**
+ * Где место мира на экране — и что там лежит СВЕРХУ. Точка под панелью
+ * кнопок — не клик по земле: до 25.09 случай «пересечь сразу две дороги»
+ * начинал дорогу в (−100, −100), а там на экране кнопка «треугольник».
+ * Вместо точки дороги включалась трава, 448 тысяч травинок, кадр в контейнере
+ * рисовался 18 секунд — и следующий случай не дожидался загрузки страницы.
+ * Инструмент при этом писал ✓: дорога всё равно достраивалась из остальных
+ * точек. Теперь такой случай проваливается и говорит, какая точка под чем.
+ */
+const screenOf = (x, z) => page.evaluate(([x, z]) => {
+  const at = window.__project(x, z);
+  const сверху = document.elementFromPoint(at.x, at.y);
+  return { ...at, подЧем: сверху?.tagName === 'CANVAS' ? null : (сверху?.textContent?.trim().slice(0, 30) || сверху?.tagName || 'за краем экрана') };
+}, [x, z]);
 
 /** Провести дорогу по точкам мира. Возвращает, был ли отказ и где привязалось. */
 async function draw(points, { drag = false } = {}) {
   const snaps = [];
+  const подПанелью = [];
   let refused = false;
   for (const [i, p] of points.entries()) {
     const at = await screenOf(p.x, p.z);
+    if (at.подЧем !== null) { подПанелью.push(`(${p.x}, ${p.z}) под «${at.подЧем}»`); continue; }
     await page.mouse.move(at.x, at.y);
     await page.waitForTimeout(50);
     const before = await facts();
@@ -69,14 +84,15 @@ async function draw(points, { drag = false } = {}) {
   await page.waitForTimeout(250);
   const after = await facts();
   refused = after.refused;
-  return { snaps, refused, ...after };
+  return { snaps, refused, подПанелью, ...after };
 }
 
 const CASES = [
   {
     name: 'вести дорогу в бок существующей',
     scene: 'крест',
-    path: [{ x: -70, z: -80 }, { x: -40, z: -55 }, { x: -8, z: -34 }, { x: -2, z: -8 }],
+    // по нижнюю сторону креста: по верхнюю точки ложились под кнопку «трафик»
+    path: [{ x: -70, z: 80 }, { x: -40, z: 55 }, { x: -8, z: 34 }, { x: -2, z: 8 }],
   },
   {
     name: 'вести дорогу прямо в перекрёсток',
@@ -91,7 +107,8 @@ const CASES = [
   {
     name: 'пересечь сразу две дороги',
     scene: 'решётка',
-    path: [{ x: -100, z: -100 }, { x: -20, z: -20 }, { x: 60, z: 60 }, { x: 104, z: 104 }],
+    // поперёк обеих продольных улиц решётки; по диагонали угол уходил под панель травы
+    path: [{ x: -100, z: 10 }, { x: -20, z: 12 }, { x: 60, z: 8 }, { x: 104, z: 10 }],
   },
   {
     name: 'изогнутая дорога рядом с существующей',
@@ -118,13 +135,14 @@ for (const c of CASES) {
 
   const r = await draw(c.path, { drag: c.drag ?? false });
   const built = r.roads > before.roads;
-  const ok = !r.refused && built;
+  const ok = !r.refused && built && r.подПанелью.length === 0;
   if (!ok) bad++;
   console.log(
     `${ok ? '✓' : '✗'} ${c.name.padEnd(42)} ` +
     `дорог ${before.roads}→${r.roads}, перекрёстков ${before.junctions}→${r.junctions}, ` +
     `${r.ms} мс${r.snaps.length ? `, привязка: ${[...new Set(r.snaps)].join(', ')}` : ''}` +
-    `${r.refused ? '  ОТКАЗ: ' + r.hint : ''}${built ? '' : '  дорога не построилась'}`,
+    `${r.refused ? '  ОТКАЗ: ' + r.hint : ''}${built ? '' : '  дорога не построилась'}`
+    + (r.подПанелью.length ? `  ТОЧКА НЕ НА ЗЕМЛЕ: ${r.подПанелью.join('; ')}` : ''),
   );
   if (c.name.startsWith('вести дорогу в бок')) await page.screenshot({ path: 'shots/построено.png' });
 }
