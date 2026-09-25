@@ -37,9 +37,9 @@ import { judge, newWatchdog, tally } from './city/offence.ts';
 import { laneAcross } from './city/lanes.ts';
 import { lightFor } from './city/signals.ts';
 import { type Walker, moveWalkers, placeWalkers, walkerPose, фазаШага } from './city/walkers.ts';
-import { СЕКУНД_В_ЧАСЕ, type Расселение, расселить } from './city/житель.ts';
+import { СЕКУНД_В_ЧАСЕ, type Зачем, type Расселение, где as гдеЖителя, кто, расселить } from './city/житель.ts';
 import {
-  ЧАС_УТРА, type Снаружи, вывестиНаУлицу, жить, сколькоМашин, сколькоПешеходов,
+  ЧАС_УТРА, type Снаружи, вывестиНаУлицу, гдеЖитель, жить, сколькоМашин, сколькоПешеходов,
 } from './city/жизнь.ts';
 
 const query = new URLSearchParams(location.search);
@@ -753,6 +753,79 @@ aim.onMove((dx, dy) => { if (walker !== null) look(walker, dx, dy, LOOK_TRAVEL);
   if (walker !== null) look(walker, (degrees * Math.PI) / 180 * LOOK_TRAVEL, 0, LOOK_TRAVEL);
 };
 addEventListener('keydown', (e) => { if (walker !== null) afootKeys.add(e.code); });
+
+/**
+ * ─── СЛЕЖКА ЗА ЖИТЕЛЕМ ───
+ * `?следить=798` или клавиша F рядом с человеком: камера идёт за ним,
+ * а панель показывает его день — из того же распорядка, по которому он
+ * живёт (второго описания нет). F ещё раз — перестать.
+ */
+const следитьИзАдреса = query.get('следить');
+let следим: number | null = следитьИзАдреса !== null && Number.isFinite(Number(следитьИзАдреса))
+  ? Number(следитьИзАдреса) : null;
+const панельСлежки = document.createElement('div');
+панельСлежки.id = 'слежка';
+панельСлежки.style.cssText = 'position:fixed;left:16px;bottom:96px;max-width:340px;padding:10px 13px;'
+  + 'background:var(--panel);border:1px solid var(--edge);border-radius:3px;color:var(--text);'
+  + 'font:12px/1.5 var(--mono);white-space:pre;display:none;pointer-events:none;z-index:5';
+document.body.append(панельСлежки);
+let панельДо = 0;
+
+const ЗАЧЕМ: Record<Зачем, string> = {
+  сад: 'в детский сад', школа: 'в школу', работа: 'на работу', магазин: 'в магазин',
+  врач: 'к врачу', двор: 'во двор', прогулка: 'погулять', дом: 'домой',
+};
+const КТО: Record<string, string> = { сад: 'дошкольник', школа: 'школьник', работа: 'работает', дома: 'пенсионер' };
+const чч = (час: number): string => {
+  const м = Math.round((((час % 24) + 24) % 24) * 60);
+  return `${String(Math.floor(м / 60) % 24).padStart(2, '0')}:${String(м % 60).padStart(2, '0')}`;
+};
+const здание = (объект: number): string => {
+  if (объект === -1) return 'за городом';
+  const о = посёлокСцены(sceneName)?.объекты[объект];
+  return о === undefined ? `объект ${объект}` : `${о.что === 'жильё' ? 'дом' : о.что} №${объект}`;
+};
+
+/** Текст панели: кто он и его день, текущая дорога отмечена. */
+function деньСловами(номер: number, час: number, точка: ReturnType<typeof гдеЖитель>): string {
+  if (жизнь === null) return '';
+  const ж = кто(жизнь, номер);
+  const м = гдеЖителя(ж, час % 24);
+  const сейчас = м.где === 'в пути' ? `идёт ${ЗАЧЕМ[м.зачем]}${м.наМашине ? ' (за рулём)' : ''}`
+    : м.где === 'на месте' ? `внутри: ${здание(м.объект)}`
+      : м.где === 'во дворе' ? 'во дворе у своего дома'
+        : м.где === 'за городом' ? 'за городом' : 'дома';
+  const строки = [
+    `Житель №${номер} · ${КТО[ж.занятие] ?? ж.занятие}${ж.заРулём ? ' · есть машина' : ''}`,
+    `живёт: ${здание(ж.дом)}`,
+    `сейчас ${чч(час)}: ${сейчас}${точка.как === 'внутри' || точка.как === 'во дворе' ? ' — ждём у входа' : ''}`,
+    '',
+    ...ж.день.map((д, i) => `${м.где === 'в пути' && м.i === i ? '▶' : ' '} ${чч(д.выход)}–${чч(д.приход)}  ${ЗАЧЕМ[д.зачем]}`
+      + `${д.зачем === 'дом' || д.зачем === 'двор' || д.зачем === 'прогулка' ? '' : ` (${здание(д.куда)})`}${д.наМашине ? ', машиной' : ''}`),
+  ];
+  return строки.join('\n');
+}
+
+addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyF' || снаружи === null) return;
+  if (следим !== null) { следим = null; viewer.setСлежка(null); панельСлежки.style.display = 'none'; return; }
+  // ближайший к игроку житель на улице — пешком или за рулём, в тридцати метрах
+  const я = walker ?? car;
+  if (я === null) return;
+  let ближе = 30;
+  for (const w of снаружи.пешие) {
+    if (w.житель < 0 || w.state === 'пришёл') continue;
+    const п = walkerPose(world, w);
+    const d = Math.hypot(п.x - я.x, п.z - я.z);
+    if (d < ближе) { ближе = d; следим = w.житель; }
+  }
+  for (const m of снаружи.машины) {
+    if (m.хозяин < 0) continue;
+    const п = poseOf(world, network, m);
+    const d = Math.hypot(п.x - я.x, п.z - я.z);
+    if (d < ближе) { ближе = d; следим = m.хозяин; }
+  }
+});
 addEventListener('keyup', (e) => { afootKeys.delete(e.code); });
 
 const grabWalk = (): void => { aim.take(); };
@@ -1010,6 +1083,15 @@ viewer.onFrame((dt) => {
     // выходы по распорядку — на улицу, пришедшие — в здания
     if (жизнь !== null && снаружи !== null) {
       жить(world, network, жизнь, снаружи, часЖизни());
+      if (следим !== null && следим < жизнь.всего) {
+        const т = гдеЖитель(world, network, жизнь, снаружи, следим, часЖизни());
+        viewer.setСлежка({ x: т.x, y: ground.sample(т.x, т.z).height, z: т.z, yaw: т.yaw });
+        if (cityTime >= панельДо) {
+          панельДо = cityTime + 0.5;
+          панельСлежки.textContent = деньСловами(следим, часЖизни(), т);
+          панельСлежки.style.display = 'block';
+        }
+      }
       // стоянка — только когда поменялась: позы и высота земли раз на изменение
       if (снаружи.стоянка !== отрисованаСтоянка) {
         отрисованаСтоянка = снаружи.стоянка;

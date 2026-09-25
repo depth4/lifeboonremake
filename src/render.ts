@@ -244,6 +244,12 @@ export interface Viewer {
   /** Позвать это каждый кадр: сюда main двигает физику. */
   onFrame(cb: (dt: number) => void): void;
   /**
+   * Слежка за жителем: камера идёт за ним сзади-сверху, как оператор.
+   * `yaw` null — он в здании или во дворе: камера смотрит на вход с того
+   * места, откуда смотрела. null целиком — не следим.
+   */
+  setСлежка(цель: { x: number; y: number; z: number; yaw: number | null } | null): void;
+  /**
    * Стоящие в кармане машины: звать, только когда их список поменялся.
    * Каждый кадр их не перерисовывают — они не двигаются.
    */
@@ -952,6 +958,11 @@ export function show(
   const chaseEye = new THREE.Vector3();
   const chaseAim = new THREE.Vector3();
   let chaseReady = false;
+  let слежка: { x: number; y: number; z: number; yaw: number | null } | null = null;
+  const слежкаГлаз = new THREE.Vector3(), слежкаЦель = new THREE.Vector3();
+  let слежкаГотова = false;
+  /** Откуда камера смотрит на следимого: сзади по его ходу; стоит он — как смотрела. */
+  let слежкаСзади = new THREE.Vector3(-1, 0, 0);
 
   /**
    * Где оказались камера и машина в каждом кадре и когда этот кадр показан, —
@@ -982,6 +993,19 @@ export function show(
   const кадр = (dt: number): void => {
     if (!времяЗадано) времяТравы += dt;
     if (onFrameCb) onFrameCb(dt);
+    if (слежка) {
+      if (слежка.yaw !== null) слежкаСзади = new THREE.Vector3(-Math.cos(слежка.yaw), 0, -Math.sin(слежка.yaw));
+      const глаз = new THREE.Vector3(слежка.x, слежка.y + 2.6, слежка.z).addScaledVector(слежкаСзади, 6.5);
+      const цель = new THREE.Vector3(слежка.x, слежка.y + 1.1, слежка.z);
+      if (!слежкаГотова) { слежкаГлаз.copy(глаз); слежкаЦель.copy(цель); слежкаГотова = true; }
+      слежкаГлаз.lerp(глаз, 1 - Math.exp(-dt * 2.5));
+      слежкаЦель.lerp(цель, 1 - Math.exp(-dt * 6));
+      camera.up.set(0, 1, 0);
+      camera.position.copy(слежкаГлаз);
+      camera.lookAt(слежкаЦель);
+      рисовать();
+      return;
+    }
     if (walkEye) {
       camera.up.set(0, 1, 0);
       camera.position.set(walkEye.x, walkEye.y, walkEye.z);
@@ -1671,6 +1695,10 @@ export function show(
           .addScaledVector(ahead, -6.5).addScaledVector(side, 5.5).add(new THREE.Vector3(0, 3.2, 0));
         controls.update();
       }
+    },
+    setСлежка(цель) {
+      слежка = цель;
+      if (цель === null) слежкаГотова = false;
     },
     onFrame(cb) {
       onFrameCb = cb;
