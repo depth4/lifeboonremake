@@ -830,6 +830,41 @@ drivePanel();
 /** Шаг физики. Не связан с кадрами: на слабой машине счёт тот же. */
 const PHYSICS_STEP = 1 / 300;
 let bank = 0;
+
+/**
+ * ПОЗА МАШИНЫ НА ЭКРАНЕ — между двумя последними шагами физики.
+ *
+ * Физика шагает по 1/300 с, кадр идёт, когда его покажет экран, и в кадр
+ * укладывается то четыре шага, то пять, то шесть. Показывать последний
+ * шаг — значит сдвигать машину за ровный кадр неровно: на 80 км/ч это
+ * ±7 см каждый кадр, дрожь. Показывается поза, где машина была ровно
+ * на время кадра без одного шага: доля пути от предпоследнего шага
+ * к последнему — сколько времени осталось в копилке. Отставание всегда
+ * одно и то же, 3 мс, и потому его не видно (так делают все, кто считает
+ * физику постоянным шагом: Glenn Fiedler, «Fix Your Timestep!»).
+ */
+interface Поза {
+  x: number; y: number; z: number; yaw: number; pitch: number; roll: number;
+  колёса: { x: number; y: number; z: number; steer: number }[];
+}
+const позаМашины = (c: Car): Поза => ({
+  x: c.x, y: c.bodyY, z: c.z, yaw: c.yaw, pitch: c.pitch, roll: c.roll,
+  колёса: c.wheels.map((w) => ({ x: w.x, y: w.y, z: w.z, steer: w.steer })),
+});
+const между = (a: Поза, b: Поза, t: number): Поза => {
+  const m = (p: number, q: number): number => p + (q - p) * t;
+  return {
+    x: m(a.x, b.x), y: m(a.y, b.y), z: m(a.z, b.z),
+    yaw: m(a.yaw, b.yaw), pitch: m(a.pitch, b.pitch), roll: m(a.roll, b.roll),
+    колёса: a.колёса.map((w, i) => ({
+      x: m(w.x, b.колёса[i].x), y: m(w.y, b.колёса[i].y), z: m(w.z, b.колёса[i].z), steer: m(w.steer, b.колёса[i].steer),
+    })),
+  };
+};
+/** Поза перед последним шагом физики. null — машина не считается (стоит без водителя). */
+let позаДо: Поза | null = null;
+/** `?плавно=нет` — показывать последний шаг, как до 25.09: заведомо сломанный вариант `плавность.mjs`. */
+const ПОСЛЕДНИЙ_ШАГ = query.get('плавно') === 'нет';
 /** Сколько секунд насчитала физика. Не то же, что время на часах. */
 let simTime = 0;
 
@@ -971,7 +1006,10 @@ viewer.onFrame((dt) => {
   lastControls = controls;
 
   bank = driving ? Math.min(bank + dt, 0.3) : 0;
+  if (!driving) позаДо = null;
   while (bank >= PHYSICS_STEP) {
+    // перед последним шагом этого кадра — запомнить, откуда он шагнул
+    if (bank < 2 * PHYSICS_STEP) позаДо = позаМашины(car);
     step(car, VIPER, P_ZERO, (x, z) => ground.sample(x, z), controls, PHYSICS_STEP);
     bank -= PHYSICS_STEP;
     simTime += PHYSICS_STEP;
@@ -996,12 +1034,15 @@ viewer.onFrame((dt) => {
     lastCrash = blow.force;
   }
 
+  const сейчас = позаМашины(car);
+  const шины = car.wheels;
+  const видно = позаДо === null || ПОСЛЕДНИЙ_ШАГ ? сейчас : между(позаДо, сейчас, bank / PHYSICS_STEP);
   viewer.setCar({
-    x: car.x, y: car.bodyY, z: car.z,
-    yaw: car.yaw, pitch: car.pitch, roll: car.roll, speed,
-    wheels: car.wheels.map((w, i) => ({
-      x: w.x, y: w.y, z: w.z, steer: w.steer, spin: spinAngle[i],
-      radius: w.radius, width: i < 2 ? VIPER.wheelFront.width : VIPER.wheelRear.width,
+    x: видно.x, y: видно.y, z: видно.z,
+    yaw: видно.yaw, pitch: видно.pitch, roll: видно.roll, speed,
+    wheels: видно.колёса.map((w, i) => ({
+      ...w, spin: spinAngle[i],
+      radius: шины[i].radius, width: i < 2 ? VIPER.wheelFront.width : VIPER.wheelRear.width,
     })),
   });
   // колесо на земле кладёт траву по ходу — полосой шириной с шину

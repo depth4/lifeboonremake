@@ -866,9 +866,33 @@ export function show(
   const chaseAim = new THREE.Vector3();
   let chaseReady = false;
 
+  /**
+   * Где оказались камера и машина в каждом кадре и когда этот кадр показан, —
+   * для `tools/плавность.mjs`. Пишется, только пока проверка попросила.
+   */
+  let следКадров: number[][] | null = null;
+  /**
+   * ВРЕМЯ КАДРА — миг, когда браузер этот кадр покажет: его передаёт сам
+   * requestAnimationFrame, и между показами оно ровное. До 25.09 время
+   * брали часами ВНУТРИ кадра, а до нас в том же кадре браузер успевает
+   * разобрать мышь и события — и кадры, показанные через ровные 16.7 мс,
+   * двигали мир то на 10 мс, то на 23. Замер `tools/плавность.mjs`: машина
+   * за ровный кадр проезжала от 22 до 53 см. Глаз видит это как дрожь,
+   * а счётчик кадров — как стабильные 60.
+   *
+   * `?плавно=нет` — по часам, как было: заведомо сломанный вариант замера.
+   */
+  const поЧасам = new URLSearchParams(location.search).get('плавно') === 'нет';
   const clock = new THREE.Clock();
-  renderer.setAnimationLoop(() => {
-    const dt = Math.min(0.1, clock.getDelta());
+  let прошлыйПоказ: number | null = null;
+  renderer.setAnimationLoop((когда: number) => {
+    const dt = поЧасам ? clock.getDelta() : прошлыйПоказ === null ? 0 : (когда - прошлыйПоказ) / 1000;
+    прошлыйПоказ = когда;
+    кадр(Math.min(0.1, dt));
+    следКадров?.push([когда, camera.position.x, camera.position.y, camera.position.z,
+      carGroup.position.x, carGroup.position.y, carGroup.position.z]);
+  });
+  const кадр = (dt: number): void => {
     if (!времяЗадано) времяТравы += dt;
     if (onFrameCb) onFrameCb(dt);
     if (walkEye) {
@@ -882,7 +906,7 @@ export function show(
       );
       // крен на шаге — последним, поверх взгляда: качается голова, не мир
       camera.rotateZ(walkEye.roll);
-      if (sight && sightOn) { кадрТравы(); sight.render(walkEye.headRate, dt); }
+      if (sight && sightOn && !безКадра) { кадрТравы(); sight.render(walkEye.headRate, dt); }
       else рисовать();
       return;
     }
@@ -928,7 +952,12 @@ export function show(
     }
     controls.update();
     рисовать();
-  });
+  };
+  (window as unknown as { __следКадров?: (писать: boolean) => number[][] }).__следКадров = (писать) => {
+    const было = следКадров ?? [];
+    следКадров = писать ? [] : null;
+    return было;
+  };
 
   /**
    * Чего стоит кадр — проверкам из терминала.
