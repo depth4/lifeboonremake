@@ -768,10 +768,18 @@ export function show(
   let времяТравы = 0;
   /** Съёмка ролика ставит время сама: тогда кадры идут ровно через её шаг. */
   let времяЗадано = false;
+  /**
+   * Сколько миллисекунд кадра съела зелень и рамы — по кадрам, для замера
+   * рывков (`__работаЗелени`). Рывок — это не средний кадр, а самый долгий.
+   */
+  const работаЗелени: number[] = [];
   const кадрТравы = (): void => {
+    const начало = performance.now();
     трава.кадр(camera, времяТравы);
     деревья.кадр(camera);
     рамыРядом();
+    работаЗелени.push(performance.now() - начало);
+    if (работаЗелени.length > 600) работаЗелени.shift();
   };
   const рисовать = (): void => { кадрТравы(); if (стиль) стиль(); else renderer.render(scene, camera); };
 
@@ -933,6 +941,7 @@ export function show(
   };
   (window as unknown as { __примять?: (ax: number, az: number, bx: number, bz: number, r: number, вдоль: boolean) => void })
     .__примять = (ax, az, bx, bz, r, вдоль) => трава.примятость.примять(ax, az, bx, bz, r, вдоль);
+  (window as unknown as { __работаЗелени?: () => number[] }).__работаЗелени = () => работаЗелени.splice(0);
   (window as unknown as { __стоимостьКадра?: () => unknown }).__стоимостьКадра = () => ({
     вызовов: renderer.info.render.calls,
     треугольников: renderer.info.render.triangles,

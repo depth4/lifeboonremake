@@ -30,6 +30,9 @@ import { type НаЗемле, занято } from '../city/двор.ts';
 /** Сторона клетки маски, м. Ширина полоски без травы у бордюра — не больше неё. */
 export const КЛЕТКА = 0.25;
 
+/** Сколько клеток работы между передышками: около миллисекунды. */
+const ПОРЦИЯ = 25000;
+
 /** Травинка растёт вплотную к стене, дорожке и лавке: запаса нет. */
 const ЗАПАС_ТРАВЫ = { дом: 0, подход: 0, вещь: 0 };
 
@@ -59,12 +62,12 @@ export interface Поле {
  * `как.занято: false` — не спрашивать, что стоит на земле: трава
  * прорастает сквозь дорожки и детскую площадку.
  */
-export function полеТравы(
+export function* полеПоШагам(
   поверхность: Surface,
   наЗемле: НаЗемле | null,
   окно: { x0: number; z0: number; ширина: number; глубина: number },
   как: { маска?: 'по центру'; занято?: false } = {},
-): Поле {
+): Generator<void, Поле, void> {
   const nx = Math.max(1, Math.round(окно.ширина / КЛЕТКА));
   const nz = Math.max(1, Math.round(окно.глубина / КЛЕТКА));
   const x0 = окно.x0, z0 = окно.z0;
@@ -79,10 +82,26 @@ export function полеТравы(
    * траве» и значит «клетка целиком в траве».
    */
   const P = поверхность.positions, I = поверхность.indices;
-  const проход = (трава: boolean): void => {
-    for (const g of поверхность.groups) {
-      if ((g.material === 'grass') !== трава) continue;
-      for (let k = g.start; k < g.start + g.count; k += 3) {
+  /**
+   * Только треугольники ОКНА, а не всего города: до 25.09 окно в 176 м
+   * перебирало все 470 тысяч треугольников «большого города» — 21–72 мс
+   * на каждую перестройку, рывок на ходу (Алекс: «рывки при ходьбе
+   * и передвижении»). Указатель по клеткам строится один раз на землю.
+   */
+  const свои = треугольникиОкна(поверхность, x0, z0, x0 + nx * КЛЕТКА, z0 + nz * КЛЕТКА);
+  /**
+   * Передышка — по ОБЪЁМУ сделанного, в клетках, а не по числу треугольников
+   * или вещей: один треугольник газона бывает на десять тысяч клеток, и шаг
+   * «через каждые полторы тысячи треугольников» тянулся до 10 мс.
+   */
+  let работа = 0;
+  const у = указатель(поверхность);
+  const проход = function* (трава: boolean): Generator<void, void, void> {
+    for (const t of свои) {
+      if ((у.трава[t] === 1) !== трава) continue;
+      if (работа > ПОРЦИЯ) { работа = 0; yield; }
+      {
+        const k = t * 3;
         const a = I[k] * 3, b = I[k + 1] * 3, c = I[k + 2] * 3;
         const ax = P[a], az = P[a + 2], bx = P[b], bz = P[b + 2], qx = P[c], qz = P[c + 2];
         const d = (bz - qz) * (ax - qx) + (qx - bx) * (az - qz);
@@ -94,6 +113,9 @@ export function полеТравы(
         const j1 = Math.min(nz, Math.floor((Math.max(az, bz, qz) - z0) / КЛЕТКА));
         for (let j = j0; j <= j1; j++) {
           const z = z0 + j * КЛЕТКА;
+          работа += i1 - i0 + 1;
+          // большой треугольник газона — тысячи клеток: передышка и посреди него
+          if (работа > ПОРЦИЯ) { работа = 0; yield; }
           for (let i = i0; i <= i1; i++) {
             const x = x0 + i * КЛЕТКА;
             const u = ((bz - qz) * (x - qx) + (qx - bx) * (z - qz)) / d;
@@ -108,8 +130,8 @@ export function полеТравы(
       }
     }
   };
-  проход(true);
-  проход(false);
+  yield* проход(true);
+  yield* проход(false);
 
   /**
    * Что стоит на земле — каждую вещь в её собственном ящике. Спрашивается
@@ -120,6 +142,7 @@ export function полеТравы(
     const закрыть = (часть: НаЗемле, мх0: number, мх1: number, мz0: number, мz1: number): void => {
       const i0 = Math.max(0, Math.floor((мх0 - x0) / КЛЕТКА)), i1 = Math.min(nx, Math.ceil((мх1 - x0) / КЛЕТКА));
       const j0 = Math.max(0, Math.floor((мz0 - z0) / КЛЕТКА)), j1 = Math.min(nz, Math.ceil((мz1 - z0) / КЛЕТКА));
+      работа += Math.max(0, (i1 - i0 + 1) * (j1 - j0 + 1)) * 4;
       for (let j = j0; j <= j1; j++)
         for (let i = i0; i <= i1; i++)
           if (угол[j * cx + i] === 1 && занято(часть, x0 + i * КЛЕТКА, z0 + j * КЛЕТКА, ЗАПАС_ТРАВЫ)) угол[j * cx + i] = 2;
@@ -129,23 +152,35 @@ export function полеТравы(
       const c = Math.abs(Math.cos(курс)), s = Math.abs(Math.sin(курс));
       return [(вдоль * c + поперёк * s) / 2, (вдоль * s + поперёк * c) / 2];
     };
+    // вне окна — мимо, не заводя ничего: вещей в городе тысячи, в окне десятки
+    const мимо = (мх0: number, мх1: number, мz0: number, мz1: number): boolean =>
+      мх1 < x0 || мх0 > x0 + nx * КЛЕТКА || мz1 < z0 || мz0 > z0 + nz * КЛЕТКА;
     for (const д of наЗемле.дома) {
       const [hx, hz] = ящик(д.x, д.z, д.курс, д.глубина, д.ширина);
+      if (мимо(д.x - hx, д.x + hx, д.z - hz, д.z + hz)) continue;
       закрыть({ ...пусто, дома: [д] }, д.x - hx, д.x + hx, д.z - hz, д.z + hz);
+      if (работа > ПОРЦИЯ) { работа = 0; yield; }
     }
     for (const п of наЗемле.подходы) {
       const r = п.ширина / 2;
-      закрыть({ ...пусто, подходы: [п] },
-        Math.min(п.отX, п.доX) - r, Math.max(п.отX, п.доX) + r, Math.min(п.отZ, п.доZ) - r, Math.max(п.отZ, п.доZ) + r);
+      const мх0 = Math.min(п.отX, п.доX) - r, мх1 = Math.max(п.отX, п.доX) + r;
+      const мz0 = Math.min(п.отZ, п.доZ) - r, мz1 = Math.max(п.отZ, п.доZ) + r;
+      if (мимо(мх0, мх1, мz0, мz1)) continue;
+      закрыть({ ...пусто, подходы: [п] }, мх0, мх1, мz0, мz1);
+      if (работа > ПОРЦИЯ) { работа = 0; yield; }
     }
     for (const в of наЗемле.вещи) {
       const [hx, hz] = ящик(в.x, в.z, в.курс, в.длина, в.ширина);
+      if (мимо(в.x - hx, в.x + hx, в.z - hz, в.z + hz)) continue;
       закрыть({ ...пусто, вещи: [в] }, в.x - hx, в.x + hx, в.z - hz, в.z + hz);
+      if (работа > ПОРЦИЯ) { работа = 0; yield; }
     }
   }
 
   const растёт = new Uint8Array(nx * nz);
-  for (let j = 0; j < nz; j++)
+  for (let j = 0; j < nz; j++) {
+    работа += nx;
+    if (работа > ПОРЦИЯ) { работа = 0; yield; }
     for (let i = 0; i < nx; i++) {
       const a = угол[j * cx + i], b = угол[j * cx + i + 1];
       const c = угол[(j + 1) * cx + i], d = угол[(j + 1) * cx + i + 1];
@@ -153,7 +188,94 @@ export function полеТравы(
         ? (a === 1 || b === 1 || c === 1 || d === 1 ? 1 : 0)
         : (a === 1 && b === 1 && c === 1 && d === 1 ? 1 : 0);
     }
+  }
   return { x0, z0, nx, nz, высоты, растёт };
+}
+
+/** То же поле целиком, за один раз: для проверок и для первого кадра. */
+export function полеТравы(
+  поверхность: Surface, наЗемле: НаЗемле | null,
+  окно: { x0: number; z0: number; ширина: number; глубина: number },
+  как: { маска?: 'по центру'; занято?: false } = {},
+): Поле {
+  const ход = полеПоШагам(поверхность, наЗемле, окно, как);
+  let r = ход.next();
+  while (!r.done) r = ход.next();
+  return r.value;
+}
+
+/** Клетка указателя треугольников, м. */
+const КЛЕТКА_УКАЗАТЕЛЯ = 16;
+
+interface Указатель {
+  readonly x0: number; readonly z0: number; readonly nx: number; readonly nz: number;
+  /** Треугольники клетки c — `номера[начала[c] .. начала[c + 1])`. */
+  readonly начала: Uint32Array;
+  readonly номера: Uint32Array;
+  /** Трава ли треугольник: 1 — да. */
+  readonly трава: Uint8Array;
+  /** Метка «уже взят в это окно»: чтобы треугольник на стыке клеток не брать дважды. */
+  readonly метка: Uint32Array;
+  проход: number;
+}
+const указатели = new WeakMap<Surface, Указатель>();
+
+/** Треугольники земли по клеткам — один раз на землю. */
+function указатель(п: Surface): Указатель {
+  const был = указатели.get(п);
+  if (был !== undefined) return был;
+  const P = п.positions, I = п.indices, n = I.length / 3;
+  const трава = new Uint8Array(n);
+  for (const g of п.groups) if (g.material === 'grass') трава.fill(1, g.start / 3, (g.start + g.count) / 3);
+  let мх0 = Infinity, мх1 = -Infinity, мz0 = Infinity, мz1 = -Infinity;
+  for (let v = 0; v < P.length; v += 3) {
+    мх0 = Math.min(мх0, P[v]); мх1 = Math.max(мх1, P[v]); мz0 = Math.min(мz0, P[v + 2]); мz1 = Math.max(мz1, P[v + 2]);
+  }
+  const Ш = КЛЕТКА_УКАЗАТЕЛЯ;
+  const nx = Math.max(1, Math.ceil((мх1 - мх0) / Ш) + 1), nz = Math.max(1, Math.ceil((мz1 - мz0) / Ш) + 1);
+  const клетки = (t: number): [number, number, number, number] => {
+    const a = I[t * 3] * 3, b = I[t * 3 + 1] * 3, c = I[t * 3 + 2] * 3;
+    return [
+      Math.floor((Math.min(P[a], P[b], P[c]) - мх0) / Ш), Math.floor((Math.max(P[a], P[b], P[c]) - мх0) / Ш),
+      Math.floor((Math.min(P[a + 2], P[b + 2], P[c + 2]) - мz0) / Ш), Math.floor((Math.max(P[a + 2], P[b + 2], P[c + 2]) - мz0) / Ш),
+    ];
+  };
+  const счёт = new Uint32Array(nx * nz + 1);
+  for (let t = 0; t < n; t++) {
+    const [i0, i1, j0, j1] = клетки(t);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) счёт[j * nx + i + 1]++;
+  }
+  for (let c = 0; c < nx * nz; c++) счёт[c + 1] += счёт[c];
+  const начала = счёт.slice();
+  const номера = new Uint32Array(счёт[nx * nz]);
+  const занято2 = счёт.slice(0, nx * nz);
+  for (let t = 0; t < n; t++) {
+    const [i0, i1, j0, j1] = клетки(t);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) номера[занято2[j * nx + i]++] = t;
+  }
+  const у: Указатель = { x0: мх0, z0: мz0, nx, nz, начала, номера, трава, метка: new Uint32Array(n), проход: 0 };
+  указатели.set(п, у);
+  return у;
+}
+
+/** Номера треугольников, задевающих прямоугольник, каждый по разу. */
+function треугольникиОкна(п: Surface, x0: number, z0: number, x1: number, z1: number): number[] {
+  const у = указатель(п);
+  у.проход++;
+  const Ш = КЛЕТКА_УКАЗАТЕЛЯ;
+  const i0 = Math.max(0, Math.floor((x0 - у.x0) / Ш)), i1 = Math.min(у.nx - 1, Math.floor((x1 - у.x0) / Ш));
+  const j0 = Math.max(0, Math.floor((z0 - у.z0) / Ш)), j1 = Math.min(у.nz - 1, Math.floor((z1 - у.z0) / Ш));
+  const из: number[] = [];
+  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+    const c = j * у.nx + i;
+    for (let q = у.начала[c]; q < у.начала[c + 1]; q++) {
+      const t = у.номера[q];
+      if (у.метка[t] === у.проход) continue;
+      у.метка[t] = у.проход;
+      из.push(t);
+    }
+  }
+  return из;
 }
 
 /** Растёт ли трава в точке: клетка, в которую точка попала. */
