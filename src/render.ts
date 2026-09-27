@@ -15,7 +15,7 @@ import { type Sight, createSight } from './person/sight.ts';
 import { ЛУНА, лунаНад, создатьНебо, погода, солнцеВЧас } from './свет.ts';
 import { type Трава, ГАЗОН, создатьТраву } from './растения/показ.ts';
 import { модельВещи } from './модели.ts';
-import { type Деревья, создатьДеревья } from './растения/деревья.ts';
+import { type Деревья, РАСТВОРИТЬ, РАСТВОРИТЬ_ТОЧКУ, создатьДеревья } from './растения/деревья.ts';
 
 const COLORS: Record<Material, number> = {
   // газон — цвет самой травы, какой её видно издали: один цвет на двоих
@@ -974,16 +974,39 @@ export function show(
    * а цена её росла бы вместе с городом. Здесь цена — от того, что рядом.
    * Все места хранятся, в пачку попадают ближние; пересборка — когда камера
    * ушла на `шаг` от прошлой.
+   *
+   * Пересборка только ОТВОДИТ рамы с запасом на шаг, а видна ли рама, решает
+   * шейдер от глаза каждый кадр: к `радиусу` она растворяется узором. До 27.09
+   * рама на краю появлялась или нет в зависимости от того, где камера была
+   * при прошлой пересборке, — `обход.ts проявление` нашёл ряд из пяти точек
+   * на фасаде в сотне метров.
    */
-  const РАМЫ = { радиус: 100, шаг: 15 };
+  const РАМЫ = { радиус: 100, полоса: 15, шаг: 15 };
+  const uРамыГлаз = { value: new THREE.Vector3() };
+  const материалРамы = (): THREE.MeshStandardMaterial => {
+    const м = new THREE.MeshStandardMaterial({ roughness: 0.7 });
+    м.onBeforeCompile = (shader) => {
+      shader.uniforms.uEye = uРамыГлаз;
+      shader.vertexShader = 'uniform vec3 uEye;\nvarying float vFade;\n' + shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+        vFade = 1.0;
+        #ifdef USE_INSTANCING
+          vFade = clamp((${РАМЫ.радиус.toFixed(1)} - distance(uEye.xz, instanceMatrix[3].xz)) / ${РАМЫ.полоса.toFixed(1)}, 0.0, 1.0);
+        #endif`);
+      shader.fragmentShader = РАСТВОРИТЬ + shader.fragmentShader.replace('void main() {', РАСТВОРИТЬ_ТОЧКУ);
+    };
+    м.customProgramCacheKey = () => 'рама';
+    return м;
+  };
   let рамыВсе: { меш: THREE.InstancedMesh; матрицы: Float32Array; x: number; z: number } | null = null;
   const рамыРядом = (): void => {
+    uРамыГлаз.value.copy(camera.position);
     if (рамыВсе === null) return;
     const cx = camera.position.x, cz = camera.position.z;
     if ((cx - рамыВсе.x) ** 2 + (cz - рамыВсе.z) ** 2 < РАМЫ.шаг ** 2) return;
     рамыВсе.x = cx; рамыВсе.z = cz;
     const { меш, матрицы } = рамыВсе, куда = меш.instanceMatrix.array as Float32Array;
-    const R2 = РАМЫ.радиус ** 2;
+    // с запасом на шаг: до следующей пересборки глаз не подойдёт к раме ближе, чем она отведена
+    const R2 = (РАМЫ.радиус + РАМЫ.шаг) ** 2;
     let n = 0;
     for (let i = 0; i < матрицы.length; i += 16) {
       if ((матрицы[i + 12] - cx) ** 2 + (матрицы[i + 14] - cz) ** 2 > R2) continue;
@@ -1688,7 +1711,7 @@ export function show(
        * с улицы не разглядеть.
        */
       const рамы = пачка(обрамление(ОКНО.ширина, ОКНО.высота, { подоконник: true, импост: true, козырёк: false }),
-        окон, камень(0.7));
+        окон, материалРамы());
       const входы = пачка(обрамление(ДВЕРЬ.ширина, ДВЕРЬ.высота, { подоконник: false, импост: false, козырёк: true }),
         дверей, камень(0.8));
       рамы.castShadow = false;
@@ -1950,8 +1973,11 @@ export function show(
     project(x, z) {
       const hit = new THREE.Raycaster();
       hit.set(new THREE.Vector3(x, 400, z), new THREE.Vector3(0, -1, 0));
-      const ground = hit.intersectObject(scene.children[0] as THREE.Object3D, false)[0];
-      const point = new THREE.Vector3(x, ground ? ground.point.y : 0, z).project(camera);
+      // в саму землю, а не в «первое в сцене»: 27.09 первым стал купол неба,
+      // и точка улетала за край экрана (поймали «шесть сценариев»)
+      const наЗемле = hit.intersectObject(ground, false)[0];
+      const point = new THREE.Vector3(x, наЗемле ? наЗемле.point.y : 0, z).project(camera);
+
       const rect = renderer.domElement.getBoundingClientRect();
       return {
         x: rect.left + ((point.x + 1) / 2) * rect.width,

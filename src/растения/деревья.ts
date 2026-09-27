@@ -200,9 +200,16 @@ function кора(с: Скелет, даль: boolean): THREE.BufferGeometry {
   return g;
 }
 
-function материалКоры(ветер: ОбщийВетер, даль: Record<string, THREE.IUniform>): THREE.MeshLambertMaterial {
-  const м = new THREE.MeshLambertMaterial({ vertexColors: true });
-  м.onBeforeCompile = (shader) => {
+/**
+ * Кора и её тень — ОДИН вершинный код: качание, истончение прута, доля
+ * ближнего вида. До 27.09 тень рисовалась стандартным материалом глубины:
+ * она не качалась и не истончала прутья, и пока квадрат тени стоял у
+ * середины мира, этого не было видно. Когда тень поехала за глазом,
+ * `обход.ts проявление` поймал 55 точек: тень прутьев зависела от
+ * раскладки. Теперь «тень не совпадает с деревом» записать нельзя.
+ */
+function материалыКоры(ветер: ОбщийВетер, даль: Record<string, THREE.IUniform>): { кора: THREE.MeshLambertMaterial; тень: THREE.MeshDepthMaterial } {
+  const вершины = (shader: THREE.WebGLProgramParametersWithUniforms): void => {
     Object.assign(shader.uniforms, ветер, даль);
     shader.fragmentShader = РАСТВОРИТЬ + shader.fragmentShader.replace('void main() {', РАСТВОРИТЬ_ТОЧКУ);
     shader.vertexShader = 'uniform vec3 uCam;\n' + ОБЩЕЕ + 'attribute vec4 kach;\nattribute float twig;\nvarying float vFade;\nuniform float uTreeFar;\nuniform float uTreeBand;\n'
@@ -224,8 +231,13 @@ function материалКоры(ветер: ОбщийВетер, даль: Re
       gl_Position = projectionMatrix * mvPosition;
     `);
   };
-  м.customProgramCacheKey = () => 'кора';
-  return м;
+  const кора = new THREE.MeshLambertMaterial({ vertexColors: true });
+  кора.onBeforeCompile = вершины;
+  кора.customProgramCacheKey = () => 'кора';
+  const тень = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  тень.onBeforeCompile = вершины;
+  тень.customProgramCacheKey = () => 'кора-тень';
+  return { кора, тень };
 }
 
 /* ─────────────────────────── дальняя крона ─────────────────────────── */
@@ -354,8 +366,8 @@ function материалКроны(ветер: ОбщийВетер, uCam: THRE
   return м;
 }
 
-/** Узор растворения: порог 4 × 4 по точке экрана (матрица Байера). */
-const РАСТВОРИТЬ = /* glsl */`
+/** Узор растворения: порог 4 × 4 по точке экрана (матрица Байера). Один на деревья и людей. */
+export const РАСТВОРИТЬ = /* glsl */`
 varying float vFade;
 float bayer4(vec2 p) {
   ivec2 q = ivec2(mod(p, 4.0));
@@ -364,7 +376,7 @@ float bayer4(vec2 p) {
   return (m[i] + 0.5) / 16.0;
 }
 `;
-const РАСТВОРИТЬ_ТОЧКУ = 'void main() {\n  if (vFade < bayer4(gl_FragCoord.xy)) discard;';
+export const РАСТВОРИТЬ_ТОЧКУ = 'void main() {\n  if (vFade < bayer4(gl_FragCoord.xy)) discard;';
 /** Ровно дополнение `РАСТВОРИТЬ_ТОЧКУ`: точка экрана — или ближний вид, или крона. */
 const ПРОСТУПИТЬ_ТОЧКУ = 'void main() {\n  if (vFade >= bayer4(gl_FragCoord.xy)) discard;';
 
@@ -549,7 +561,7 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
   };
   теньЛиста.customProgramCacheKey = () => 'лист-тень';
 
-  const материалКорыОбщий = материалКоры(ветер, { uCam: uniforms.uCam, uTreeFar: uniforms.uTreeFar, uTreeBand: uniforms.uTreeBand });
+  const материалКорыОбщий = материалыКоры(ветер, { uCam: uniforms.uCam, uTreeFar: uniforms.uTreeFar, uTreeBand: uniforms.uTreeBand });
   const материалКроныДерева = материалКроны(ветер, uniforms.uCam, uniforms.uTreeFar, uniforms.uTreeBand);
   const материалКроныКуста = материалКроны(ветер, uniforms.uCam, { value: КУСТ_ДАЛЬ }, { value: КУСТ_ПОЛОСА });
   /** Дальние кроны: по мешу на шаблон, у всех деревьев города, ставятся раз. */
@@ -591,16 +603,26 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
   /** Разложить деревья по дальности: кора вблизи/вдали, сколько листьев каждому. */
   const разложить = (cx: number, cz: number): void => {
     // сначала отсев по кругу — дешёвым сравнением квадратов, потом сортировка оставшихся
-    const рядом: { п: Посадка; d: number }[] = [];
-    for (const п of посадки) {
+    const рядом: { п: Посадка; d: number; i: number }[] = [];
+    посадки.forEach((п, i) => {
       const dx = п.x - cx, dz = п.z - cz, d2 = dx * dx + dz * dz;
-      const даль = КУСТЫ.includes(п.вид) ? КУСТ_ДАЛЬ : ДАЛЬ;
-      if (d2 < даль * даль) рядом.push({ п, d: Math.sqrt(d2) });
-    }
+      // с запасом на шаг раскладки: дерево у края, до которого глаз дойдёт
+      // до следующей раскладки, ещё растворяется — его точки должны быть
+      const даль = (КУСТЫ.includes(п.вид) ? КУСТ_ДАЛЬ : ДАЛЬ) + ШАГ_РАСКЛАДКИ;
+      if (d2 < даль * даль) рядом.push({ п, d: Math.sqrt(d2), i });
+    });
     рядом.sort((a, b) => a.d - b.d);
     const по = рядом.slice(0, МАКС);
     // ближних больше потолка — край деревьев там, где кончилось последнее взятое
     const крайДеревьев = рядом.length > МАКС ? Math.min(ДАЛЬ, по[по.length - 1].d) : ДАЛЬ;
+    /**
+     * Рисуются взятые — в ПОРЯДКЕ ПОСАДКИ, а не по расстоянию от места
+     * раскладки. Где листья соседних деревьев пересекаются, глубина у них
+     * одна, и точку берёт нарисованный первым; при порядке «от места
+     * раскладки» эта точка зависела от того, где глаз был раньше
+     * (`обход.ts проявление`: 5 точек на пересечении крон).
+     */
+    по.sort((a, b) => a.i - b.i);
     uniforms.uTreeFar.value = крайДеревьев;
     // кора
     const группы = new Map<string, { п: Посадка }[]>();
@@ -620,7 +642,8 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
       let м = кораМеши.get(ключ);
       if (!м || м.instanceMatrix.count < г.length) {
         if (м) { сцена.remove(м); м.dispose(); }
-        м = new THREE.InstancedMesh(geo, материалКорыОбщий, Math.max(8, г.length * 2));
+        м = new THREE.InstancedMesh(geo, материалКорыОбщий.кора, Math.max(8, г.length * 2));
+        м.customDepthMaterial = материалКорыОбщий.тень;
         м.castShadow = true; м.receiveShadow = true; м.frustumCulled = false; м.name = 'кора';
         сцена.add(м);
         кораМеши.set(ключ, м);

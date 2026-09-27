@@ -345,15 +345,27 @@ async function проявление(сломать: boolean): Promise<{ повт
         return cx.getImageData(0, 0, img.width, img.height).data;
       };
       const [pa, pb, pc] = await Promise.all([a, b, c].map(пиксели));
+      const разные = (p: Uint8ClampedArray, q: Uint8ClampedArray, i: number): boolean =>
+        Math.max(Math.abs(p[i] - q[i]), Math.abs(p[i + 1] - q[i + 1]), Math.abs(p[i + 2] - q[i + 2])) > 8;
       const счёт = (p: Uint8ClampedArray, q: Uint8ClampedArray): number => {
         let n = 0;
-        for (let i = 0; i < p.length; i += 4)
-          if (Math.max(Math.abs(p[i] - q[i]), Math.abs(p[i + 1] - q[i + 1]), Math.abs(p[i + 2] - q[i + 2])) > 8) n++;
+        for (let i = 0; i < p.length; i += 4) if (разные(p, q, i)) n++;
         return n;
       };
-      return { повтор: счёт(pa, pb), сдвиг: счёт(pa, pc), всего: pa.length / 4 };
+      // где разница: кадр притушен, разные точки — красным крестом, чтобы видеть и одну
+      const w = 640, h = pa.length / 4 / w;
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      const cx = cv.getContext('2d')!;
+      const img = cx.createImageData(w, h);
+      for (let i = 0; i < pa.length; i += 4) { img.data[i] = pa[i] * 0.35; img.data[i + 1] = pa[i + 1] * 0.35; img.data[i + 2] = pa[i + 2] * 0.35; img.data[i + 3] = 255; }
+      cx.putImageData(img, 0, 0);
+      cx.fillStyle = '#ff2020';
+      for (let i = 0; i < pa.length; i += 4) if (разные(pa, pc, i)) { const x = (i / 4) % w, y = Math.floor(i / 4 / w); cx.fillRect(x - 3, y, 7, 1); cx.fillRect(x, y - 3, 1, 7); }
+      return { повтор: счёт(pa, pb), сдвиг: счёт(pa, pc), всего: pa.length / 4, разница: cv.toDataURL('image/png').split(',')[1] };
     }, [здесь, здесьСнова, сзади].map((b) => b.toString('base64')));
-    return { ...разница, ошибки };
+    writeFileSync(`shots/проявление${сломать ? '-ступенями' : ''}-разница.png`, Buffer.from(разница.разница, 'base64'));
+    return { повтор: разница.повтор, сдвиг: разница.сдвиг, всего: разница.всего, ошибки };
   } finally {
     await browser.close();
     await server.close();
