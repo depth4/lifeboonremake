@@ -193,9 +193,29 @@ if (process.argv[2] === 'проявление') {
  * идёт минутами на кадр, и оборвавшаяся на пятом кадре не должна терять
  * четыре снятых. Лист собирается из того, что лежит в папке.
  */
-if (process.argv[2] === 'снимки') await листСнимков(process.argv[3]?.split(',').map((n) => Number(n) - 1) ?? МАРШРУТ.map((_, i) => i));
+/**
+ * Кадр читаем в любой час: средняя яркость каждого кадра листа (0…1) —
+ * между `ЯРКОСТЬ.от` и `ЯРКОСТЬ.до`. 27.09 первая ночь со светом по часам
+ * была чёрным кадром — глаз ловит это сразу, а цифра — тоже, и без глаза.
+ * Порог — по замеру, а не на глаз: заведомо чёрный кадр 0.00, читаемая
+ * лунная ночь 0.05–0.06 (первый порог 0.05 валил хорошую ночь — это был
+ * сломанный инструмент), день 0.21–0.32.
+ * `снимки … темно` — экспозиция 0.15 адресом, `ярко` — 20: ОБЯЗАНЫ упасть.
+ */
+const ЯРКОСТЬ = { от: 0.03, до: 0.85 };
+if (process.argv[2] === 'снимки') {
+  const поломка = process.argv.includes('темно') ? '0.15' : process.argv.includes('ярко') ? '20' : null;
+  const какие = process.argv[3] && !['темно', 'ярко'].includes(process.argv[3]) ? process.argv[3].split(',').map((n) => Number(n) - 1) : МАРШРУТ.map((_, i) => i);
+  const яркости = await листСнимков(какие, поломка);
+  const плохие = яркости.filter((я) => я.яркость < ЯРКОСТЬ.от || я.яркость > ЯРКОСТЬ.до);
+  const ок = плохие.length === 0 && яркости.length === какие.length;
+  console.log(`\n  ${ок ? '✓' : '✗'} ${'кадр читаем в любой час'.padEnd(58, '.')} `
+    + яркости.map((я) => `${я.имя.split(',')[0]} ${я.яркость.toFixed(2)}`).join('; ')
+    + ` (можно ${ЯРКОСТЬ.от}…${ЯРКОСТЬ.до})`);
+  process.exitCode = ок ? process.exitCode : 1;
+}
 
-async function листСнимков(какие: readonly number[]): Promise<void> {
+async function листСнимков(какие: readonly number[], экспозиция: string | null = null): Promise<{ имя: string; яркость: number }[]> {
   const { createServer } = await import('vite');
   const { chromium } = await import('playwright');
   const { writeFileSync, mkdirSync, existsSync, readFileSync } = await import('node:fs');
@@ -207,6 +227,7 @@ async function листСнимков(какие: readonly number[]): Promise<vo
   const browser = await chromium.launch();
   mkdirSync('shots/обход', { recursive: true });
   const файл = (i: number): string => `shots/обход/${String(i + 1).padStart(2, '0')}.png`;
+  const яркости: { имя: string; яркость: number }[] = [];
   try {
     for (const i of какие) {
       const т = МАРШРУТ[i];
@@ -215,7 +236,8 @@ async function листСнимков(какие: readonly number[]): Promise<vo
       page.on('pageerror', (e) => ошибки.push(String(e).split('\n')[0]));
       await page.route('**://fonts.googleapis.com/**', (r) => r.abort());
       await page.route('**://fonts.gstatic.com/**', (r) => r.abort());
-      const адрес = new URLSearchParams({ scene: 'город', traffic: '1', час: String(т.час), пешком: `${т.x},${т.z},${т.курс}`, bare: '1' });
+      const адрес = new URLSearchParams({ scene: 'город', traffic: '1', час: String(т.час), пешком: `${т.x},${т.z},${т.курс}`, bare: '1',
+        ...(экспозиция !== null ? { экспозиция } : {}) });
       лог(`${i + 1}. ${т.имя}: открываю`);
       await page.goto(`http://localhost:${PORT}/?${адрес}`, { waitUntil: 'load', timeout: 300000 });
       await page.waitForFunction(() => (window as unknown as { __ready?: boolean }).__ready === true, null, { timeout: 300000, polling: 1000 });
@@ -223,9 +245,24 @@ async function листСнимков(какие: readonly number[]): Promise<vo
       await page.waitForFunction(() => ((window as unknown as { __стоимостьКадра?: () => { трава?: { плиток?: number } } })
         .__стоимостьКадра?.().трава?.плиток ?? 0) > 0, null, { timeout: 120000, polling: 1000 }).catch(() => ошибки.push('трава не появилась'));
       await page.evaluate(async () => { for (let k = 0; k < 4; k++) await new Promise((r) => requestAnimationFrame(r)); });
-      writeFileSync(файл(i), await page.screenshot({ timeout: 300000 }));
-      writeFileSync(файл(i) + '.txt', ошибки.join('; '));
-      лог(`${i + 1}. снято${ошибки.length ? ' — ' + ошибки.join('; ') : ''}`);
+      const кадр = await page.screenshot({ timeout: 300000 });
+      writeFileSync(файл(i), кадр);
+      const яркость = await page.evaluate(async (png) => {
+        const img = new Image();
+        img.src = `data:image/png;base64,${png}`;
+        await img.decode();
+        const cv = document.createElement('canvas');
+        cv.width = img.width; cv.height = img.height;
+        const cx = cv.getContext('2d')!;
+        cx.drawImage(img, 0, 0);
+        const d = cx.getImageData(0, 0, img.width, img.height).data;
+        let сумма = 0;
+        for (let k = 0; k < d.length; k += 4) сумма += 0.2126 * d[k] + 0.7152 * d[k + 1] + 0.0722 * d[k + 2];
+        return сумма / (d.length / 4) / 255;
+      }, кадр.toString('base64'));
+      яркости.push({ имя: т.имя, яркость });
+      writeFileSync(файл(i) + '.txt', [...ошибки, `яркость ${яркость.toFixed(2)}`].join('; '));
+      лог(`${i + 1}. снято, яркость ${яркость.toFixed(2)}${ошибки.length ? ' — ' + ошибки.join('; ') : ''}`);
       await page.close();
     }
     // лист: два столбца, подписи — чтобы смотреть всё одним взглядом
@@ -243,6 +280,7 @@ async function листСнимков(какие: readonly number[]): Promise<vo
     await browser.close();
     await server.close();
   }
+  return яркости;
 }
 
 /**

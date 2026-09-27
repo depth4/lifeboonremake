@@ -12,7 +12,7 @@ import type { Площадка, Плита } from './city/площадка.ts';
 import type { Посадочное } from './city/зелень.ts';
 import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from './city/двор.ts';
 import { type Sight, createSight } from './person/sight.ts';
-import { подключитьСтиль } from './стиль.ts';
+import { ЛУНА, лунаНад, создатьНебо, погода, солнцеВЧас } from './свет.ts';
 import { type Трава, ГАЗОН, создатьТраву } from './растения/показ.ts';
 import { модельВещи } from './модели.ts';
 import { type Деревья, создатьДеревья } from './растения/деревья.ts';
@@ -286,6 +286,11 @@ export interface Viewer {
    * main отдаёт, откуда брать поле, и мнёт траву ногами и колёсами.
    */
   трава(): Трава;
+  /**
+   * Который час: солнце, небо, дымка, свет неба и окна — из него одного
+   * (`свет.ts`). Часы — городские, `main` отдаёт их каждый кадр.
+   */
+  свет(час: number): void;
   /** Деревья и кусты из веток. Где стоят — приходит через setTrees; форму листа выбирает main. */
   деревья(): Деревья;
 }
@@ -462,8 +467,58 @@ const ТОЛЩИНА = 0.09;
  * ветки friendly-ritchie). Жилое окно днём ОТРАЖАЕТ, комнату сквозь него не видно.
  */
 const СТЕКЛО = { внизу: 0x4d5f6b, вверху: 0xa9c8de, небоНа: 14 };
-/** Свет в окне днём горит примерно в каждом десятом — 11%, как 14.09. */
-const ГОРИТ = { доля: 0.11, цвет: 0xe6d3a3 };
+/** Цвет горящего окна; ярче белого — после тональной кривой он светится, а не сереет. */
+const ГОРИТ = { цвет: new THREE.Color(0xffd9a0).multiplyScalar(1.7) };
+/**
+ * Какая доля окон горит в этот час: днём — каждое десятое-пятнадцатое
+ * (11%, как 14.09), вечером — половина, глубокой ночью — одно из двадцати.
+ * Числа — ПРЕДПОЛАГАЮ, на глаз по вечернему спальному району; когда окна
+ * свяжутся с жителями (кто дома и не спит), таблица уйдёт.
+ */
+const ГОРЯТ_ПО_ЧАСАМ: readonly (readonly [number, number])[] = [
+  [0, 0.2], [2, 0.05], [5, 0.05], [6.5, 0.22], [8.5, 0.11], [16, 0.09], [18, 0.25], [20, 0.5], [22.5, 0.4], [24, 0.2],
+];
+function доляГорящих(час: number): number {
+  let i = 0;
+  while (i < ГОРЯТ_ПО_ЧАСАМ.length - 2 && час > ГОРЯТ_ПО_ЧАСАМ[i + 1][0]) i++;
+  const [ч0, д0] = ГОРЯТ_ПО_ЧАСАМ[i], [ч1, д1] = ГОРЯТ_ПО_ЧАСАМ[i + 1];
+  return д0 + (д1 - д0) * THREE.MathUtils.clamp((час - ч0) / (ч1 - ч0), 0, 1);
+}
+/**
+ * Окно горит, когда доля горящих в этот час выше его ПОРОГА. Порог — от
+ * места окна, поэтому горящие днём горят и вечером (к ним добавляются
+ * новые), а «в этот час горит не тот набор окон» записать нельзя: набора
+ * нет, есть одно число на окно и одно на час. Шейдер сравнивает сам.
+ */
+const окнаСвет = {
+  uLit: { value: доляГорящих(12) },
+  uReflect: { value: 1 },
+  uLitColor: { value: ГОРИТ.цвет },
+};
+function материалОкна(): THREE.MeshBasicMaterial {
+  const м = new THREE.MeshBasicMaterial({ vertexColors: true });
+  м.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, окнаСвет);
+    shader.vertexShader = 'attribute float litAt;\nvarying float vLit;\nuniform float uLit;\n' + shader.vertexShader
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vLit = step(litAt, uLit);');
+    // не горит — отражает небо, а ночью неба в стекле почти нет
+    shader.fragmentShader = 'varying float vLit;\nuniform float uReflect;\nuniform vec3 uLitColor;\n' + shader.fragmentShader
+      .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb * uReflect, uLitColor, vLit);');
+  };
+  м.customProgramCacheKey = () => 'окно';
+  return м;
+}
+/** Дверь — тоже «светится сама», как окно, и ночью так же гаснет. */
+function материалДвери(): THREE.MeshBasicMaterial {
+  const м = new THREE.MeshBasicMaterial();
+  м.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, { uReflect: окнаСвет.uReflect });
+    shader.fragmentShader = 'uniform float uReflect;\n' + shader.fragmentShader
+      .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= 0.25 + 0.75 * uReflect;');
+  };
+  м.customProgramCacheKey = () => 'дверь';
+  return м;
+}
 /** Рама и откос: белый профиль, как у пластиковых окон; вход — тёмный козырёк. */
 const РАМА = 0xd4d0c8;
 const КОЗЫРЁК = 0x4a4640;
@@ -536,15 +591,15 @@ function стеклоОкна(): THREE.BufferGeometry {
 }
 
 /**
- * Горит ли окно — от МЕСТА окна, а не от номера в списке. Порядок домов
+ * Порог окна (0…1) — от МЕСТА окна, а не от номера в списке. Порядок домов
  * поменяется, а свет в том же окне останется: хранить тут нечего.
  */
-function горит(x: number, z: number, грань: number, вдоль: number, этаж: number): boolean {
+function порогОкна(x: number, z: number, грань: number, вдоль: number, этаж: number): number {
   let h = (Math.round(x * 10) * 374761393 + Math.round(z * 10) * 668265263) >>> 0;
   h = (h ^ Math.imul(грань + 3, 2246822519) ^ Math.imul(Math.round(вдоль * 10) + 7919, 3266489917) ^ Math.imul(этаж + 1, 2654435761)) >>> 0;
   h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d) >>> 0;
   h = Math.imul(h ^ (h >>> 12), 0x297a2d39) >>> 0;
-  return (h >>> 8) / 16777216 < ГОРИТ.доля;
+  return (h >>> 8) / 16777216;
 }
 
 /**
@@ -597,6 +652,14 @@ export function show(
   renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  /**
+   * Тональная кривая ACES — как у кино и у игр на Unreal: яркое солнце
+   * сворачивается мягко, а не обрезается в белое, тени остаются цветными.
+   * Без неё (до 27.09) свет приходилось держать слабым, чтобы стены на
+   * солнце не выгорали, — и тень от этого проваливалась в синюю темноту.
+   */
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
   document.body.prepend(renderer.domElement);
 
   /**
@@ -612,9 +675,16 @@ export function show(
   }
 
   const scene = new THREE.Scene();
+  // цвет фона и дымки — цвет неба у горизонта в этот час (`свет`)
   scene.background = new THREE.Color(0x9fc4dd);
   const fog = new THREE.Fog(0x9fc4dd, 200, 480);
   scene.fog = fog;
+  /** `?экспозиция=0.15` — заведомо тёмный кадр для проверки «кадр читаем» (`tools/обход.ts`). */
+  const ЭКСПОЗИЦИЯ = Number(new URLSearchParams(location.search).get('экспозиция')) || null;
+  const небосвод = создатьНебо();
+  scene.add(небосвод.купол);
+  /** Час, на который сейчас выставлен свет (`свет`). */
+  let часСвета = NaN;
 
   const ground = new THREE.Mesh(new THREE.BufferGeometry(), [] as THREE.Material[]);
   ground.castShadow = true;
@@ -931,15 +1001,44 @@ export function show(
   let дворовое: THREE.InstancedMesh[] | null = null;
   let signGroup: THREE.Group | null = null;
 
-  scene.add(new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05));
+  const светНеба = new THREE.HemisphereLight(0xbdd7ee, 0x51603f, 1.05);
+  scene.add(светНеба);
   const sun = new THREE.DirectionalLight(0xfff3dd, 2.1);
   sun.position.set(-90, 110, -60);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   const shadowBox = sun.shadow.camera;
-  shadowBox.left = -170; shadowBox.right = 170; shadowBox.top = 170; shadowBox.bottom = -170;
-  shadowBox.near = 1; shadowBox.far = 420;
+  /**
+   * Квадрат тени ЕЗДИТ ЗА ГЛАЗОМ (`теньЗаГлазом`). До 27.09 он стоял
+   * ±170 м вокруг середины мира, и у «города» (600 м) края были без
+   * теней вовсе, а у «большого» — почти весь город.
+   */
+  const ТЕНЬ = 170;
+  shadowBox.left = -ТЕНЬ; shadowBox.right = ТЕНЬ; shadowBox.top = ТЕНЬ; shadowBox.bottom = -ТЕНЬ;
+  shadowBox.near = 1; shadowBox.far = 900;
+  sun.shadow.bias = -0.0003;
+  sun.shadow.normalBias = 0.4;
   scene.add(sun);
+  scene.add(sun.target);
+  /** Откуда светит солнце в этот час (единичный вектор), и светит ли вообще. */
+  const кСолнцу = new THREE.Vector3(-0.55, 0.67, -0.5).normalize();
+  /**
+   * Середина квадрата тени — под глазом, с шагом в одну точку карты тени
+   * вдоль осей самой тени: иначе при ходьбе край каждой тени ползает
+   * «лесенкой» (так делают все каскадные тени).
+   */
+  const теньЗаГлазом = (): void => {
+    const шаг = (2 * ТЕНЬ) / sun.shadow.mapSize.x;
+    const вправо = new THREE.Vector3().crossVectors(кСолнцу, new THREE.Vector3(0, 1, 0));
+    if (вправо.lengthSq() < 1e-6) вправо.set(1, 0, 0);
+    вправо.normalize();
+    const вверх = new THREE.Vector3().crossVectors(вправо, кСолнцу).normalize();
+    const c = camera.position;
+    const a = Math.round(c.dot(вправо) / шаг) * шаг, b = Math.round(c.dot(вверх) / шаг) * шаг, h = c.dot(кСолнцу);
+    const середина = new THREE.Vector3().addScaledVector(вправо, a).addScaledVector(вверх, b).addScaledVector(кСолнцу, h);
+    sun.target.position.copy(середина);
+    sun.position.copy(середина).addScaledVector(кСолнцу, 450);
+  };
 
   // дальняя плоскость — тоже от размера мира: с высоты над большим городом
   // его дальние углы дальше полутора километров, и на постоянных 1400
@@ -954,7 +1053,6 @@ export function show(
   const LOOKING = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
   const BUILDING = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
   controls.mouseButtons = { ...LOOKING };
-  const стиль = подключитьСтиль(new URLSearchParams(location.search).get('стиль'), renderer, scene, camera, sun, fog);
   /**
    * Трава обновляется в том же месте, где рисуется кадр, — когда камера
    * уже стоит, где стоит. Время травы — секунды мира, копятся из шагов,
@@ -973,6 +1071,8 @@ export function show(
    */
   const работаЗелени: { трава: number; деревья: number; рамы: number }[] = [];
   const кадрТравы = (): void => {
+    // квадрат тени — тоже от глаза и тоже перед кадром, когда камера уже стоит
+    теньЗаГлазом();
     const t0 = performance.now();
     трава.кадр(camera, времяТравы);
     const t1 = performance.now();
@@ -994,7 +1094,7 @@ export function show(
   const рисовать = (): void => {
     кадрТравы();
     if (безКадра) return;
-    if (стиль) стиль(); else renderer.render(scene, camera);
+    renderer.render(scene, camera);
   };
 
   let flight: { from: THREE.Vector3; to: THREE.Vector3; look: THREE.Vector3; at: THREE.Vector3; fog: number; t: number } | null = null;
@@ -1293,6 +1393,31 @@ export function show(
       if (signalHeads?.instanceColor) signalHeads.instanceColor.needsUpdate = true;
     },
     трава: () => трава,
+    свет(час) {
+      // пересчитывать раз в шесть секунд города: солнце за это время не сдвинется и на пиксель тени
+      const ч = Math.round((((час % 24) + 24) % 24) * 600) / 600;
+      if (ч === часСвета) return;
+      часСвета = ч;
+      const солнце = солнцеВЧас(ч);
+      const п = погода(солнце.y);
+      // солнце погасло — светит луна: тот же свет, другое небо (`ЛУНА`)
+      const луна = ЛУНА.сила * THREE.MathUtils.smoothstep(-солнце.y, -ЛУНА.от, -ЛУНА.до);
+      кСолнцу.copy(п.силаСолнца > 0 ? солнце : лунаНад(солнце));
+      sun.color.set(п.силаСолнца > 0 ? п.солнце.getHex() : ЛУНА.цвет);
+      sun.intensity = п.силаСолнца > 0 ? п.силаСолнца : луна;
+      sun.castShadow = sun.intensity > 0;
+      светНеба.color.copy(п.небо);
+      светНеба.groundColor.copy(п.земля);
+      светНеба.intensity = п.силаНеба;
+      renderer.toneMappingExposure = ЭКСПОЗИЦИЯ ?? п.экспозиция;
+      небосвод.задать(солнце, п);
+      fog.color.copy(п.горизонт);
+      (scene.background as THREE.Color).copy(п.горизонт);
+      окнаСвет.uLit.value = доляГорящих(ч);
+      // стекло отражает небо у горизонта: насколько оно ярче или темнее дневного
+      const яркость = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+      окнаСвет.uReflect.value = THREE.MathUtils.clamp(яркость(п.горизонт) / яркость(погода(1).горизонт), 0.03, 1);
+    },
     деревья: () => деревья,
     setSigns(signs) {
       /**
@@ -1552,8 +1677,10 @@ export function show(
        * пятно, а отражённое небо. С обычным материалом окна на теневой
        * стороне пропадали совсем, и дом снова становился ящиком.
        */
-      const окна = пачка(стеклоОкна(), окон, new THREE.MeshBasicMaterial({ vertexColors: true }));
-      const двери = пачка(коробка(), дверей, new THREE.MeshBasicMaterial());
+      const окна = пачка(стеклоОкна(), окон, материалОкна());
+      const порогиОкон = new Float32Array(Math.max(1, окон));
+      окна.geometry.setAttribute('litAt', new THREE.InstancedBufferAttribute(порогиОкон, 1));
+      const двери = пачка(коробка(), дверей, материалДвери());
       /**
        * Рама освещена (standard): откос в тени, лицо на солнце — по этой
        * разнице глаз и читает глубину. Тени рама не бросает: 18 тысяч рам
@@ -1636,9 +1763,8 @@ export function show(
         for (const п of д.окна) {
           const м = куда(п);
           const низ = п.этаж * ЭТАЖ + ОКНО.отПола;
-          const стекло = горит(д.x, д.z, п.грань, п.вдоль, п.этаж)
-            ? ГОРИТ.цвет
-            : тон.setHex(СТЕКЛО.внизу).lerp(небо, Math.min(1, низ / СТЕКЛО.небоНа)).getHex();
+          порогиОкон[оконN] = порогОкна(д.x, д.z, п.грань, п.вдоль, п.этаж);
+          const стекло = тон.setHex(СТЕКЛО.внизу).lerp(небо, Math.min(1, низ / СТЕКЛО.небоНа)).getHex();
           часть(окна, оконN, д, пл.пол, м.вперёд, низ, м.вбок,
             ТОЛЩИНА, ОКНО.высота, ОКНО.ширина, м.доворот, стекло);
           часть(рамы, оконN++, д, пл.пол, м.вперёд, низ, м.вбок, 1, 1, 1, м.доворот, РАМА);
@@ -1743,9 +1869,14 @@ export function show(
       walkEye = next;
       horizon.visible = next !== null;
       if (next !== null && !wasWalking) {
-        // пешком воздуха нет: на пятистах метрах его не видно и в жизни
-        fog.near = 2200;
-        fog.far = 6000;
+        /**
+         * Пешком — воздух, как в ясный день: при видимости 15–20 км земля
+         * в полукилометре бледнеет на десятую долю, у края мира (1.4 км) —
+         * наполовину и уходит в небо у горизонта того же цвета. До 27.09
+         * воздуха не было (2200–6000 м), и край мира резал небо линейкой.
+         */
+        fog.near = 250;
+        fog.far = 2600;
         // поле зрения шире: у человека оно шире объектива
         camera.fov = 76;
         // земля до горизонта не влезает в дальность ракурсов — раздвигаем,
