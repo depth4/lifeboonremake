@@ -1395,7 +1395,7 @@ viewer.onFrame((dt) => {
 /** Пешеходы-жители: кто, где, кого ведёт за руку — снимкам и проверкам, как `__traffic` для машин. */
 (window as unknown as { __пешие?: () => unknown }).__пешие = () => walkers
   .filter((w) => w.житель >= 0 && w.state !== 'пришёл')
-  .map((w) => { const п = walkerPose(world, w); return { житель: w.житель, x: п.x, z: п.z, ведёт: w.ведёт }; });
+  .map((w) => { const п = walkerPose(world, w); return { житель: w.житель, x: п.x, y: ground.sample(п.x, п.z).height, z: п.z, yaw: п.yaw, ведёт: w.ведёт }; });
 
 /** Идущие разговоры знакомых: кто, откуда знакомы, где стоят — снимкам и проверкам. */
 (window as unknown as { __разговоры?: () => unknown }).__разговоры = () => (снаружи?.разговоры ?? [])
