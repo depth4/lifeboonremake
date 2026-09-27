@@ -149,13 +149,29 @@ export function buildSigns(
     const quiet = lanesPerSide(si) <= QUIET_LANES;
     return quiet ? QUIET_LIMIT : TOWN_LIMIT;
   });
+  /**
+   * Где на конце дороги кончается перекрёсток: за тротуаром самой широкой
+   * поперечной улицы. До 27.09 знак стоял в 6 м от узла — и у широкой
+   * поперечной оказывался на её проезжей части (`tools/обход.ts`: 8 знаков
+   * в «городе», 48 в «большом»).
+   */
+  const заУзлом = (si: number, уНачала: boolean, total: number): number => {
+    let дальше = 0;
+    atJunction.forEach((roads) => {
+      if (!roads.some((l) => l.shape === si && (уНачала ? l.s < 1 : l.s > total - 1))) return;
+      for (const l of roads) if (l.shape !== si) дальше = Math.max(дальше, world.shapes[l.shape].outerHalf);
+    });
+    return Math.max(6, дальше + 2);
+  };
   world.shapes.forEach((shape, si) => {
     if (limit[si] === TOWN_LIMIT) return;
-    // знак стоит в начале участка, с обеих сторон — как в жизни
+    // знак стоит в начале участка, с обеих сторон — как в жизни, за перекрёстком
     const total = shape.stations.at(-1)?.s ?? 0;
     if (total < 20) return;
-    all.push({ kind: '3.24', shape: si, s: 6, dir: 1, value: limit[si] });
-    all.push({ kind: '3.24', shape: si, s: total - 6, dir: -1, value: limit[si] });
+    const от = заУзлом(si, true, total), до = total - заУзлом(si, false, total);
+    if (до - от < 4) return;
+    all.push({ kind: '3.24', shape: si, s: от, dir: 1, value: limit[si] });
+    all.push({ kind: '3.24', shape: si, s: до, dir: -1, value: limit[si] });
   });
 
   /**

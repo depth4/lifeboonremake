@@ -377,6 +377,46 @@ export function buildNetwork(
   return { length, atJunction, nodes, signals, ends, bays, lanes, signs, reach };
 }
 
+/**
+ * СТОЛБ У БОРДЮРА — светофор или знак: на тротуаре, в `отБордюра` метрах
+ * от края проезжей части, справа по ходу `dir`, лицом к тем, кому адресован.
+ *
+ * До 27.09 столб ставился за ВНЕШНИМ краем тротуара — туда, где на красной
+ * линии стоят дома, — и на улице с домом вплотную к тротуару светофор
+ * торчал из стены (снимок Алекса). Место считалось в показе, каждый кадр,
+ * двумя одинаковыми кусками, и проверить его без браузера было нечем.
+ * Теперь место одно — для показа, тверди и проверки (`tools/обход.ts`).
+ */
+export const ОТ_БОРДЮРА = { светофор: 0.6, знак: 0.5 } as const;
+export function уБордюра(
+  world: World, shape: number, s: number, dir: number, отБордюра: number,
+): { x: number; z: number; yaw: number } {
+  const at = along(world, shape, s);
+  const fx = at.fx * dir, fz = at.fz * dir;
+  const сбоку = world.shapes[shape].halfWidth + отБордюра;
+  // право по ходу — (−fz, fx); лицом — навстречу подъезжающим
+  return { x: at.x - fz * сбоку, z: at.z + fx * сбоку, yaw: Math.atan2(fz, fx) + Math.PI };
+}
+
+/** Столбы города: светофоры (по одному на въезд) и знаки. Раз на сеть. */
+export interface Столбы {
+  readonly светофоры: readonly { x: number; z: number; yaw: number; signal: Signal; approach: Signal['approaches'][number] }[];
+  readonly знаки: readonly { x: number; z: number; yaw: number; kind: string; value: number }[];
+}
+const столбыПо = new WeakMap<Network, Столбы>();
+export function столбы(world: World, net: Network): Столбы {
+  const есть = столбыПо.get(net);
+  if (есть !== undefined) return есть;
+  const готово: Столбы = {
+    светофоры: net.signals.flatMap((signal) => signal.approaches.map((approach) => ({
+      ...уБордюра(world, approach.shape, approach.stopS, approach.dir, ОТ_БОРДЮРА.светофор), signal, approach,
+    }))),
+    знаки: net.signs.all.map((sg) => ({ ...уБордюра(world, sg.shape, sg.s, sg.dir, ОТ_БОРДЮРА.знак), kind: sg.kind, value: sg.value })),
+  };
+  столбыПо.set(net, готово);
+  return готово;
+}
+
 /** Где дорога в этом месте и куда она смотрит. */
 export function along(world: World, shape: number, s: number): { x: number; z: number; fx: number; fz: number } {
   const st = world.shapes[shape].stations;

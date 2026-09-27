@@ -30,7 +30,7 @@ import { buildWorld } from '../src/world/world.ts';
 import { buildNetwork, ктоДержитВыезд, moveTraffic, стоит } from '../src/city/traffic.ts';
 import { вывестиНаУлицу, гдеЖитель, дворНаЧас, жить, машиныЖителей, пешеходыЖителей, своиМеста } from '../src/city/жизнь.ts';
 import { наЗемлеПосёлка } from '../src/city/двор.ts';
-import { type Walker, moveWalkers, walkerPose, заРуку as уРуки } from '../src/city/walkers.ts';
+import { type Walker, moveWalkers, walkerPose, заРуку as уРуки, рукаНадо } from '../src/city/walkers.ts';
 import { type Разговор, ВПЛОТНУЮ, СХОДЯТСЯ } from '../src/city/встречи.ts';
 import { along } from '../src/city/traffic.ts';
 import { МАШИН_НА_ТЫСЯЧУ, ПОДВИЖНОСТЬ, РАДИУС, ВОЗРАСТ, ДОМОХОЗЯЙСТВА } from '../src/city/norms.ts';
@@ -478,7 +478,9 @@ for (const [занятие, радиус] of [['сад', РАДИУС.сад], [
       if (все[w.житель].занятие === 'сад') одни.add(w.житель);
       for (const n of w.ведёт) заРуку.add(n);
       // ребёнок — с дальней от проезжей части стороны: дальше от оси улицы, чем взрослый
-      if (к % 50 === 0 && w.ведёт.length > 0 && w.crossing === 0) {
+      // ребёнок обходит взрослого не мгновенно (`ПОВОРОТ_РУКИ`): мерим, когда он уже на своей стороне
+      if (к % 50 === 0 && w.ведёт.length > 0 && w.crossing === 0 && w.заУгол === null
+        && Math.abs(Math.sin((w.рука - рукаНадо(world, w)) / 2)) < 0.02) {
         const ось = along(world, w.shape, w.s), п = walkerPose(world, w), д = уРуки(world, w, 0);
         if (Math.hypot(д.x - ось.x, д.z - ось.z) > Math.hypot(п.x - ось.x, п.z - ось.z)) сДальней++; else уДороги++;
       }

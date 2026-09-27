@@ -2,9 +2,9 @@
 
 import type { Road } from './world/road.ts';
 import { DEFAULT_SCENE, ИМЕНА_СЦЕН, дорогиСцены, посёлокСцены } from './scenes.ts';
-import { ЦОКОЛЬ_ШИРЕ, гдеПроём, домНаУчастке } from './city/дом.ts';
+import { гдеПроём, домНаУчастке } from './city/дом.ts';
 import {
-  type Форма, type Твердь, ПУСТО, СТУПЕНЬ, коробка, круг, пройти, собратьТвердь, упереть, формыВещи,
+  type Форма, type Твердь, ПУСТО, СТУПЕНЬ, коробка, круг, пройти, собратьТвердь, следДома, упереть, формыВещи,
 } from './city/твердь.ts';
 import { частиВещи } from './модели.ts';
 import { ВИДЫ, КУСТЫ } from './растения/дерево.ts';
@@ -30,7 +30,7 @@ import {
   type Person, ПЛЕЧИ, createPerson, eyes as eyesOf, look, step as stepPerson,
 } from './person/person.ts';
 import {
-  type Mover, type Network, LENGTH, WIDE, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf,
+  type Mover, type Network, LENGTH, WIDE, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, столбы,
 } from './city/traffic.ts';
 import { КВАРТАЛ } from './city/norms.ts';
 import { judge, newWatchdog, tally } from './city/offence.ts';
@@ -239,7 +239,7 @@ function застройка(): void {
   viewer.setКрыльца(плиты);
   // твёрдо то же, что нарисовано: дом по цоколю, крыльцо — там, где оно выше ступени
   твёрдое.дома = [
-    ...дома.map(({ дом: д }) => коробка(д.x, д.z, д.курс, д.глубина + ЦОКОЛЬ_ШИРЕ, д.ширина + ЦОКОЛЬ_ШИРЕ)),
+    ...дома.map(({ дом: д }) => следДома(д)),
     ...плиты.filter((п) => п.верх - п.низ > СТУПЕНЬ).map((п) => коробка(п.x, п.z, п.курс, п.длина, п.ширина)),
   ];
   пересобратьТвердь();
@@ -1193,22 +1193,12 @@ viewer.onFrame((dt) => {
       };
     }), ...заРукой, ...воДворе]);
 
-    // светофоры: стойка справа от стоп-линии, головой к подъезжающим
-    const lamps: { x: number; y: number; z: number; yaw: number; colour: number }[] = [];
+    // светофоры: у бордюра справа от стоп-линии, головой к подъезжающим (`столбы`)
     const GLOW: Record<string, number> = { зелёный: 0x3fbf5a, жёлтый: 0xe8b53a, красный: 0xd6392f };
-    for (const signal of network.signals) {
-      for (const approach of signal.approaches) {
-        const at = along(world, approach.shape, approach.stopS);
-        const fx = at.fx * approach.dir, fz = at.fz * approach.dir;
-        const side = world.shapes[approach.shape].outerHalf + 0.6;
-        const x = at.x - fz * side, z = at.z + fx * side;
-        lamps.push({
-          x, y: ground.sample(x, z).height, z,
-          yaw: Math.atan2(fz, fx) + Math.PI,
-          colour: GLOW[lightFor(signal, approach, cityTime).light] ?? 0x555555,
-        });
-      }
-    }
+    const lamps = столбы(world, network).светофоры.map((с) => ({
+      x: с.x, y: ground.sample(с.x, с.z).height, z: с.z, yaw: с.yaw,
+      colour: GLOW[lightFor(с.signal, с.approach, cityTime).light] ?? 0x555555,
+    }));
     viewer.setSignals(lamps);
 
     /**
@@ -1218,17 +1208,7 @@ viewer.onFrame((dt) => {
      */
     if (!signsShown) {
       signsShown = true;
-      const знаки = network.signs.all.map((sg) => {
-        const at = along(world, sg.shape, sg.s);
-        const side = world.shapes[sg.shape].outerHalf + 0.8;
-        const fx = at.fx * sg.dir, fz = at.fz * sg.dir;
-        const x = at.x - fz * side, z = at.z + fx * side;
-        return {
-          x, y: ground.sample(x, z).height, z,
-          yaw: Math.atan2(fz, fx) + Math.PI,
-          kind: sg.kind, value: sg.value,
-        };
-      });
+      const знаки = столбы(world, network).знаки.map((sg) => ({ ...sg, y: ground.sample(sg.x, sg.z).height }));
       viewer.setSigns(знаки);
       // столбы знаков и светофоров твёрдые — в тех же местах, где нарисованы
       твёрдое.столбы = [...знаки, ...lamps].map((с) => круг(с.x, с.z, СТОЛБ));

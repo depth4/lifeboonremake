@@ -73,11 +73,24 @@ export interface Walker {
    */
   ведёт: readonly number[];
   /**
+   * Куда от взрослого стоит первый ребёнок, угол в плане (второй — напротив).
+   * Поворачивается к нужному (`рукаНадо`) не быстрее `ПОВОРОТ_РУКИ`: ребёнок
+   * обходит взрослого, а не перелетает. NaN — ещё не встал (встанет сразу
+   * куда надо).
+   */
+  рука: number;
+  /**
    * С кем стоит и говорит. ОДНА запись на двоих: оба смотрят на один
    * и тот же разговор, поэтому «один договорил и ушёл, а другой всё
    * говорит с пустым местом» записать нечем (`встречи.ts`).
    */
   разговор: { readonly a: Walker; readonly b: Walker; readonly до: number } | null;
+  /**
+   * Идёт за угол: от точки, где кончился прежний тротуар, до своей точки на
+   * новом (она ВЫЧИСЛЯЕТСЯ из shape, s, side — хранится только начало пути).
+   * null — идёт по тротуару.
+   */
+  заУгол: { readonly x: number; readonly z: number; прошёл: number; readonly длина: number } | null;
   /** Чем занят: для проверок. */
   state: 'идёт' | 'ждёт' | 'переходит' | 'говорит' | 'пришёл';
 }
@@ -131,7 +144,9 @@ export function placeWalkers(world: World, net: Network, count: number, seed = 3
       маршрут: null,
       дорога: -1,
       ведёт: [],
+      рука: NaN,
       разговор: null,
+      заУгол: null,
       state: 'идёт',
     });
   }
@@ -195,6 +210,10 @@ function растяжение(world: World, shape: number, s: number, side: numb
 export function walkerPose(world: World, w: Walker): { x: number; z: number; yaw: number } {
   const spot = along(world, w.shape, w.s);
   const точка = наТротуаре(world, w.shape, w.s, w.side, w.crossing);
+  if (w.заУгол !== null) {
+    const у = w.заУгол, t = Math.min(1, у.прошёл / Math.max(у.длина, 1e-6));
+    return { x: у.x + (точка.x - у.x) * t, z: у.z + (точка.z - у.z) * t, yaw: Math.atan2(точка.z - у.z, точка.x - у.x) };
+  }
   if (w.разговор !== null) {
     const он = w.разговор.a === w ? w.разговор.b : w.разговор.a;
     const там = наТротуаре(world, он.shape, он.s, он.side, он.crossing);
@@ -216,13 +235,50 @@ export function walkerPose(world: World, w: Walker): { x: number; z: number; yaw
  * Место ВЫЧИСЛЯЕТСЯ из места взрослого — и для показа, и для слежки.
  */
 export const РУКА = 0.55;
-export function заРуку(world: World, w: Walker, k: number): { x: number; z: number; yaw: number } {
-  const п = walkerPose(world, w);
+/**
+ * Как быстро ребёнок обходит взрослого, рад/с. Сторона руки меняется на углу
+ * и на переходе; мгновенная смена была прыжком ребёнка до метра за 0.1 с —
+ * 81 прыжок за 10 минут утра (`tools/обход.ts`). Четверть оборота за 0.4 с —
+ * полметра за шаг у самого быстрого.
+ */
+const ПОВОРОТ_РУКИ = 4;
+/** Куда от взрослого ДОЛЖЕН стоять первый ребёнок: наружу от оси, на переходе — вдоль улицы. */
+export function рукаНадо(world: World, w: Walker): number {
   const ось = along(world, w.shape, w.s);
-  const рука = (k % 2 === 0 ? 1 : -1) * РУКА;
   // наружу от оси — вправо от роста s, если тротуар справа (side = +1); на переходе — вдоль улицы
   const [bx, bz] = w.crossing > 0 ? [ось.fx, ось.fz] : [-ось.fz * w.side, ось.fx * w.side];
-  return { x: п.x + bx * рука, z: п.z + bz * рука, yaw: п.yaw };
+  return Math.atan2(bz, bx);
+}
+export function заРуку(world: World, w: Walker, k: number): { x: number; z: number; yaw: number } {
+  const п = walkerPose(world, w);
+  const угол = Number.isFinite(w.рука) ? w.рука : рукаНадо(world, w);
+  const рука = (k % 2 === 0 ? 1 : -1) * РУКА;
+  return { x: п.x + Math.cos(угол) * рука, z: п.z + Math.sin(угол) * рука, yaw: п.yaw };
+}
+
+/**
+ * ПОВОРОТ ЗА УГОЛ: с конца своего тротуара — на тротуар новой улицы С ТОЙ ЖЕ
+ * СТОРОНЫ УГЛА. Из двух сторон новой улицы берётся ближняя, и человек
+ * доходит до неё ногами (`Walker.заУгол`), а не переносится.
+ *
+ * До 27.09 сторона сохранялась числом — справа или слева по росту s, — а у
+ * новой улицы s может расти в другую сторону, и человек мгновенно оказывался
+ * через дорогу; поворот наугад ещё и бросал сторону монеткой. За 10 минут
+ * утра — 1055 скачков на углах, худший 28.8 м (`tools/обход.ts`; Алекс:
+ * «пешеходы на перекрёстке просто исчезают»). Нужна другая сторона — он
+ * перейдёт по переходу, как все.
+ */
+function заУгол(world: World, w: Walker, shape: number, s0: number, dir: number, прыжком = false): void {
+  const был = walkerPose(world, w);
+  w.shape = shape;
+  w.dir = dir;
+  w.s = s0 + dir * (тротуар(world, shape) + 1);
+  w.crossing = 0;
+  const справа = наТротуаре(world, shape, w.s, 1, 0), слева = наТротуаре(world, shape, w.s, -1, 0);
+  const доСправа = Math.hypot(справа.x - был.x, справа.z - был.z), доСлева = Math.hypot(слева.x - был.x, слева.z - был.z);
+  w.side = доСправа <= доСлева ? 1 : -1;
+  // заведомо сломанный вариант: перенос, как до 27.09 — ногами не доходит
+  w.заУгол = прыжком ? null : { x: был.x, z: был.z, прошёл: 0, длина: Math.min(доСправа, доСлева) };
 }
 
 /**
@@ -242,10 +298,12 @@ export function moveWalkers(
    * `разговор: 'на ходу'` — заведомо сломанный вариант: говорящие идут
    * дальше, как будто разговора нет, и расходятся посреди фразы.
    */
-  options: { походка?: 'по часам'; разговор?: 'на ходу' } = {},
+  options: { походка?: 'по часам'; разговор?: 'на ходу'; угол?: 'прыжком' } = {},
 ): void {
   const поЧасам = options.походка === 'по часам';
   const наХоду = options.разговор === 'на ходу';
+  /** `угол: 'прыжком'` — заведомо сломанный вариант: за угол переносом, а не ногами. */
+  const прыжком = options.угол === 'прыжком';
   for (const w of walkers) {
     /**
      * Дошедший не двигается вовсе. Без этого он ставил себе «пришёл»,
@@ -253,8 +311,25 @@ export function moveWalkers(
      * сквозь свою цель. Выход должен стоять ДО всего остального.
      */
     if (w.state === 'пришёл') continue;
+    // ребёнок у руки обходит взрослого к нужной стороне — не быстрее ПОВОРОТ_РУКИ
+    if (w.ведёт.length > 0) {
+      const надо = рукаНадо(world, w);
+      if (!Number.isFinite(w.рука)) w.рука = надо;
+      else {
+        const разница = Math.atan2(Math.sin(надо - w.рука), Math.cos(надо - w.рука));
+        w.рука += Math.max(-ПОВОРОТ_РУКИ * dt, Math.min(ПОВОРОТ_РУКИ * dt, разница));
+      }
+    }
     // говорящий стоит: разговор кончает `встречи.ts`, а не шаг
     if (w.разговор !== null && !наХоду) { w.state = 'говорит'; continue; }
+    // за углом — ногами до своего тротуара, потом снова по нему
+    if (w.заУгол !== null) {
+      w.state = 'идёт';
+      w.заУгол.прошёл += w.speed * dt;
+      if (!поЧасам) w.путь += w.speed * dt;
+      if (w.заУгол.прошёл >= w.заУгол.длина) w.заУгол = null;
+      continue;
+    }
     if (поЧасам) w.путь += PACE * dt;
     const total = net.length[w.shape];
 
@@ -340,27 +415,26 @@ export function moveWalkers(
       const ветка = net.atJunction[node.junction].find((l) => l.shape === поМаршруту);
       if (ветка !== undefined) {
         const хвост = net.length[ветка.shape];
-        w.shape = ветка.shape;
-        w.s = ветка.s;
         /**
          * На ПОСЛЕДНЕЙ улице идём к своей точке, а не «вглубь улицы».
          * Иначе человек сворачивает правильно, а потом уходит в другую
          * сторону от собственного подъезда.
          */
         const последняя = w.маршрут !== null && дальше(w.маршрут, ветка.shape) === null;
-        w.dir = последняя && w.маршрут !== null
+        const dir = последняя && w.маршрут !== null
           ? (w.маршрут.цель.s > ветка.s ? 1 : -1)
           : (ветка.s < хвост / 2 ? 1 : -1);
         // встаём у самого перехода: если сторона не та, отсюда и перейдём
-        w.s += w.dir * (тротуар(world, ветка.shape) + 1);
+        заУгол(world, w, ветка.shape, ветка.s, dir, прыжком);
         continue;
       }
     }
 
-    // своя улица, свой берег, а улица кончилась — значит цель позади
+    // своя улица, свой берег, а улица кончилась — значит цель позади.
+    // Разворот на месте: сдвиг на полтора метра «чтобы не сработало снова» был
+    // скачком (`tools/обход.ts`), а снова не сработает и так — конец теперь позади
     if (w.маршрут !== null && поМаршруту === null) {
       w.dir = -w.dir;
-      w.s += w.dir * 1.5;
       continue;
     }
 
@@ -386,14 +460,9 @@ export function moveWalkers(
     if (exits.length > 0 && decision < 0.9) {
       const pick = exits[Math.floor(roll(w) * exits.length) % exits.length];
       const tail = net.length[pick.shape];
-      w.shape = pick.shape;
-      w.s = pick.s;
-      w.dir = pick.s < tail / 2 ? 1 : -1;
-      w.s += w.dir * (world.shapes[pick.shape].outerHalf + 1);
-      if (roll(w) < 0.5) w.side = -w.side;
+      заУгол(world, w, pick.shape, pick.s, pick.s < tail / 2 ? 1 : -1, прыжком);
     } else {
       w.dir = -w.dir;
-      w.s += w.dir * 1.5;
     }
   }
 }
