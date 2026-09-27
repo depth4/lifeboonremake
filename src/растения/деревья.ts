@@ -9,37 +9,64 @@
  *   из него первые N, где N падает с расстоянием, а лист растёт — как у
  *   травы. Список заранее перемешан, поэтому первые N ложатся по всей кроне,
  *   а не на первые ветки.
+ * - **Дальняя крона** — у КАЖДОГО дерева города, без предела дальности:
+ *   пучки его же листьев (бугор на пучок) и ствол, две сотни
+ *   треугольников. Вблизи её нет; к краю дальности листьев она проступает
+ *   теми самыми точками, которыми растворяется листва (см. «ПРОЯВЛЕНИЕ»).
  * - **Ветер** — одна функция `treeSway` для коры и листа: лист качается
  *   ровно с точкой ветки, на которой сидит, и на ветру от неё не отрывается.
  *   Ветер, время и шум те же, что у травы.
  */
 
 import * as THREE from 'three';
+import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type Вид, ВИДЫ, КУСТЫ, type Скелет, вырастить } from './дерево.ts';
 import type { ОбщийВетер } from './показ.ts';
 
 /** Сколько разных деревьев на вид. */
 export const ВАРИАНТОВ = 2;
-/** Ближе этого — прутья в коре, м. */
+/**
+ * Ближе этого — прутья в коре, м. Прут не пропадает на этой черте, а к ней
+ * истончается до нуля (`ПРУТ_ТОНЬШЕ`), и то, что вдали их нет, не видно.
+ */
 const БЛИЖНИЕ = 45;
+const ПРУТ_ТОНЬШЕ = 0.7;
 /** До этого расстояния листьев полный набор, дальше редеют по квадрату. */
 const ПОЛНО = 22;
+/** Дальше листьев не меньше этой доли. */
+const ПОЛ = 0.07;
 /**
- * ДАЛЬНОСТЬ И РАСТВОРЕНИЕ.
+ * ПРОЯВЛЕНИЕ. 27.09 Алекс: «растительность по-прежнему прорисовывается по
+ * мере того, как едешь, и это бросается в глаза». Причин было три, и все
+ * три — «что видно, зависит не только от того, где глаз»:
  *
- * До 25.09 деревья обрезались числом (1024 ближайших), кусты — на 70 м,
- * и на границе дерево появлялось целиком, из пустоты (Алекс: «появляется
- * слишком резко»). Так в играх не делают: на границе дальности дерево
- * РАСТВОРЯЕТСЯ точками — пиксель за пикселем по узору (дизеринг, как
- * в Crysis и RDR2), без прозрачности и сортировки, и тень растворяется вместе
- * с ним. Здесь то же: в полосе `ПОЛОСА` метров до края доля видимых точек
- * падает от всех до ни одной.
+ * 1. **Листва ступенями.** Число листьев дерева считалось раз в 4 м пути
+ *    по месту последней раскладки, и лист менял размер тоже ступенькой.
+ *    Теперь раскладка только ОТВОДИТ листья с запасом (на ближайшее место,
+ *    куда глаз успеет дойти до следующей раскладки, — `ШАГ_РАСКЛАДКИ`),
+ *    а видно ли лист и какого он размера, шейдер считает каждый кадр от
+ *    глаза. Лист на пороге не выключается, а сжимается в точку.
+ * 2. **Крона вдали пустела.** Лист рос не больше чем в 2.4 раза, а редел
+ *    до 7%: за 53 м крона теряла площадь и дерево «набиралось» по мере
+ *    приближения. Теперь лист растёт ровно настолько, насколько поредели
+ *    соседи (площадь ∝ число × размер² = постоянна).
+ * 3. **Деревья кончались.** За 230 м деревьев не было вовсе — в чистом
+ *    воздухе, пешком и за рулём. Так в играх не делают: дерево не исчезает,
+ *    пока оно больше пикселя, а вдали его рисует дешёвый заменитель
+ *    (у SpeedTree и в RDR2 — картинка или упрощённая крона). Здесь —
+ *    дальняя крона. Листва растворяется точками по узору, крона проступает
+ *    в ДОПОЛНИТЕЛЬНЫХ точках того же узора: каждая точка экрана в полосе —
+ *    ровно одно из двух, не оба и не ни одного.
+ *
+ * Дальность листвы — `ДАЛЬ`, полоса перехода — `ПОЛОСА`.
  */
 const ДАЛЬ = 230;
 const ПОЛОСА = 40;
-/** Кусты — ближе и уже: полоса растворения своя. */
+/** Кусты — ближе и уже: полоса своя. */
 const КУСТ_ДАЛЬ = 90;
 const КУСТ_ПОЛОСА = 25;
+/** Раскладка — когда глаз ушёл от прошлой дальше этого, м. */
+const ШАГ_РАСКЛАДКИ = 4;
 /** Сколько деревьев одевается листьями. Потолок двоичного поиска листа — 2^11. */
 const МАКС = 2048;
 /** Ширина текстуры листьев. */
@@ -56,6 +83,9 @@ export const ФОРМЫ: Record<string, ФормаЛиста> = {
   ромб: { подпись: 'лист — ромб', точки: [[0, 0], [1, 0.45], [0, 1], [-1, 0.45]], тр: [0, 1, 2, 0, 2, 3] },
 };
 export const ПОРЯДОК_ЛИСТВЫ = ['прямоугольник', 'ромб'] as const;
+
+/** Насколько листва дерева светлее или темнее своего вида: одно число на листья и дальнюю крону. */
+const оттенок = (п: Pick<Посадка, 'вариант'>): number => 0.9 + 0.2 * ((п.вариант * 0.618) % 1);
 
 /** Одно дерево в мире: где, какое и как повёрнуто. */
 export interface Посадка {
@@ -91,6 +121,14 @@ uniform vec2 uWindDir;
 uniform float uWind;
 uniform sampler2D uNoise;
 ${КАЧНУТЬ}
+/**
+ * Доля ближнего вида (кора и листья) у дерева в точке at: 1 — только он,
+ * 0 — только дальняя крона. Одна функция на кору, лист и крону, поэтому
+ * их полосы перехода не могут разойтись.
+ */
+float nearShare(vec2 at, float edge, float band) {
+  return clamp((edge - distance(uCam.xz, at)) / band, 0.0, 1.0);
+}
 `;
 
 /* ─────────────────────────── кора ─────────────────────────── */
@@ -101,7 +139,7 @@ ${КАЧНУТЬ}
  */
 function кора(с: Скелет, даль: boolean): THREE.BufferGeometry {
   const п = ВИДЫ[с.вид];
-  const pos: number[] = [], nor: number[] = [], col: number[] = [], кач: number[] = [], idx: number[] = [];
+  const pos: number[] = [], nor: number[] = [], col: number[] = [], кач: number[] = [], прут: number[] = [], idx: number[] = [];
   const граней = [7, 5, 4, 3];
   const цвет = new THREE.Color();
   const тёмный = new THREE.Color().setHSL(0.08, 0.1, 0.12, THREE.SRGBColorSpace);
@@ -139,6 +177,8 @@ function кора(с: Скелет, даль: boolean): THREE.BufferGeometry {
         }
         col.push(цвет.r, цвет.g, цвет.b);
         кач.push(т0.вес, т0.своя, т0.фаза, с.высота);
+        // «прут» — всё, чего нет в дальней коре: к черте ближних оно истончается до нуля
+        прут.push(в.уровень >= п.уровней || (куст && в.уровень >= 1) ? т0.радиус : 0);
       }
       if (i > 0) {
         const p0 = начало + (i - 1) * n, p1 = начало + i * n;
@@ -154,6 +194,7 @@ function кора(с: Скелет, даль: boolean): THREE.BufferGeometry {
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.setAttribute('kach', new THREE.Float32BufferAttribute(кач, 4));
+  g.setAttribute('twig', new THREE.Float32BufferAttribute(прут, 1));
   g.setIndex(idx);
   g.computeBoundingSphere();
   return g;
@@ -164,21 +205,152 @@ function материалКоры(ветер: ОбщийВетер, даль: Re
   м.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, ветер, даль);
     shader.fragmentShader = РАСТВОРИТЬ + shader.fragmentShader.replace('void main() {', РАСТВОРИТЬ_ТОЧКУ);
-    shader.vertexShader = ОБЩЕЕ + 'attribute vec4 kach;\nvarying float vFade;\nuniform vec3 uCam;\nuniform float uTreeFar;\nuniform float uTreeBand;\n'
+    shader.vertexShader = 'uniform vec3 uCam;\n' + ОБЩЕЕ + 'attribute vec4 kach;\nattribute float twig;\nvarying float vFade;\nuniform float uTreeFar;\nuniform float uTreeBand;\n'
       + shader.vertexShader.replace('#include <project_vertex>', /* glsl */`
-      vec4 mvPosition = vec4( transformed, 1.0 );
       vFade = 1.0;
+      #ifdef USE_INSTANCING
+        // прут к черте ближних истончается до нуля — от глаза, каждый кадр
+        float twigD = distance(uCam.xz, instanceMatrix[3].xz);
+        transformed -= normal * twig * smoothstep(${(БЛИЖНИЕ * ПРУТ_ТОНЬШЕ).toFixed(1)}, ${БЛИЖНИЕ.toFixed(1)}, twigD);
+      #endif
+      vec4 mvPosition = vec4( transformed, 1.0 );
       #ifdef USE_INSTANCING
         mvPosition = instanceMatrix * mvPosition;
         float treeScale = length(instanceMatrix[1].xyz);
         mvPosition.xyz += treeSway(instanceMatrix[3].xz, kach.w * treeScale, kach.xyz);
-        vFade = clamp((uTreeFar - distance(uCam.xz, instanceMatrix[3].xz)) / uTreeBand, 0.0, 1.0);
+        vFade = nearShare(instanceMatrix[3].xz, uTreeFar, uTreeBand);
       #endif
       mvPosition = modelViewMatrix * mvPosition;
       gl_Position = projectionMatrix * mvPosition;
     `);
   };
   м.customProgramCacheKey = () => 'кора';
+  return м;
+}
+
+/* ─────────────────────────── дальняя крона ─────────────────────────── */
+
+/**
+ * Дальняя крона — из тех же листьев, что ближняя: не «шар по размаху»,
+ * а ПУЧКИ. Листья делятся на пучки по месту (k-средних: у дерева 10,
+ * у куста 4) — это и есть концы ветвей, где листья сидят гуще; каждый пучок —
+ * свой бугор по разбросу его листьев. Поэтому у тополя крона столбом,
+ * у берёзы свисает, у липы шатром, а между пучками в силуэте просветы —
+ * как у ближнего вида; одна оболочка на всю крону читалась шаром на палке.
+ * Внизу — ствол до середины кроны.
+ */
+function дальняяКрона(с: Скелет): THREE.BufferGeometry {
+  const п = ВИДЫ[с.вид];
+  const куст = п.стволов > 1;
+  const л = с.листья;
+  const K = Math.min(куст ? 4 : 10, л.length);
+  // начала пучков — листья через равный шаг списка: список перемешан, они разбросаны по кроне
+  const ц = Array.from({ length: K }, (_, k) => { const x = л[Math.floor((k * л.length) / K)]; return { x: x.x, y: x.y, z: x.z }; });
+  const чей = new Int32Array(л.length);
+  for (let шаг = 0; шаг < 10; шаг++) {
+    л.forEach((x, i) => {
+      let best = 0, bd = Infinity;
+      ц.forEach((c, k) => { const d = (x.x - c.x) ** 2 + (x.y - c.y) ** 2 + (x.z - c.z) ** 2; if (d < bd) { bd = d; best = k; } });
+      чей[i] = best;
+    });
+    const сумма = ц.map(() => ({ x: 0, y: 0, z: 0, n: 0 }));
+    л.forEach((x, i) => { const с2 = сумма[чей[i]]; с2.x += x.x; с2.y += x.y; с2.z += x.z; с2.n++; });
+    сумма.forEach((с2, k) => { if (с2.n > 0) ц[k] = { x: с2.x / с2.n, y: с2.y / с2.n, z: с2.z / с2.n }; });
+  }
+  let cy = 0, низ = Infinity, верх = -Infinity;
+  for (const x of л) { cy += x.y; низ = Math.min(низ, x.y); верх = Math.max(верх, x.y); }
+  cy /= л.length;
+  const зелень = new THREE.Color().setHSL(п.зелень[0], п.зелень[1], п.зелень[2], THREE.SRGBColorSpace);
+  const пучки: THREE.BufferGeometry[] = [];
+  ц.forEach((c, k) => {
+    // размер бугра — разброс листьев пучка по каждой оси (с запасом на выросший вдали лист)
+    let n = 0, sx = 0, sy = 0, sz = 0, длина = 0;
+    л.forEach((x, i) => {
+      if (чей[i] !== k) return;
+      n++; sx += (x.x - c.x) ** 2; sy += (x.y - c.y) ** 2; sz += (x.z - c.z) ** 2; длина += x.длина;
+    });
+    if (n === 0) return;
+    const запас = (длина / n) * 1.5;
+    // двадцать граней на пучок: вдали пучок — пара десятков точек экрана; нормаль гладкая, как у шара
+    const g = new THREE.IcosahedronGeometry(1, 0).deleteAttribute('uv');
+    g.setAttribute('normal', g.getAttribute('position').clone());
+    g.scale(Math.sqrt(sx / n) * 1.6 + запас, Math.sqrt(sy / n) * 1.6 + запас, Math.sqrt(sz / n) * 1.6 + запас).translate(c.x, c.y, c.z);
+    const pos = g.getAttribute('position');
+    const cols: number[] = [];
+    for (let v = 0; v < pos.count; v++) {
+      // низ кроны в тени верха
+      const k2 = 0.8 + 0.3 * THREE.MathUtils.clamp((pos.getY(v) - низ) / Math.max(верх - низ, 0.1), 0, 1);
+      cols.push(зелень.r * k2, зелень.g * k2, зелень.b * k2);
+    }
+    g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+    g.setAttribute('crown', new THREE.Float32BufferAttribute(new Float32Array(pos.count).fill(1), 1));
+    пучки.push(g);
+  });
+  const шар = mergeVertices(mergeGeometries(пучки)!);
+  if (куст) return шар;
+  // ствол: четыре грани от земли до середины кроны
+  const r = п.толщина / 2, кора = new THREE.Color().setHSL(п.кора[0], п.кора[1], п.кора[2], THREE.SRGBColorSpace);
+  const ствол = new THREE.CylinderGeometry(r * 0.7, r, cy, 4, 1, true).translate(0, cy / 2, 0).deleteAttribute('uv');
+  ствол.setAttribute('crown', new THREE.Float32BufferAttribute(new Float32Array(ствол.getAttribute('position').count), 1));
+  ствол.setAttribute('color', new THREE.Float32BufferAttribute(
+    Array.from({ length: ствол.getAttribute('position').count }, () => [кора.r, кора.g, кора.b]).flat(), 3));
+  const вместе = mergeGeometries([шар, ствол])!;
+  вместе.computeBoundingSphere();
+  return вместе;
+}
+
+/**
+ * Материал дальней кроны: видна там, где ближний вид растворён, — в тех
+ * точках узора, которые листва выбросила. `край` и `полоса` — те же
+ * объекты, что у листвы и коры своего дерева.
+ */
+function материалКроны(ветер: ОбщийВетер, uCam: THREE.IUniform, край: THREE.IUniform, полоса: THREE.IUniform): THREE.MeshLambertMaterial {
+  const м = new THREE.MeshLambertMaterial({ vertexColors: true });
+  м.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, ветер, { uCam, uEdge: край, uBand: полоса });
+    shader.vertexShader = 'uniform vec3 uCam;\n' + ОБЩЕЕ
+      + 'attribute float crown;\nvarying float vFade;\nvarying float vCrown;\nvarying vec3 vWP;\nvarying vec3 vWN;\nuniform float uEdge;\nuniform float uBand;\n'
+      + shader.vertexShader.replace('#include <begin_vertex>', /* glsl */`
+      #include <begin_vertex>
+      vFade = 1.0;
+      vCrown = crown;
+      vWP = transformed;
+      vWN = objectNormal;
+      #ifdef USE_INSTANCING
+        vFade = nearShare(instanceMatrix[3].xz, uEdge, uBand);
+        vWP = (instanceMatrix * vec4(transformed, 1.0)).xyz;
+        vWN = mat3(instanceMatrix) * objectNormal;
+      #endif
+      // пока дерево целиком ближнее, крону не рисуем вовсе: все вершины в одну точку
+      if (vFade >= 1.0) transformed = vec3(0.0);
+    `);
+    /**
+     * Крона — не гладкий шар (его Алекс уже забраковал 23.09): край рвётся
+     * по шуму, как пучки листьев на фоне неба, поверхность пятнистая, а свет
+     * ложится как на листья — нормаль наполовину к глазу (у листа она тоже
+     * повёрнута к смотрящему), иначе крона темнее листвы, и переход виден.
+     */
+    shader.fragmentShader = /* glsl */`
+      varying float vCrown;
+      varying vec3 vWP;
+      varying vec3 vWN;
+      float crownHash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+      float crownNoise(vec3 p) {
+        vec3 i = floor(p), f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(mix(crownHash(i), crownHash(i + vec3(1, 0, 0)), f.x), mix(crownHash(i + vec3(0, 1, 0)), crownHash(i + vec3(1, 1, 0)), f.x), f.y),
+                   mix(mix(crownHash(i + vec3(0, 0, 1)), crownHash(i + vec3(1, 0, 1)), f.x), mix(crownHash(i + vec3(0, 1, 1)), crownHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+      }
+    ` + РАСТВОРИТЬ + shader.fragmentShader
+      .replace('void main() {', ПРОСТУПИТЬ_ТОЧКУ + /* glsl */`
+        float leafy = crownNoise(vWP * 1.1) * 0.6 + crownNoise(vWP * 2.9 + 17.0) * 0.4;
+        float facing = abs(dot(normalize(vWN), normalize(cameraPosition - vWP)));
+        if (vCrown > 0.5 && leafy < 0.95 - facing * 1.6) discard;
+      `)
+      .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= mix(1.0, 0.72 + 0.5 * leafy, vCrown);')
+      .replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\n  normal = normalize(mix(normal, vec3(0.0, 0.0, 1.0), 0.45 * vCrown));');
+  };
+  м.customProgramCacheKey = () => 'крона';
   return м;
 }
 
@@ -193,16 +365,20 @@ float bayer4(vec2 p) {
 }
 `;
 const РАСТВОРИТЬ_ТОЧКУ = 'void main() {\n  if (vFade < bayer4(gl_FragCoord.xy)) discard;';
+/** Ровно дополнение `РАСТВОРИТЬ_ТОЧКУ`: точка экрана — или ближний вид, или крона. */
+const ПРОСТУПИТЬ_ТОЧКУ = 'void main() {\n  if (vFade >= bayer4(gl_FragCoord.xy)) discard;';
 
 /* ─────────────────────────── листья ─────────────────────────── */
 
 const ЛИСТ_ВЕРШИНА = /* glsl */`
+uniform vec3 uCam;
 ${ОБЩЕЕ}
 uniform sampler2D uLeafData;
 uniform sampler2D uTreeData;
 uniform sampler2D uTreeSum;
 uniform float uTreeCount;
-uniform vec3 uCam;
+/** Откуда считается, сколько листьев видно: глаз (в сломанном варианте — место раскладки). */
+uniform vec3 uLeafEye;
 uniform vec3 uSunDir;
 varying vec3 vLeaf;
 varying float vTrans;
@@ -222,10 +398,10 @@ const ЛИСТ_ТЕЛО = /* glsl */`
     if (int(texelFetch(uTreeSum, ivec2(mid, 0), 0).r) <= inst) lo = mid; else hi = mid - 1;
   }
   vec4 t0 = texelFetch(uTreeData, ivec2(lo, 0), 0);   // x, низ, z, курс
-  vec4 t1 = texelFetch(uTreeData, ivec2(lo, 1), 0);   // масштаб, начало, рост листа, высота шаблона
+  vec4 t1 = texelFetch(uTreeData, ivec2(lo, 1), 0);   // масштаб, начало, листьев у шаблона, высота шаблона
   vec4 t2 = texelFetch(uTreeData, ivec2(lo, 2), 0);   // цвет листа
   vec4 t3 = texelFetch(uTreeData, ivec2(lo, 3), 0);   // край дальности и полоса растворения
-  vFade = clamp((t3.x - distance(uCam.xz, t0.xz)) / t3.y, 0.0, 1.0);
+  vFade = nearShare(t0.xz, t3.x, t3.y);
   int j = inst - int(texelFetch(uTreeSum, ivec2(lo, 0), 0).r);
   int L = (int(t1.y) + j) * 3;
   vec4 a = leafTexel(L), b = leafTexel(L + 1), c = leafTexel(L + 2);
@@ -244,7 +420,13 @@ const ЛИСТ_ТЕЛО = /* glsl */`
   side = normalize(side * cos(flap) + cross(dir, side) * sin(flap));
   vec3 face = normalize(cross(side, dir));
 
-  float len = a.w * S * t1.z;
+  // сколько листьев видно и какого они размера — от глаза, каждый кадр:
+  // реже в share раз — крупнее в 1/sqrt(share), площадь кроны та же;
+  // лист у порога сжимается в точку, а не выключается
+  float eyeD = distance(uLeafEye.xz, t0.xz);
+  float share = clamp(${(ПОЛНО * ПОЛНО).toFixed(1)} / max(eyeD * eyeD, 1.0), ${ПОЛ}, 1.0);
+  float rank = (float(j) + 0.5) / t1.z;
+  float len = a.w * S * inversesqrt(share) * (1.0 - smoothstep(share * 0.8, share, rank));
   vec3 leafP = anchor + dir * position.y * len + side * position.x * len * 0.32;
 
   // свет объёма: наполовину от листа, наполовину от середины кроны
@@ -278,9 +460,18 @@ export interface Деревья {
   цена(): ЦенаДеревьев;
 }
 
-export function создатьДеревья(сцена: THREE.Scene, солнце: THREE.DirectionalLight, ветер: ОбщийВетер): Деревья {
-  /** Шаблоны: вид × вариант → скелет, кора вблизи и вдали, где его листья в текстуре. */
-  const шаблоны = new Map<string, { с: Скелет; вблизи: THREE.BufferGeometry; вдали: THREE.BufferGeometry; начало: number; листьев: number; цвет: THREE.Color }>();
+/**
+ * `редеть: 'ступенями'` — заведомо сломанный вариант для проверки: сколько
+ * листьев видно, считается от места раскладки, а не от глаза, как до 27.09.
+ */
+export function создатьДеревья(сцена: THREE.Scene, солнце: THREE.DirectionalLight, ветер: ОбщийВетер,
+  как: { редеть?: 'ступенями' } = {}): Деревья {
+  const ступенями = как.редеть === 'ступенями';
+  /** Шаблоны: вид × вариант → скелет, кора вблизи и вдали, дальняя крона, где его листья в текстуре. */
+  const шаблоны = new Map<string, {
+    с: Скелет; вблизи: THREE.BufferGeometry; вдали: THREE.BufferGeometry; крона: THREE.BufferGeometry;
+    начало: number; листьев: number; цвет: THREE.Color;
+  }>();
   const листья: number[] = [];
   for (const вид of Object.keys(ВИДЫ) as Вид[]) {
     for (let в = 0; в < ВАРИАНТОВ; в++) {
@@ -300,7 +491,7 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
       }
       const п = ВИДЫ[вид];
       шаблоны.set(`${вид}:${в}`, {
-        с, вблизи: кора(с, false), вдали: кора(с, true), начало, листьев: с.листья.length,
+        с, вблизи: кора(с, false), вдали: кора(с, true), крона: дальняяКрона(с), начало, листьев: с.листья.length,
         цвет: new THREE.Color().setHSL(п.зелень[0], п.зелень[1], п.зелень[2], THREE.SRGBColorSpace),
       });
     }
@@ -326,6 +517,7 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
     uTreeSum: { value: суммаТ as THREE.Texture },
     uTreeCount: { value: 0 },
     uCam: { value: new THREE.Vector3() },
+    uLeafEye: { value: new THREE.Vector3() },
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uSunColor: { value: new THREE.Color() },
     // край дальности деревьев сейчас (он ближе ДАЛИ, когда ближних больше МАКС)
@@ -358,6 +550,10 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
   теньЛиста.customProgramCacheKey = () => 'лист-тень';
 
   const материалКорыОбщий = материалКоры(ветер, { uCam: uniforms.uCam, uTreeFar: uniforms.uTreeFar, uTreeBand: uniforms.uTreeBand });
+  const материалКроныДерева = материалКроны(ветер, uniforms.uCam, uniforms.uTreeFar, uniforms.uTreeBand);
+  const материалКроныКуста = материалКроны(ветер, uniforms.uCam, { value: КУСТ_ДАЛЬ }, { value: КУСТ_ПОЛОСА });
+  /** Дальние кроны: по мешу на шаблон, у всех деревьев города, ставятся раз. */
+  const кроны: THREE.InstancedMesh[] = [];
 
   let форма: string | null = null;
   let листМеш: THREE.Mesh | null = null;
@@ -409,7 +605,8 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
     // кора
     const группы = new Map<string, { п: Посадка }[]>();
     for (const { п, d } of по) {
-      const ключ = `${п.вид}:${п.вариант % ВАРИАНТОВ}:${d < БЛИЖНИЕ ? 'в' : 'д'}`;
+      // с прутьями — все, кто может оказаться ближе черты до следующей раскладки
+      const ключ = `${п.вид}:${п.вариант % ВАРИАНТОВ}:${d < БЛИЖНИЕ + ШАГ_РАСКЛАДКИ ? 'в' : 'д'}`;
       const г = группы.get(ключ);
       if (г) г.push({ п }); else группы.set(ключ, [{ п }]);
     }
@@ -441,11 +638,13 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
     let сумма = 0;
     по.forEach(({ п, d }, i) => {
       const ш = шаблоны.get(`${п.вид}:${п.вариант % ВАРИАНТОВ}`)!;
-      const доля = Math.min(1, Math.max(0.07, (ПОЛНО / Math.max(d, 1)) ** 2));
-      const n = Math.ceil(ш.листьев * доля);
+      // отвести столько, сколько понадобится в самом близком месте, куда глаз
+      // дойдёт до следующей раскладки; видно ли лист — решает шейдер
+      const ближе = Math.max(d - ШАГ_РАСКЛАДКИ, 1);
+      const n = Math.ceil(ш.листьев * Math.min(1, Math.max(ПОЛ, (ПОЛНО / ближе) ** 2)));
       деревоДанные.set([п.x, п.низ, п.z, п.курс], (0 * МАКС + i) * 4);
-      деревоДанные.set([п.масштаб, ш.начало, Math.min(2.4, 1 / Math.sqrt(доля)), ш.с.высота], (1 * МАКС + i) * 4);
-      const в = 0.9 + 0.2 * ((п.вариант * 0.618) % 1);
+      деревоДанные.set([п.масштаб, ш.начало, ш.листьев, ш.с.высота], (1 * МАКС + i) * 4);
+      const в = оттенок(п);
       деревоДанные.set([ш.цвет.r * в, ш.цвет.g * в, ш.цвет.b * в, 1], (2 * МАКС + i) * 4);
       const куст = КУСТЫ.includes(п.вид);
       деревоДанные.set([куст ? КУСТ_ДАЛЬ : крайДеревьев, куст ? КУСТ_ПОЛОСА : ПОЛОСА, 0, 0], (3 * МАКС + i) * 4);
@@ -458,7 +657,7 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
     if (листМеш !== null) (листМеш.geometry as THREE.InstancedBufferGeometry).instanceCount = форма === null ? 0 : сумма;
     цена = {
       деревьев: по.length, листьев: форма === null ? 0 : сумма, вершинКоры,
-      вызовов: кораМеши.size + (форма === null ? 0 : 2), форма: форма === null ? 'нет' : ФОРМЫ[форма].подпись,
+      вызовов: кораМеши.size + кроны.length + (форма === null ? 0 : 2), форма: форма === null ? 'нет' : ФОРМЫ[форма].подпись,
     };
   };
 
@@ -466,6 +665,30 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
     поставить(новые) {
       посадки = новые;
       убратьКору();
+      for (const м of кроны) { сцена.remove(м); м.dispose(); }
+      кроны.length = 0;
+      const поШаблонам = new Map<string, Посадка[]>();
+      for (const п of новые) {
+        const ключ = `${п.вид}:${п.вариант % ВАРИАНТОВ}`;
+        const г = поШаблонам.get(ключ);
+        if (г) г.push(п); else поШаблонам.set(ключ, [п]);
+      }
+      const матрица = new THREE.Matrix4(), кв = new THREE.Quaternion(), ось = new THREE.Vector3(0, 1, 0), цвет = new THREE.Color();
+      for (const [ключ, г] of поШаблонам) {
+        const куст = КУСТЫ.includes(г[0].вид);
+        const м = new THREE.InstancedMesh(шаблоны.get(ключ)!.крона, куст ? материалКроныКуста : материалКроныДерева, г.length);
+        г.forEach((п, i) => {
+          кв.setFromAxisAngle(ось, -п.курс);
+          матрица.compose(new THREE.Vector3(п.x, п.низ, п.z), кв, new THREE.Vector3(п.масштаб, п.масштаб, п.масштаб));
+          м.setMatrixAt(i, матрица);
+          const в = оттенок(п);
+          м.setColorAt(i, цвет.setRGB(в, в, в));
+        });
+        м.frustumCulled = false;
+        м.name = 'крона';
+        сцена.add(м);
+        кроны.push(м);
+      }
       где = { x: Infinity, z: Infinity };
     },
     форма(новое) { задатьФорму(новое); },
@@ -477,10 +700,12 @@ export function создатьДеревья(сцена: THREE.Scene, солнц
       uniforms.uSunColor.value.copy(солнце.color).multiplyScalar(солнце.intensity);
       if (листМеш !== null) листМеш.visible = форма !== null;
       // раскладка дорогая — только когда камера ушла на несколько метров
-      if (Math.hypot(камера.position.x - где.x, камера.position.z - где.z) > 4) {
+      if (Math.hypot(камера.position.x - где.x, камера.position.z - где.z) > ШАГ_РАСКЛАДКИ) {
         где = { x: камера.position.x, z: камера.position.z };
         разложить(где.x, где.z);
+        if (ступенями) uniforms.uLeafEye.value.copy(камера.position);
       }
+      if (!ступенями) uniforms.uLeafEye.value.copy(камера.position);
     },
   };
 }
