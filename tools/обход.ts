@@ -261,18 +261,21 @@ async function листСнимков(какие: readonly number[], экспо�
         return сумма / (d.length / 4) / 255;
       }, кадр.toString('base64'));
       яркости.push({ имя: т.имя, яркость });
-      writeFileSync(файл(i) + '.txt', [...ошибки, `яркость ${яркость.toFixed(2)}`].join('; '));
+      writeFileSync(файл(i) + '.json', JSON.stringify({ ошибки, яркость }));
       лог(`${i + 1}. снято, яркость ${яркость.toFixed(2)}${ошибки.length ? ' — ' + ошибки.join('; ') : ''}`);
       await page.close();
     }
     // лист: два столбца, подписи — чтобы смотреть всё одним взглядом
     const кадры = МАРШРУТ.map((т, i) => ({ имя: т.имя, i })).filter(({ i }) => existsSync(файл(i)))
-      .map(({ имя, i }) => ({ имя, png: readFileSync(файл(i)).toString('base64'), ошибки: existsSync(файл(i) + '.txt') ? readFileSync(файл(i) + '.txt', 'utf8') : '' }));
+      .map(({ имя, i }) => {
+        const о = existsSync(файл(i) + '.json') ? JSON.parse(readFileSync(файл(i) + '.json', 'utf8')) as { ошибки: string[]; яркость: number } : { ошибки: [], яркость: NaN };
+        return { имя, png: readFileSync(файл(i)).toString('base64'), ошибки: о.ошибки.join('; '), яркость: о.яркость };
+      });
     const лист = await browser.newPage({ viewport: { width: 1940, height: 1700 } });
     await лист.setContent(`<body style="margin:0;background:#15171a;font:16px sans-serif;color:#ddd">
       <div style="display:grid;grid-template-columns:960px 960px;gap:10px;padding:5px">
       ${кадры.map((к) => `<figure style="margin:0"><img src="data:image/png;base64,${к.png}" width="960" height="540">
-        <figcaption style="padding:4px 2px">${к.имя}${к.ошибки ? ' <b style="color:#f66">' + к.ошибки + '</b>' : ''}</figcaption></figure>`).join('')}
+        <figcaption style="padding:4px 2px">${к.имя} <span style="color:#889">яркость ${к.яркость.toFixed(2)}</span>${к.ошибки ? ' <b style="color:#f66">' + к.ошибки + '</b>' : ''}</figcaption></figure>`).join('')}
       </div></body>`);
     writeFileSync('shots/обход.png', await лист.screenshot({ fullPage: true }));
     лог('лист снимков: shots/обход.png');

@@ -5,9 +5,10 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Material, Surface } from './surface/index.ts';
 import { создатьЛюдей } from './person/фигура.ts';
-import { type Дом, ДВЕРЬ, ОКНО, ЦОКОЛЬ_ШИРЕ, ЭТАЖ, осиПроёма } from './city/дом.ts';
+import { type Дом, БАЛКОН, ДВЕРЬ, ОКНО, ЦОКОЛЬ_ШИРЕ, ЭТАЖ, низОкна, осиПроёма } from './city/дом.ts';
 import type { Площадка, Плита } from './city/площадка.ts';
 import type { Посадочное } from './city/зелень.ts';
 import { ПОДЪЁМ_ПОДХОДА, type Вещь, type Подход } from './city/двор.ts';
@@ -474,6 +475,72 @@ function обрамление(ширина: number, высота: number, как
   итог.setAttribute('position', new THREE.Float32BufferAttribute(поз, 3));
   итог.setAttribute('normal', new THREE.Float32BufferAttribute(норм, 3));
   return итог;
+}
+
+/**
+ * СТЕНА С ЛИЦОМ. До 27.09 стена была гладкой коробкой одного цвета, и с
+ * улицы дом читался ящиком (Алекс: «стена безликих ящиков»). Теперь шейдер
+ * рисует на ней то, что у настоящего дома видно издалека:
+ * - межэтажные швы — по полу каждого этажа (`ЭТАЖ`);
+ * - у панельного дома (от трёх этажей) — вертикальные швы МЕЖДУ столбцами
+ *   окон: столбцов столько же, сколько у окон в `city/дом.ts` (длина грани
+ *   на шаг окна), поэтому шов не может пройти сквозь окно;
+ * - свой тон у каждой панели, грязь у земли, потёки с карниза.
+ * Размеры — из самой коробки (масштаб экземпляра), данных не прибавилось.
+ */
+function материалСтены(): THREE.MeshStandardMaterial {
+  const м = new THREE.MeshStandardMaterial({ roughness: 0.9 });
+  м.onBeforeCompile = (shader) => {
+    shader.vertexShader = 'varying vec4 vFacade;\n' + shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      vFacade = vec4(0.0);
+      #ifdef USE_INSTANCING
+        vec3 sc = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+        vec3 lp = position * sc;
+        bool front = abs(normal.x) > 0.5;
+        // u — вдоль грани от её середины, v — от низа стены, z — высота стены, w — длина грани
+        vFacade = vec4(front ? lp.z : lp.x, lp.y, sc.y, front ? sc.z : sc.x);
+      #endif`);
+    shader.fragmentShader = 'varying vec4 vFacade;\n' + shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+      {
+        float u = vFacade.x, v = vFacade.y, H = vFacade.z, L = max(vFacade.w, 0.01);
+        float panel = step(${(ЭТАЖ * 3 - 0.5).toFixed(2)}, H);
+        float n = max(1.0, floor(L / ${ОКНО.шаг.toFixed(2)}));
+        float s = L / n;
+        float fu = fract((u + L * 0.5) / s);
+        float fv = fract(v / ${ЭТАЖ.toFixed(1)});
+        float seamH = 1.0 - smoothstep(0.0, 0.04, min(fv, 1.0 - fv) * ${ЭТАЖ.toFixed(1)});
+        float seamV = (1.0 - smoothstep(0.0, 0.035, min(fu, 1.0 - fu) * s)) * panel;
+        vec2 cell = vec2(floor((u + L * 0.5) / s), floor(v / ${ЭТАЖ.toFixed(1)}));
+        float tone = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+        diffuseColor.rgb *= 1.0 + (tone - 0.5) * 0.08 * panel;
+        diffuseColor.rgb *= 1.0 - 0.3 * max(seamH * mix(0.6, 1.0, panel), seamV);
+        // грязь у земли и потёки с карниза
+        diffuseColor.rgb *= mix(0.82, 1.0, smoothstep(0.0, 1.8, v));
+        float streak = fract(sin(floor(u * 4.0) * 91.7 + cell.x) * 4375.5);
+        diffuseColor.rgb *= 1.0 - 0.07 * smoothstep(0.55, 1.0, streak) * smoothstep(H - 5.0, H, v);
+      }`);
+  };
+  м.customProgramCacheKey = () => 'стена';
+  return м;
+}
+
+/**
+ * Балкон в осях проёма (x — наружу от стены, y — вверх от низа плиты,
+ * z — вдоль стены): плита, ограждение спереди и с боков. Размеры — из
+ * `БАЛКОН` в `city/дом.ts`, там же решено, где балконы стоят.
+ */
+function балконГеометрия(): THREE.BufferGeometry {
+  const { вынос, ширина, плита, ограждение } = БАЛКОН;
+  const т = 0.06;
+  const куски = [
+    new THREE.BoxGeometry(вынос, плита, ширина).translate(вынос / 2, плита / 2, 0),
+    new THREE.BoxGeometry(т, ограждение, ширина).translate(вынос - т / 2, плита + ограждение / 2, 0),
+    new THREE.BoxGeometry(вынос - т, ограждение, т).translate((вынос - т) / 2, плита + ограждение / 2, ширина / 2 - т / 2),
+    new THREE.BoxGeometry(вынос - т, ограждение, т).translate((вынос - т) / 2, плита + ограждение / 2, -ширина / 2 + т / 2),
+  ].map((g) => g.deleteAttribute('uv'));
+  const g = mergeGeometries(куски)!;
+  куски.forEach((к) => к.dispose());
+  return g;
 }
 
 /**
@@ -1560,6 +1627,7 @@ export function show(
 
       const скатных = дома.filter((д) => д.дом.крыша === 'скатная').length;
       const окон = дома.reduce((n, д) => n + д.дом.окна.length, 0);
+      const балконовВсего = дома.reduce((n, д) => n + д.дом.балконы.length, 0);
       const дверей = дома.reduce((n, д) => n + д.дом.двери.length, 0);
 
       /** Коробка с началом координат на нижней грани: дом СТОИТ на земле. */
@@ -1581,7 +1649,7 @@ export function show(
         new THREE.MeshStandardMaterial({ roughness: шероховатость });
 
       const цоколь = пачка(коробка(), дома.length, камень(0.95));
-      const стены = пачка(коробка(), дома.length, камень(0.9));
+      const стены = пачка(коробка(), дома.length, материалСтены());
       const плоские = пачка(коробка(), дома.length - скатных, камень(0.85));
       const скаты = пачка(двускатная({ торцы: false }), скатных,
         new THREE.MeshStandardMaterial({ roughness: 0.8, side: THREE.DoubleSide }));
@@ -1611,7 +1679,8 @@ export function show(
       const входы = пачка(обрамление(ДВЕРЬ.ширина, ДВЕРЬ.высота, { подоконник: false, импост: false, козырёк: true }),
         дверей, камень(0.8));
       рамы.castShadow = false;
-      застройка = [цоколь, стены, плоские, скаты, фронтоны, окна, двери, рамы, входы];
+      const балконы = пачка(балконГеометрия(), балконовВсего, камень(0.85));
+      застройка = [цоколь, стены, плоские, скаты, фронтоны, окна, двери, рамы, входы, балконы];
       scene.add(...застройка);
 
       const m = new THREE.Matrix4();
@@ -1621,7 +1690,7 @@ export function show(
       const размер = new THREE.Vector3();
       const тон = new THREE.Color();
       const небо = new THREE.Color(СТЕКЛО.вверху);
-      let плоскихN = 0, скатовN = 0, оконN = 0, дверейN = 0;
+      let плоскихN = 0, скатовN = 0, оконN = 0, дверейN = 0, балконовN = 0;
 
       /**
        * Поставить часть: смещение в осях дома (вперёд, вбок), НИЗ части над
@@ -1681,12 +1750,19 @@ export function show(
         }
         for (const п of д.окна) {
           const м = куда(п);
-          const низ = п.этаж * ЭТАЖ + ОКНО.отПола;
-          порогиОкон[оконN] = порогОкна(д.x, д.z, п.грань, п.вдоль, п.этаж);
+          const низ = низОкна(п);
+          // свет на лестнице горит почти всегда: по столбу горящих окон подъезд виден ночью издалека
+          порогиОкон[оконN] = п.лестница === true ? 0.02 : порогОкна(д.x, д.z, п.грань, п.вдоль, п.этаж);
           const стекло = тон.setHex(СТЕКЛО.внизу).lerp(небо, Math.min(1, низ / СТЕКЛО.небоНа)).getHex();
           часть(окна, оконN, д, пл.пол, м.вперёд, низ, м.вбок,
             ТОЛЩИНА, ОКНО.высота, ОКНО.ширина, м.доворот, стекло);
           часть(рамы, оконN++, д, пл.пол, м.вперёд, низ, м.вбок, 1, 1, 1, м.доворот, РАМА);
+        }
+        // балкон: верх плиты — пол своего этажа; ограждение чуть светлее стены
+        const цветБалкона = тон.setHex(д.цвет).multiplyScalar(1.06).getHex();
+        for (const п of д.балконы) {
+          const м = куда(п);
+          часть(балконы, балконовN++, д, пл.пол, м.вперёд, п.этаж * ЭТАЖ - БАЛКОН.плита, м.вбок, 1, 1, 1, м.доворот, цветБалкона);
         }
       });
 
