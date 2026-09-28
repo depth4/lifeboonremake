@@ -23,7 +23,7 @@ import { GroundIndex } from './car/ground.ts';
 import { type Плита, крыльцо, площадкаПодСледом } from './city/площадка.ts';
 import { SETUPS, VIPER } from './car/passport.ts';
 import { P_ZERO } from './car/tyre.ts';
-import { type Car, createCar, forwardSpeed, restLength, step } from './car/car.ts';
+import { type Car, type Кватернион, type ПозаКузова, createCar, forwardSpeed, step, подвесить, подкрутить, центрКолеса } from './car/car.ts';
 import { createDriver } from './car/controls.ts';
 import { createAim } from './aim.ts';
 import {
@@ -1032,7 +1032,7 @@ el('drive')?.addEventListener('click', (event) => {
     const names = Object.keys(SETUPS);
     const next = names[(names.indexOf(VIPER.suspension.label) + 1) % names.length];
     VIPER.suspension = SETUPS[next];
-    if (car !== null) car.wheels.forEach((w, i) => { w.rest = restLength(VIPER, i < 2); });
+    if (car !== null) подвесить(car, VIPER);
     drivePanel();
   }
 });
@@ -1051,7 +1051,7 @@ addEventListener('keydown', (event) => {
   if (event.code === 'KeyP') {
     const names = Object.keys(SETUPS);
     VIPER.suspension = SETUPS[names[(names.indexOf(VIPER.suspension.label) + 1) % names.length]];
-    car.wheels.forEach((w, i) => { w.rest = restLength(VIPER, i < 2); });
+    подвесить(car, VIPER);
     drivePanel();
   }
 });
@@ -1078,22 +1078,28 @@ let bank = 0;
  * одно и то же, 3 мс, и потому его не видно (так делают все, кто считает
  * физику постоянным шагом: Glenn Fiedler, «Fix Your Timestep!»).
  */
-interface Поза {
-  x: number; y: number; z: number; yaw: number; pitch: number; roll: number;
-  колёса: { x: number; y: number; z: number; steer: number }[];
+/**
+ * В позе — кузов и ход подвесок, но НЕ места колёс: колёса ставятся уже
+ * по промежуточной позе (`центрКолеса`), поэтому между шагами они не
+ * могут разойтись с кузовом.
+ */
+interface Поза extends ПозаКузова {
+  колёса: { travel: number; steer: number }[];
 }
 const позаМашины = (c: Car): Поза => ({
-  x: c.x, y: c.bodyY, z: c.z, yaw: c.yaw, pitch: c.pitch, roll: c.roll,
-  колёса: c.wheels.map((w) => ({ x: w.x, y: w.y, z: w.z, steer: w.steer })),
+  x: c.x, y: c.y, z: c.z, q: c.q,
+  колёса: c.wheels.map((w) => ({ travel: w.travel, steer: w.steer })),
 });
 const между = (a: Поза, b: Поза, t: number): Поза => {
   const m = (p: number, q: number): number => p + (q - p) * t;
+  // поворот — по кратчайшей дуге: у q и −q поворот один и тот же
+  const знак = a.q.w * b.q.w + a.q.x * b.q.x + a.q.y * b.q.y + a.q.z * b.q.z < 0 ? -1 : 1;
+  const q = { w: m(a.q.w, знак * b.q.w), x: m(a.q.x, знак * b.q.x), y: m(a.q.y, знак * b.q.y), z: m(a.q.z, знак * b.q.z) };
+  const n = Math.hypot(q.w, q.x, q.y, q.z);
+  const поворот: Кватернион = { w: q.w / n, x: q.x / n, y: q.y / n, z: q.z / n };
   return {
-    x: m(a.x, b.x), y: m(a.y, b.y), z: m(a.z, b.z),
-    yaw: m(a.yaw, b.yaw), pitch: m(a.pitch, b.pitch), roll: m(a.roll, b.roll),
-    колёса: a.колёса.map((w, i) => ({
-      x: m(w.x, b.колёса[i].x), y: m(w.y, b.колёса[i].y), z: m(w.z, b.колёса[i].z), steer: m(w.steer, b.колёса[i].steer),
-    })),
+    x: m(a.x, b.x), y: m(a.y, b.y), z: m(a.z, b.z), q: поворот,
+    колёса: a.колёса.map((w, i) => ({ travel: m(w.travel, b.колёса[i].travel), steer: m(w.steer, b.колёса[i].steer) })),
   };
 };
 /** Поза перед последним шагом физики. null — машина не считается (стоит без водителя). */
@@ -1333,21 +1339,22 @@ viewer.onFrame((dt) => {
   const шины = car.wheels;
   const видно = позаДо === null || ПОСЛЕДНИЙ_ШАГ ? сейчас : между(позаДо, сейчас, bank / PHYSICS_STEP);
   viewer.setCar({
-    x: видно.x, y: видно.y, z: видно.z,
-    yaw: видно.yaw, pitch: видно.pitch, roll: видно.roll, speed,
+    x: видно.x, y: видно.y, z: видно.z, q: видно.q, низ: VIPER.cgHeight,
+    yaw: car.yaw, speed,
     wheels: видно.колёса.map((w, i) => ({
-      ...w, spin: spinAngle[i],
+      ...центрКолеса(видно, шины[i], w.travel), steer: w.steer, spin: spinAngle[i],
       radius: шины[i].radius, width: i < 2 ? VIPER.wheelFront.width : VIPER.wheelRear.width,
     })),
   });
   // колесо на земле кладёт траву по ходу — полосой шириной с шину
-  car.wheels.forEach((w, i) => {
+  for (const [i, w] of car.wheels.entries()) {
     const было = следКолёс[i];
+    const где = центрКолеса(car, w, w.travel);
     if (w.down && было) {
-      примятость.примять(было.x, было.z, w.x, w.z, (i < 2 ? VIPER.wheelFront.width : VIPER.wheelRear.width) / 2, true);
+      примятость.примять(было.x, было.z, где.x, где.z, (i < 2 ? VIPER.wheelFront.width : VIPER.wheelRear.width) / 2, true);
     }
-    следКолёс[i] = { x: w.x, z: w.z };
-  });
+    следКолёс[i] = { x: где.x, z: где.z };
+  }
 
   // приборка
   const speedo = el('d-speed');
@@ -1462,6 +1469,7 @@ viewer.onFrame((dt) => {
 
 (window as unknown as { __car?: () => unknown }).__car = () => (car === null ? null : {
   x: car.x, z: car.z, yaw: car.yaw, speed: forwardSpeed(car),
+  y: car.y, pitch: car.pitch, roll: car.roll,
   gear: car.gear, reverse: car.reverse, rpm: car.rpm, sim: simTime,
   steer: car.steer, neutral: car.neutral, helped: car.helped, command: driver.command,
   lock: VIPER.steerLock, assist: driver.assist,
@@ -1471,9 +1479,20 @@ viewer.onFrame((dt) => {
   slip: car.wheels.map((w) => Number(w.slip.toFixed(3))),
   throttle: Number(lastControls.throttle.toFixed(3)),
   gearShown: car.gear,
-  lost: car.wheels.some((w) => w.y < -100),
+  lost: car.y < -100,
   gasFrom, hundredAt,
 });
+/**
+ * Подбросить машину: на `вверх` метров, с вращением носом и боком, рад/с.
+ * Проверкам — снять кувырок в воздухе: колёса обязаны остаться на кузове,
+ * кузов — не провалиться и не взлететь.
+ */
+(window as unknown as { __подбросить?: (вверх: number, тангаж: number, крен: number) => void }).__подбросить =
+  (вверх, тангаж, крен) => {
+    if (car === null) return;
+    car.y += вверх; car.vy = 0;
+    подкрутить(car, тангаж, крен);
+  };
 
 // первая застройка: мир собран, опора заведена, смотрелка есть
 застройка();

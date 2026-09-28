@@ -83,12 +83,16 @@ function shade(surface: Surface, normals: Float32Array): Float32Array {
 
 /** Что показу нужно знать о машине. Ни грамма физики — только поза. */
 export interface CarView {
+  /** Центр масс: вокруг него кузов и вертится — как в физике. */
   readonly x: number;
   readonly y: number;
   readonly z: number;
+  /** Поворот кузова в мире (кватернион) — весь, с курсом, креном и тангажом. */
+  readonly q: { readonly w: number; readonly x: number; readonly y: number; readonly z: number };
+  /** На сколько «земля» кузова (его низ в покое) ниже центра масс, м. */
+  readonly низ: number;
+  /** Курс — камере за машиной. */
   readonly yaw: number;
-  readonly pitch: number;
-  readonly roll: number;
   /** Скорость вдоль носа, м/с — камере, чтобы отъезжать на быстром ходу. */
   readonly speed: number;
   readonly wheels: readonly {
@@ -815,6 +819,8 @@ export function show(
   body.add(interior);
 
   const wheelParts: { hub: THREE.Group; tyre: THREE.Mesh }[] = [];
+  const руль = new THREE.Quaternion();
+  const ВВЕРХ_КУЗОВА = new THREE.Vector3(0, 1, 0);
   scene.add(carGroup);
   let bodyBuilt = 0;
 
@@ -1213,8 +1219,9 @@ export function show(
       const speed = (carGroup.userData.speed as number) ?? 0;
       // на скорости камера отъезжает назад: так виден запас дороги впереди
       const back = 7.2 + Math.min(4, Math.abs(speed) * 0.11);
-      const eye = carGroup.position.clone().addScaledVector(ahead, -back).add(new THREE.Vector3(0, 2.85, 0));
-      const aim = carGroup.position.clone().addScaledVector(ahead, 7).add(new THREE.Vector3(0, 0.9, 0));
+      const земля = carGroup.position.clone().add(new THREE.Vector3(0, -((carGroup.userData.низ as number) ?? 0), 0));
+      const eye = земля.clone().addScaledVector(ahead, -back).add(new THREE.Vector3(0, 2.85, 0));
+      const aim = земля.clone().addScaledVector(ahead, 7).add(new THREE.Vector3(0, 0.9, 0));
       camera.position.copy(chaseEye.шаг(eye, dt));
       camera.lookAt(chaseAim.шаг(aim, dt));
       рисовать();
@@ -1259,6 +1266,8 @@ export function show(
    */
   (window as unknown as { __навести?: (от: number[], на: number[]) => void }).__навести = (от, на) => {
     flight = null;
+    // съёмка забирает камеру и у машины: иначе кувырок снимается только из-за её спины
+    chase = false;
     camera.position.set(от[0], от[1], от[2]);
     controls.target.set(на[0], на[1], на[2]);
     controls.update();
@@ -1323,9 +1332,11 @@ export function show(
         bodyBuilt = view.wheels.length;
       }
       carGroup.visible = true;
+      // кузов вертится вокруг центра масс: так же, как его вертит физика
       carGroup.position.set(view.x, view.y, view.z);
-      carGroup.rotation.set(0, -view.yaw, 0);
-      body.rotation.set(view.roll, 0, view.pitch);
+      carGroup.quaternion.set(view.q.x, view.q.y, view.q.z, view.q.w);
+      body.position.y = -view.низ;
+      carGroup.userData.низ = view.низ;
       carGroup.userData.yaw = view.yaw;
       carGroup.userData.speed = view.speed;
       // руль в салоне крутится на настоящий угол колёс × передаточное рулевой
@@ -1334,8 +1345,9 @@ export function show(
         const part = wheelParts[i];
         if (!part) return;
         part.hub.visible = true;
-        part.hub.position.set(w.x, w.y + w.radius, w.z);
-        part.hub.rotation.set(0, -(view.yaw + w.steer), 0);
+        part.hub.position.set(w.x, w.y, w.z);
+        // колесо повёрнуто вместе с кузовом, и ещё рулём — вокруг оси кузова «вверх»
+        part.hub.quaternion.set(view.q.x, view.q.y, view.q.z, view.q.w).multiply(руль.setFromAxisAngle(ВВЕРХ_КУЗОВА, -w.steer));
         part.tyre.rotation.z = -w.spin;
       });
     },

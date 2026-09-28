@@ -17,7 +17,8 @@ import { buildSurface } from '../src/surface/index.ts';
 import { GroundIndex, type Spot, крайМира } from '../src/car/ground.ts';
 import { VIPER } from '../src/car/passport.ts';
 import { P_ZERO } from '../src/car/tyre.ts';
-import { type Controls, createCar, forwardSpeed, step } from '../src/car/car.ts';
+import * as THREE from 'three';
+import { type Car, type Controls, createCar, forwardSpeed, step, подкрутить, точкаКузова, углыКузова, центрКолеса } from '../src/car/car.ts';
 
 const mode = process.argv[2] ?? '';
 const broken = mode === 'сломать';
@@ -116,7 +117,8 @@ function lap(): { spots: Record<string, number>; lowest: number; steps: number }
     step(car, P, P_ZERO, sample, drive(gas), DT);
     for (const w of car.wheels) {
       spots[w.material] = (spots[w.material] ?? 0) + 1;
-      if (w.y < lowest) lowest = w.y;
+      const низ = центрКолеса(car, w, w.travel).y - w.radius;
+      if (низ < lowest) lowest = низ;
     }
     steps++;
     if (!Number.isFinite(car.x) || !Number.isFinite(car.z)) break;
@@ -217,9 +219,121 @@ function beyondEdge(): { low: number; went: number } {
   let low = Infinity;
   for (let t = 0; t < 4; t += DT) {
     step(car, P, P_ZERO, (x, z) => index.sample(x, z), drive(forwardSpeed(car) < 10 ? 0.3 : 0), DT);
-    for (const w of car.wheels) low = Math.min(low, w.y - край.высота);
+    for (const w of car.wheels) low = Math.min(low, центрКолеса(car, w, w.travel).y - w.radius - край.высота);
   }
   return { low, went: car.x - (край.x1 + 30) };
+}
+
+/**
+ * Кузов и земля: насколько глубоко самый низкий угол кузова ушёл под
+ * землю (м, 0 — не ушёл) — углы те же, которыми физика упирает кузов.
+ */
+const вЗемле = (car: Car, sample: (x: number, z: number) => Spot): number => {
+  let deepest = 0;
+  for (const [a, h, r] of углыКузова(P)) {
+    const угол = точкаКузова(car, a, h, r);
+    deepest = Math.max(deepest, sample(угол.x, угол.z).height - угол.y);
+  }
+  return deepest;
+};
+
+/**
+ * Колесо висит на подвеске: от крепления на кузове — не дальше длины
+ * подвески. Крепление считается поворотом three.js — ТЕМ ЖЕ, которым
+ * кузов рисуется на экране, а не функцией физики: проверка ловит и отрыв
+ * колеса в счёте, и расхождение счёта с показом. Возвращает, на сколько
+ * самое дальнее колесо дальше подвески, м.
+ */
+const отрыв = (car: Car): number => {
+  let worst = -Infinity;
+  const q = new THREE.Quaternion(car.q.x, car.q.y, car.q.z, car.q.w);
+  for (const w of car.wheels) {
+    const a = new THREE.Vector3(w.ahead, w.крепление, w.right).applyQuaternion(q);
+    const c = центрКолеса(car, w, w.travel);
+    worst = Math.max(worst, Math.hypot(c.x - car.x - a.x, c.y - car.y - a.y, c.z - car.z - a.z) - w.rest);
+  }
+  return worst;
+};
+
+interface Бросок { worst: number; turned: number; deepest: number; rise: number }
+
+/**
+ * Полёт с обрыва. 28.09 Алекс: «если выпасть с карты, колёса отдаляются
+ * от авто». Машина едет 25 м/с к обрыву в 40 м; на кромке её подбрасывает
+ * кочкой — кузов кувыркается и носом, и боком. Меряется весь полёт,
+ * удар и то, что после.
+ */
+function cliff(): Бросок {
+  const car = createCar(P, 0, 0, 0);
+  const EDGE = 30;
+  const ground = (x: number): Spot => ({ ...FLAT(), height: x < EDGE ? 0 : -40 });
+  car.vx = 25;
+  for (const w of car.wheels) w.spin = 25 / w.radius;
+  for (let t = 0; t < 0.3; t += DT) step(car, P, P_ZERO, (x) => ground(x), drive(0), DT);
+  const r: Бросок = { worst: 0, turned: 0, deepest: 0, rise: 0 };
+  const start = car.y;
+  let kicked = false;
+  for (let t = 0; t < 8; t += DT) {
+    if (!kicked && car.x > EDGE) { подкрутить(car, -1.6, 1.2); kicked = true; }
+    step(car, P, P_ZERO, (x) => ground(x), drive(0), DT);
+    r.worst = Math.max(r.worst, отрыв(car));
+    r.turned = Math.max(r.turned, Math.abs(car.pitch), Math.abs(car.roll));
+    r.deepest = Math.max(r.deepest, вЗемле(car, (x) => ground(x)));
+    r.rise = Math.max(r.rise, car.y - start);
+  }
+  return r;
+}
+
+/**
+ * Подброшена над ровной землёй на 7 м и кувыркается (тангаж 2.4, крен
+ * 1.7 рад/с) — так 28.09 снимали полёт на живой странице (`__подбросить`),
+ * и приземлившуюся боком машину выстрелило в небо, а другую раскрутило
+ * до −14705° крена.
+ */
+function tossed(): Бросок {
+  const car = createCar(P, 0, 0, 0);
+  for (let t = 0; t < 0.5; t += DT) step(car, P, P_ZERO, FLAT, drive(0, 1), DT);
+  const start = car.y;
+  car.y += 7; car.vy = 0;
+  подкрутить(car, 2.4, 1.7);
+  const r: Бросок = { worst: 0, turned: 0, deepest: 0, rise: 0 };
+  let landed = false;
+  for (let t = 0; t < 8; t += DT) {
+    step(car, P, P_ZERO, FLAT, drive(0), DT);
+    r.worst = Math.max(r.worst, отрыв(car));
+    r.turned = Math.max(r.turned, Math.abs(car.pitch), Math.abs(car.roll));
+    r.deepest = Math.max(r.deepest, вЗемле(car, FLAT));
+    // взлёт — после первого касания: выше, чем машину подбросили, она не взлетит
+    if (car.y < start + 1) landed = true;
+    if (landed) r.rise = Math.max(r.rise, car.y - start);
+  }
+  // и в конце лежит, а не крутится: угловая скорость — от силы полоборота в секунду
+  r.turned = Math.max(r.turned, Math.hypot(car.вращение.x, car.вращение.y, car.вращение.z) > 3 ? 99 : 0);
+  return r;
+}
+
+/**
+ * Съезд с края мира там, где это нашлось 28.09: край «креста», под ним
+ * земля на 4.4 м ниже дороги, 54 км/ч. Машина приземлялась носом,
+ * вставала на задние колёса и кузовом проваливалась сквозь землю.
+ */
+function offEdge(): Бросок {
+  const surface = buildSurface(buildWorld(дорогиСцены('крест'), 'plain'), 'A');
+  const index = new GroundIndex(surface);
+  const sample = (x: number, z: number): Spot => index.sample(x, z);
+  const край = крайМира(surface.positions);
+  const car = createCar(P, край.x1 - 40, 0, 0);
+  const r: Бросок = { worst: 0, turned: 0, deepest: 0, rise: 0 };
+  let start = NaN;
+  for (let t = 0; t < 10; t += DT) {
+    step(car, P, P_ZERO, sample, drive(forwardSpeed(car) < 15 ? 0.4 : 0), DT);
+    if (Number.isNaN(start)) start = car.y;
+    r.worst = Math.max(r.worst, отрыв(car));
+    r.turned = Math.max(r.turned, Math.abs(car.pitch), Math.abs(car.roll));
+    r.deepest = Math.max(r.deepest, вЗемле(car, sample));
+    r.rise = Math.max(r.rise, car.y - start);
+  }
+  return r;
 }
 
 // ─────────────────────────── печать ───────────────────────────
@@ -286,6 +400,19 @@ line('0–100 км/ч', `${run.hundred.toFixed(2)} с`);
 line('0–60 миль/ч, если топить в пол без помощи', `${floored.sixty.toFixed(2)} с — колёса горят`);
 line('радиус круга на пределе', `${circle.radius.toFixed(1)} м`);
 line('тормозной путь со 100 км/ч', `${brakeFrom(100 / 3.6).toFixed(1)} м`);
+
+console.log('\nКУВЫРОК (колесо на подвеске, кузов не в земле и не в небе):');
+for (const [what, r] of [['обрыв 40 м с кувырком', cliff()], ['край «креста», 4.4 м на 54 км/ч', offEdge()], ['подброшена на 7 м, кувырок', tossed()]] as const) {
+  line(`${what}`, `повернулся до ${((Math.min(r.turned, 3.2) * 180) / Math.PI).toFixed(0)}°`);
+  line('  колесо дальше подвески / кузов в земле / взлёт', `${(Math.max(0, r.worst) * 100).toFixed(1)} см / ${(r.deepest * 100).toFixed(0)} см / ${r.rise.toFixed(2)} м`);
+  if (r.worst > 0.01) { console.log(`  ✗ колесо ОТОШЛО от кузова дальше подвески на ${(r.worst * 100).toFixed(1)} см`); failed++; }
+  if (r.deepest > 0.3) { console.log(`  ✗ кузов ПРОВАЛИЛСЯ в землю на ${(r.deepest * 100).toFixed(0)} см`); failed++; }
+  // кувыркающаяся машина, падая на угол, переваливается и подскакивает;
+  // катапульта 28.09 — 15 м и выше
+  if (r.rise > 3) { console.log(`  ✗ машину ВЫСТРЕЛИЛО вверх на ${r.rise.toFixed(1)} м`); failed++; }
+  if (r.turned >= 99) { console.log('  ✗ машина КРУТИТСЯ и через 8 секунд после удара'); failed++; }
+  if (r.worst <= 0.01 && r.deepest <= 0.3 && r.rise <= 3 && r.turned < 99) console.log('  ✓ колесо на месте, кузов не в земле и не в небе');
+}
 
 const beyond = beyondEdge();
 line('за краем мира: низ колеса от земли там', `${beyond.low.toFixed(2)} м, проехал ${beyond.went.toFixed(0)} м`);
