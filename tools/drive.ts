@@ -190,6 +190,21 @@ function lean(): number {
   return best;
 }
 
+/**
+ * Свободные (неведущие) колёса на старте в пол катятся, а не
+ * проскальзывают: самое большое |проскальзывание| за первую секунду.
+ * Без релаксации шины оно прыгало через шаг на ±30%.
+ */
+function freeRoll(): number {
+  const car = createCar(P, 0, 0, 0);
+  let worst = 0;
+  for (let t = 0; t < 1; t += DT) {
+    step(car, P, P_ZERO, FLAT, drive(1), DT);
+    for (const w of car.wheels) if (!w.driven) worst = Math.max(worst, Math.abs(w.slip));
+  }
+  return worst;
+}
+
 /** Стоим и ничего не жмём. Машина обязана стоять. */
 function standStill(): number {
   const car = createCar(P, 0, 0, 0);
@@ -375,6 +390,9 @@ else console.log(`  ✓ стоит на месте, когда ничего не
 if (back < 3 || back * 3.6 > 55) { console.log(`  ✗ задний ход: ${(back * 3.6).toFixed(1)} км/ч — не едет или едет как вперёд`); failed++; }
 else console.log(`  ✓ задний ход едет назад ......... ${(back * 3.6).toFixed(1)} км/ч`);
 
+const rolling = freeRoll();
+if (rolling > 0.02) { console.log(`  ✗ свободные колёса на старте ПРОСКАЛЬЗЫВАЮТ: до ${(rolling * 100).toFixed(0)}%`); failed++; }
+else console.log(`  ✓ свободные колёса на старте катятся ... проскальзывание до ${(rolling * 100).toFixed(1)}%`);
 const turn = turnsRight();
 if (turn.yaw > 0.05 && turn.sideways > 1) console.log('  ✓ руль вправо поворачивает вправо');
 else { console.log(`  ✗ руль вправо поворачивает ВЛЕВО: курс ${(turn.yaw * 180 / Math.PI).toFixed(0)}°, вбок ${turn.sideways.toFixed(1)} м`); failed++; }

@@ -500,8 +500,9 @@ export function step(
     const c = центрКолеса(car, w, w.travel);
     const пятно: Вектор = { x: c.x, y: c.y - w.radius, z: c.z };
 
-    // скорость точки на твёрдом теле: вращение добавляет своё
-    const rp = cross(ω, { x: пятно.x - car.x, y: пятно.y - car.y, z: пятно.z - car.z });
+    // скорость СТУПИЦЫ (центра колеса) на твёрдом теле: вращение добавляет
+    // своё. Не пятна: шину по дороге тащит ступица, а пятно ниже неё
+    const rp = cross(ω, { x: c.x - car.x, y: c.y - car.y, z: c.z - car.z });
     const pvx = car.vx + rp.x, pvz = car.vz + rp.z;
     const pointLong = pvx * cos + pvz * sin;
     const pointLat = -pvx * sin + pvz * cos;
@@ -510,8 +511,20 @@ export function step(
     const acrossWheel = -pointLong * sn + pointLat * cs;
     const reference = Math.max(Math.abs(alongWheel), CRAWL);
 
-    w.slip = (w.spin * w.radius - alongWheel) / reference;
-    w.angle = Math.atan2(acrossWheel, reference);
+    /**
+     * РЕЛАКСАЦИЯ: шина набирает силу не мгновенно, а за `relaxation`
+     * метров пути — резина в пятне должна успеть деформироваться. До 28.09
+     * длина релаксации была записана в шине, но в счёте не участвовала, и
+     * свободное колесо ниже ~10 км/ч колебалось через шаг: шина толкала
+     * лёгкое колесо так сильно, что вращение каждый шаг перескакивало
+     * через верное (проскальзывание ±30% попеременно), и эта дрожь шла
+     * в кузов. Нашлось на Логане: его задние колёса на старте «буксовали».
+     */
+    const slipNow = (w.spin * w.radius - alongWheel) / reference;
+    const angleNow = Math.atan2(acrossWheel, reference);
+    const догнать = Math.min(1, (reference * dt) / tyre.relaxation);
+    w.slip += (slipNow - w.slip) * догнать;
+    w.angle += (angleNow - w.angle) * догнать;
 
     const grip = SURFACE_GRIP[w.material] ?? 1;
     const force = tyreForce(tyre, { slip: w.slip, angle: w.angle, load: w.load, grip });
