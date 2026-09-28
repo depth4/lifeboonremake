@@ -14,7 +14,7 @@
 import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
-import { GroundIndex, type Spot } from '../src/car/ground.ts';
+import { GroundIndex, type Spot, крайМира } from '../src/car/ground.ts';
 import { VIPER } from '../src/car/passport.ts';
 import { P_ZERO } from '../src/car/tyre.ts';
 import { type Controls, createCar, forwardSpeed, step } from '../src/car/car.ts';
@@ -202,6 +202,26 @@ function backwards(): number {
   return -forwardSpeed(car);
 }
 
+/**
+ * За краем мира. Там нарисована ровная земля (горизонт) — и колесо обязано
+ * на ней стоять и по ней ехать, а не проваливаться сквозь картинку.
+ * Машина ставится в 30 м за краем сцены «крест» и 4 секунды едет прочь.
+ * Возвращает самый низкий низ колеса от высоты земли за краем, м
+ * (0 — стоит ровно на ней), и сколько проехала.
+ */
+function beyondEdge(): { low: number; went: number } {
+  const surface = buildSurface(buildWorld(дорогиСцены('крест'), 'plain'), 'A');
+  const index = new GroundIndex(surface);
+  const край = крайМира(surface.positions);
+  const car = createCar(P, край.x1 + 30, 0, 0);
+  let low = Infinity;
+  for (let t = 0; t < 4; t += DT) {
+    step(car, P, P_ZERO, (x, z) => index.sample(x, z), drive(forwardSpeed(car) < 10 ? 0.3 : 0), DT);
+    for (const w of car.wheels) low = Math.min(low, w.y - край.высота);
+  }
+  return { low, went: car.x - (край.x1 + 30) };
+}
+
 // ─────────────────────────── печать ───────────────────────────
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(40, '.')} ${value}`);
@@ -266,6 +286,11 @@ line('0–100 км/ч', `${run.hundred.toFixed(2)} с`);
 line('0–60 миль/ч, если топить в пол без помощи', `${floored.sixty.toFixed(2)} с — колёса горят`);
 line('радиус круга на пределе', `${circle.radius.toFixed(1)} м`);
 line('тормозной путь со 100 км/ч', `${brakeFrom(100 / 3.6).toFixed(1)} м`);
+
+const beyond = beyondEdge();
+line('за краем мира: низ колеса от земли там', `${beyond.low.toFixed(2)} м, проехал ${beyond.went.toFixed(0)} м`);
+if (!(beyond.low > -0.3) || !(beyond.went > 10)) { console.log('  ✗ за краем мира колесо ПРОВАЛИЛОСЬ сквозь нарисованную землю'); failed++; }
+else console.log('  ✓ за краем мира стоит на земле и едет');
 
 console.log('\nПОЕЗДКА ПО НАШЕМУ КВАРТАЛУ (сцена «крест», вдоль дороги):');
 line('шагов физики', `${around.steps}`);

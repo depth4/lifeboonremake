@@ -25,8 +25,39 @@ export interface Spot {
 
 const CELL = 6; // м, сторона клетки поискового ящика
 
-/** Пусто под колесом — так бывает только за краем мира. */
+/** Пусто под колесом внутри мира: дыра в земле — ошибка, её ловит `npm run drive`. */
 const VOID: Spot = { height: -1e4, nx: 0, ny: 1, nz: 0, material: 'grass' };
+
+/**
+ * КРАЙ МИРА: прямоугольник, который покрывает земля, и высота ровной
+ * земли за ним — самая низкая точка у края (так она ниже любой земли мира
+ * рядом и не может её накрыть).
+ *
+ * Считается здесь одной функцией и для глаза, и для колеса: показ рисует
+ * за краем горизонт на этой высоте, колесо на эту высоту встаёт. До 28.09
+ * горизонт был только картинкой, а под ним была пустота на глубине 10 км:
+ * машина, съехавшая с края, проваливалась сквозь нарисованную траву
+ * и падала вечно.
+ */
+export interface КрайМира {
+  readonly x0: number; readonly x1: number;
+  readonly z0: number; readonly z1: number;
+  readonly высота: number;
+}
+
+export function крайМира(позиции: Float32Array): КрайМира {
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (let i = 0; i < позиции.length; i += 3) {
+    x0 = Math.min(x0, позиции[i]); x1 = Math.max(x1, позиции[i]);
+    z0 = Math.min(z0, позиции[i + 2]); z1 = Math.max(z1, позиции[i + 2]);
+  }
+  let высота = Infinity;
+  for (let i = 0; i < позиции.length; i += 3) {
+    const край = Math.min(позиции[i] - x0, x1 - позиции[i], позиции[i + 2] - z0, z1 - позиции[i + 2]);
+    if (край < 1) высота = Math.min(высота, позиции[i + 1]);
+  }
+  return { x0, x1, z0, z1, высота: Number.isFinite(высота) ? высота : 0 };
+}
 
 /** Дальше этого луч курсора землю не ищет, м: мир — плита в 1.2 км. */
 const ДАЛЬ_ЛУЧА = 3000;
@@ -38,6 +69,9 @@ export class GroundIndex {
   private readonly mat: Uint8Array;
   private readonly names: Material[];
   private readonly cells = new Map<number, number[]>();
+  private readonly край: КрайМира;
+  /** Ровная земля за краем мира. */
+  private readonly заКраем: Spot;
   private minX = 0;
   private minZ = 0;
   private cols = 1;
@@ -48,6 +82,8 @@ export class GroundIndex {
   constructor(surface: Surface) {
     this.pos = surface.positions;
     this.idx = surface.indices;
+    this.край = крайМира(surface.positions);
+    this.заКраем = { height: this.край.высота, nx: 0, ny: 1, nz: 0, material: 'grass' };
     const tris = surface.indices.length / 3;
     this.mat = new Uint8Array(tris);
     this.names = [];
@@ -95,6 +131,8 @@ export class GroundIndex {
    * Иначе машина подпрыгивала бы на каждой полосе разметки.
    */
   sample(x: number, z: number): Spot {
+    const к = this.край;
+    if (x < к.x0 || x > к.x1 || z < к.z0 || z > к.z1) return this.заКраем;
     const bucket = this.cells.get(this.row(z) * this.cols + this.col(x));
     if (!bucket) return VOID;
 

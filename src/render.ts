@@ -16,6 +16,7 @@ import { type Sight, createSight } from './person/sight.ts';
 import { ЛУНА, лунаНад, создатьНебо, погода, солнцеВЧас } from './свет.ts';
 import { type Трава, ГАЗОН, создатьТраву } from './растения/показ.ts';
 import { модельВещи } from './модели.ts';
+import { крайМира } from './car/ground.ts';
 import { type Деревья, РАСТВОРИТЬ, РАСТВОРИТЬ_ТОЧКУ, создатьДеревья } from './растения/деревья.ts';
 
 const COLORS: Record<Material, number> = {
@@ -698,19 +699,12 @@ export function show(
   horizon.visible = false;
   horizon.name = 'горизонт';
   scene.add(horizon);
-  /** Горизонт вокруг этой земли: дыра — её границы, высота — самая низкая земля у края. */
+  /**
+   * Горизонт вокруг этой земли: дыра — её границы, высота — самая низкая
+   * земля у края. Тот же `крайМира`, на котором стоит колесо за краем.
+   */
   const горизонтВокруг = (земля: Surface): void => {
-    const p = земля.positions;
-    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (let i = 0; i < p.length; i += 3) {
-      x0 = Math.min(x0, p[i]); x1 = Math.max(x1, p[i]);
-      z0 = Math.min(z0, p[i + 2]); z1 = Math.max(z1, p[i + 2]);
-    }
-    let уКрая = Infinity;
-    for (let i = 0; i < p.length; i += 3) {
-      const край = Math.min(p[i] - x0, x1 - p[i], p[i + 2] - z0, z1 - p[i + 2]);
-      if (край < 1) уКрая = Math.min(уКрая, p[i + 1]);
-    }
+    const { x0, x1, z0, z1, высота } = крайМира(земля.positions);
     const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
     // плоскость фигуры — (x, y); поворот на −90° вокруг x кладёт её так, что z мира = −y фигуры
     const снаружи = new THREE.Shape();
@@ -723,7 +717,7 @@ export function show(
     снаружи.holes.push(мир);
     horizon.geometry.dispose();
     horizon.geometry = new THREE.ShapeGeometry(снаружи);
-    horizon.position.y = Number.isFinite(уКрая) ? уКрая : 0;
+    horizon.position.y = высота;
   };
 
   const applySurface = (next: Surface): void => {
@@ -1171,6 +1165,8 @@ export function show(
   });
   const кадр = (dt: number): void => {
     if (!времяЗадано) времяТравы += dt;
+    // земля за краем видна всем, кто на земле: пешком, за рулём, следом за жителем
+    horizon.visible = walkEye !== null || (chase && carGroup.visible) || слежка !== null;
     if (onFrameCb) onFrameCb(dt);
     if (слежка) {
       if (слежка.yaw !== null) слежкаСзади = new THREE.Vector3(-Math.cos(слежка.yaw), 0, -Math.sin(слежка.yaw));
@@ -1784,7 +1780,6 @@ export function show(
     setWalk(next) {
       const wasWalking = walkEye !== null;
       walkEye = next;
-      horizon.visible = next !== null;
       if (next !== null && !wasWalking) {
         /**
          * Пешком — воздух, как в ясный день: при видимости 15–20 км земля
