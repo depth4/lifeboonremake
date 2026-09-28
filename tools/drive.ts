@@ -15,7 +15,7 @@ import { дорогиСцены } from '../src/scenes.ts';
 import { buildWorld } from '../src/world/world.ts';
 import { buildSurface } from '../src/surface/index.ts';
 import { GroundIndex, type Spot, крайМира } from '../src/car/ground.ts';
-import { VIPER } from '../src/car/passport.ts';
+import { LOGAN, type Passport, VIPER } from '../src/car/passport.ts';
 import { P_ZERO } from '../src/car/tyre.ts';
 import * as THREE from 'three';
 import { type Car, type Controls, createCar, forwardSpeed, step, подкрутить, точкаКузова, углыКузова, центрКолеса } from '../src/car/car.ts';
@@ -48,13 +48,14 @@ const drive = (throttle: number, brake = 0, steer = 0): Controls =>
  * и замеренные 3.7 секунды сделаны именно с ним. Без него 640 сил просто
  * жгут резину, и это модель показывает честно (см. ниже «в пол»).
  */
-function launch(traction = true): { sixty: number; hundred: number; quarter: number; trap: number } {
-  const car = createCar(P, 0, 0, 0);
+function launch(traction = true, p: Passport = P): { sixty: number; hundred: number; quarter: number; trap: number } {
+  const car = createCar(p, 0, 0, 0);
+  const ведущие = car.wheels.filter((w) => w.driven);
   let t = 0, x = 0, sixty = NaN, hundred = NaN, quarter = NaN, trap = NaN;
   while (t < 40) {
-    const slip = (car.wheels[2].slip + car.wheels[3].slip) / 2;
-    const gas = traction ? Math.max(0, Math.min(1, 1 - (slip / P_ZERO.peakSlip - 1) * 2.5)) : 1;
-    step(car, P, P_ZERO, FLAT, drive(gas), DT);
+    const slip = ведущие.reduce((s, w) => s + w.slip, 0) / ведущие.length;
+    const gas = traction ? Math.max(0, Math.min(1, 1 - (slip / p.шина.peakSlip - 1) * 2.5)) : 1;
+    step(car, p, p === P ? P_ZERO : p.шина, FLAT, drive(gas), DT);
     const v = forwardSpeed(car);
     x += v * DT; t += DT;
     if (Number.isNaN(sixty) && v >= 60 * MPH) sixty = t;
@@ -65,13 +66,13 @@ function launch(traction = true): { sixty: number; hundred: number; quarter: num
 }
 
 /** Торможение в пол с заданной скорости: сколько метров до полной остановки. */
-function brakeFrom(v0: number): number {
-  const car = createCar(P, 0, 0, 0);
+function brakeFrom(v0: number, p: Passport = P): number {
+  const car = createCar(p, 0, 0, 0);
   car.vx = v0;
   for (const w of car.wheels) w.spin = v0 / w.radius;
   let x = 0, t = 0;
   while (forwardSpeed(car) > 0.3 && t < 20) {
-    step(car, P, P_ZERO, FLAT, drive(0, 1), DT);
+    step(car, p, p === P ? P_ZERO : p.шина, FLAT, drive(0, 1), DT);
     x += forwardSpeed(car) * DT; t += DT;
   }
   return x;
@@ -351,6 +352,17 @@ function offEdge(): Бросок {
   return r;
 }
 
+/** Максимальная скорость: газ в пол по ровному, пока скорость не перестанет расти. */
+function topSpeed(p: Passport): number {
+  const car = createCar(p, 0, 0, 0);
+  let best = 0;
+  for (let t = 0; t < 150; t += DT) {
+    step(car, p, p.шина, FLAT, drive(1), DT);
+    best = Math.max(best, forwardSpeed(car));
+  }
+  return best;
+}
+
 // ─────────────────────────── печать ───────────────────────────
 
 const line = (name: string, value: string): void => console.log(`  ${name.padEnd(40, '.')} ${value}`);
@@ -446,6 +458,39 @@ for (const [what, n] of Object.entries(around.spots).sort((a, b) => b[1] - a[1])
 const fell = around.lowest < -50;
 console.log(`  ${fell ? '✗' : '✓'} колесо ${fell ? 'ПРОВАЛИЛОСЬ мимо поверхности' : 'ни разу не потеряло опору'}`);
 if (fell) failed++;
+
+/**
+ * ЛОГАН — независимая машина со своими замерами (паспорт `LOGAN`):
+ * максимальная 172 км/ч (каталог drom.ru); тормозной путь со 100 км/ч
+ * 42.9 м («За рулём», с ABS — он у Логана есть). Из них выведены КПД
+ * трансмиссии и сцепление шины — поэтому допуск узкий. Разгон 0–100 —
+ * честное предсказание, и заявлен он по-разному: drom.ru — 11.9 с,
+ * auto.ru и autospot — 13.9 с (владельцы на DRIVE2 мерят 15.9). Сверка —
+ * попадание в заявленный разброс, а не подгонка кривой момента под одну цифру.
+ */
+if (!broken && !soft) {
+  const run = launch(true, LOGAN);
+  const top = topSpeed(LOGAN);
+  const stop = brakeFrom(100 / 3.6, LOGAN);
+  console.log(`\nМашина «${LOGAN.name}» — те же четыре пятна, свой паспорт:`);
+  const logan: Check[] = [
+    { name: '0–100 км/ч (заявлено 11.9–13.9)', got: run.hundred, want: 12.9, unit: 'с', tol: 0.078 },
+    { name: 'максимальная скорость', got: top * 3.6, want: 172, unit: 'км/ч', tol: 0.02 },
+    { name: 'тормозной путь 100–0', got: stop, want: 42.9, unit: 'м', tol: 0.03 },
+  ];
+  // тянет передними: на старте в пол буксуют передние колёса, задние катятся
+  const старт = createCar(LOGAN, 0, 0, 0);
+  for (let t = 0; t < 0.5; t += DT) step(старт, LOGAN, LOGAN.шина, FLAT, drive(1), DT);
+  const перед = (старт.wheels[0].slip + старт.wheels[1].slip) / 2, зад = (старт.wheels[2].slip + старт.wheels[3].slip) / 2;
+  if (перед > 0.02 && Math.abs(зад) < 0.01) console.log(`  ✓ тянет передними колёсами: буксуют ${(перед * 100).toFixed(0)}% спереди, ${(зад * 100).toFixed(1)}% сзади`);
+  else { console.log(`  ✗ ведут НЕ передние колёса: буксуют ${(перед * 100).toFixed(0)}% спереди, ${(зад * 100).toFixed(1)}% сзади`); failed++; }
+  for (const c of logan) {
+    const off = c.got / c.want - 1;
+    const ok = Math.abs(off) <= c.tol;
+    if (!ok) failed++;
+    console.log(`  ${ok ? '✓' : '✗'} ${c.name.padEnd(28, '.')} ${`${c.got.toFixed(1)} ${c.unit}`.padStart(11)}  против ${`${c.want} ${c.unit}`.padStart(11)}   ${off >= 0 ? '+' : ''}${(off * 100).toFixed(1)}%`);
+  }
+}
 
 console.log(`\n${failed === 0 ? 'СВЕРКА ПРОЙДЕНА' : `СВЕРКА ПРОВАЛЕНА: ${failed}`}\n`);
 process.exit(failed === 0 ? 0 : 1);

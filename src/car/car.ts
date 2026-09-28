@@ -8,7 +8,7 @@
  * формул: docs/how-cars-work.md.
  */
 
-import { type Passport, cornerSpring, engineTorque, frontArm, rearArm, sprungMass } from './passport.ts';
+import { type Passport, cornerSpring, доНоса, engineTorque, frontArm, rearArm, sprungMass } from './passport.ts';
 import { type Tyre, SURFACE_GRIP, tyreForce } from './tyre.ts';
 import type { Spot } from './ground.ts';
 
@@ -190,7 +190,7 @@ export function createCar(p: Passport, x: number, z: number, yaw: number): Car {
     ahead, right,
     radius: front ? p.wheelFront.radius : p.wheelRear.radius,
     inertia: front ? p.wheelFront.inertia : p.wheelRear.inertia,
-    driven: !front,
+    driven: p.привод === 'перед' ? front : !front,
     spin: 0, travel: 0, rest: 0, крепление: 0, groundPrev: 0, down: true,
     load: 0, slip: 0, angle: 0, use: 0, steer: 0,
     material: 'asphalt',
@@ -245,10 +245,10 @@ export function подкрутить(car: Car, тангаж: number, крен: n
  * машина проваливалась сквозь землю.
  */
 export function углыКузова(p: Passport): [number, number, number][] {
-  const a = p.length / 2, r = p.width / 2 - 0.12;
+  const нос = доНоса(p), r = p.width / 2 - 0.12;
   const углы: [number, number, number][] = [];
   for (const вверх of [0.18 - p.cgHeight, p.height - p.cgHeight])
-    for (const вперёд of [a, -a]) for (const вправо of [r, -r]) углы.push([вперёд, вверх, вправо]);
+    for (const вперёд of [нос, нос - p.length]) for (const вправо of [r, -r]) углы.push([вперёд, вверх, вправо]);
   return углы;
 }
 
@@ -380,17 +380,18 @@ export function step(
     car.placed = true;
   }
 
-  // ── трансмиссия: обороты берутся от ведущих колёс
+  // ── трансмиссия: обороты берутся от ведущих колёс — какая ось, говорит паспорт
+  const [левое, правое] = p.привод === 'перед' ? [0, 1] : [2, 3];
   const ratio = (car.reverse ? 2.9 : p.gears[car.gear]) * p.finalDrive;
-  const spinAvg = (car.wheels[2].spin + car.wheels[3].spin) / 2;
+  const spinAvg = (car.wheels[левое].spin + car.wheels[правое].spin) / 2;
   const fromWheels = (Math.abs(spinAvg) * ratio * 60) / (2 * Math.PI);
   // сцепление буксует на старте — иначе мотор глохнет на нулевой скорости
   car.rpm = clamp(Math.max(fromWheels, throttle > 0.05 ? 3400 : p.idleRpm), p.idleRpm, p.cutoffRpm);
 
   if (car.shiftLeft > 0) car.shiftLeft -= dt;
   else if (!car.reverse) {
-    if (fromWheels > 6250 && car.gear + 1 < p.gears.length) { car.gear++; car.shiftLeft = 0.25; }
-    else if (fromWheels < 2400 && car.gear > 0) { car.gear--; car.shiftLeft = 0.2; }
+    if (fromWheels > p.переключение.вверх && car.gear + 1 < p.gears.length) { car.gear++; car.shiftLeft = 0.25; }
+    else if (fromWheels < p.переключение.вниз && car.gear > 0) { car.gear--; car.shiftLeft = 0.2; }
   }
 
   // на заднем ходу мотор придушен: иначе передача 2.9 разгоняет назад до 80 км/ч
@@ -410,7 +411,7 @@ export function step(
   const axleTorque = push - engineBrake;
 
   // вязкостная блокировка: колёса тянут друг друга, разница скоростей давит
-  const lock = clamp((car.wheels[2].spin - car.wheels[3].spin) * p.diffLock, -2500, 2500);
+  const lock = clamp((car.wheels[левое].spin - car.wheels[правое].spin) * p.diffLock, -2500, 2500);
 
   // ── ПРОХОД ПЕРВЫЙ: где колёса, что под ними и с какой силой давит подвеска
   const along = [0, 0, 0, 0];       // сила пружины вдоль оси подвески
@@ -540,7 +541,7 @@ export function step(
     });
 
     // раскрутка колеса
-    const share = w.driven ? axleTorque / 2 + (i === 2 ? -lock : lock) : 0;
+    const share = w.driven ? axleTorque / 2 + (i === левое ? -lock : lock) : 0;
     const brakeMax = (front ? p.brakeFront : p.brakeRear) * braking
       + (!front && controls.handbrake ? p.brakeRear * 1.4 : 0);
     const inertia = w.inertia + (w.driven ? (p.engineInertia * ratio * ratio) / 2 : 0);
@@ -548,6 +549,15 @@ export function step(
     // тормоз не может раскрутить колесо назад — он только гасит вращение
     const stop = (brakeMax / inertia) * dt;
     spin = Math.abs(spin) <= stop ? 0 : spin - Math.sign(spin) * stop;
+    /**
+     * ABS: тормоз не даёт колесу крутиться медленнее, чем на пике
+     * проскальзывания, — колесо не блокируется, машина тормозит сильнее
+     * и слушается руля. Ручник заднюю ось блокирует мимо ABS, как в жизни.
+     */
+    if (p.abs && brakeMax > 0 && !(controls.handbrake && !front) && Math.abs(alongWheel) > 1) {
+      const край = (alongWheel * (1 - tyre.peakSlip)) / w.radius;
+      if (alongWheel > 0 ? spin < край : spin > край) spin = край;
+    }
     w.spin = spin;
   }
 
