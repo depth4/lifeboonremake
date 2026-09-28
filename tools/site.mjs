@@ -48,7 +48,7 @@ await build({
   build: {
     outDir: DIST,
     emptyOutDir: true,
-    target: 'es2020',
+    target: 'es2022',
     assetsInlineLimit: 1024 * 1024,
     rollupOptions: { output: { inlineDynamicImports: true } },
   },

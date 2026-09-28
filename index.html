@@ -273,13 +273,47 @@
       }
       #lids::before { top: 0; transform-origin: top; }
       #lids::after { bottom: 0; transform-origin: bottom; }
+
+      /*
+       * Режим игрока — адрес без параметров: только то, что нужно, чтобы ехать.
+       * Стенд (ракурсы, строительство, трава, рельеф…) — за значком настроек.
+       */
+      #настройки { display: none; }
+      body.игрок #настройки {
+        display: block; width: 34px; height: 34px; border-radius: 50%;
+        background: var(--panel); border: 1px solid var(--edge); color: inherit;
+        font-size: 18px; line-height: 1; cursor: pointer; backdrop-filter: blur(8px);
+      }
+      body.игрок .top .group:not(.всегда) { display: none; }
+      body.игрок.стенд .top .group { display: flex; }
+      body.игрок #news { display: none; }
+      body.игрок #d-travel, body.игрок #d-sens { display: none; }
+      body.игрок:not(.стенд) .bottom { display: none; }
+
+      /* Загрузка: кольцо крутится видеокартой, пока страница строит город */
+      #загрузка {
+        position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 18px;
+        background: radial-gradient(ellipse at center, #1c2733 0%, #0b0f14 70%);
+        color: #c9d4de; font: 15px/1.4 system-ui, sans-serif; letter-spacing: 0.04em;
+        transition: opacity 0.6s ease;
+      }
+      #загрузка.готово { opacity: 0; pointer-events: none; }
+      #загрузка .кольцо {
+        width: 54px; height: 54px; border-radius: 50%;
+        border: 3px solid rgba(201, 212, 222, 0.15); border-top-color: #e8c26a;
+        animation: крутись 0.9s linear infinite; will-change: transform;
+      }
+      @keyframes крутись { to { transform: rotate(360deg); } }
     </style>
   </head>
   <body>
+    <div id="загрузка"><div class="кольцо"></div><p>город строится…</p></div>
     <div id="lids"></div>
     <div class="layer">
       <div class="top">
         <div class="mark">lifeboonremake<span id="build">сборка не отмечена</span></div>
+        <button type="button" id="настройки" aria-label="Настройки стенда" title="настройки">⚙</button>
         <div class="group"><span class="tag">ракурс</span>
           <div class="views" id="views" role="group" aria-label="Ракурс"></div>
         </div>
@@ -307,7 +341,7 @@
         <div class="group"><span class="tag">сцена</span>
           <div class="views" id="scenes" role="group" aria-label="Сцена"></div>
         </div>
-        <div class="group"><span class="tag">машина</span>
+        <div class="group всегда"><span class="tag">машина</span>
           <div class="views" id="drive" role="group" aria-label="Машина"></div>
         </div>
       </div>

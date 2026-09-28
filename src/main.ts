@@ -47,9 +47,31 @@ import {
 import type { Круг } from './city/встречи.ts';
 import type { Вещь } from './city/двор.ts';
 
+/**
+ * ПЕРЕД ПОСТРОЙКОЙ — ОТДАТЬ ХОД БРАУЗЕРУ. Город строится одним куском
+ * синхронного счёта, и до 28.09 браузер не успевал нарисовать ничего:
+ * страница молчала, пока всё не готово. Два кадра ожидания — и экран
+ * загрузки уже на месте; его кольцо крутит видеокарта, даже пока страница
+ * занята (снято: без этого снимок экрана загрузки не удавался вовсе).
+ */
+await new Promise<void>((дальше) => requestAnimationFrame(() => requestAnimationFrame(() => дальше())));
+
 const query = new URLSearchParams(location.search);
+/**
+ * РЕЖИМ ИГРОКА — адрес без параметров (так открывается сайт): сразу
+ * большой город с трафиком, сразу за рулём, стенд спрятан за значком
+ * настроек. С любым параметром — стенд, как раньше: проверки всегда
+ * передают сцену, и их этот режим не касается. `?игрок=1` — игрок явно.
+ * 28.09 Алекс: «спрячь половину панелей, чтобы сразу грузился большой
+ * город с трафиком и ничего не отвлекало».
+ */
+const ИГРОК = location.search.replace('?', '') === '' || query.get('игрок') === '1';
 const startView = query.get('view') ?? 'road';
-const startScene = query.get('scene') ?? DEFAULT_SCENE;
+const startScene = query.get('scene') ?? (ИГРОК ? 'большой город' : DEFAULT_SCENE);
+if (ИГРОК) {
+  document.body.classList.add('игрок');
+  document.getElementById('настройки')?.addEventListener('click', () => document.body.classList.toggle('стенд'));
+}
 
 /** На каком расстоянии инструмент начинает распознавать намерение, метры. */
 const SNAP_RADIUS = 14;
@@ -127,7 +149,7 @@ if (news && newsList && changes.length > 0 && query.get('bare') !== '1') {
   newsList.innerHTML = changes.map((line) => `<li>${line}</li>`).join('');
   const when = document.getElementById('news-when');
   if (when) when.textContent = `что нового · ${stamp}`;
-  news.classList.add('open');
+  if (!ИГРОК) news.classList.add('open');
   document.getElementById('news-close')?.addEventListener('click', () => news.classList.remove('open'));
   // отметку сборки можно нажать, чтобы список вернулся
   buildLine?.addEventListener('click', () => news.classList.toggle('open'));
@@ -665,6 +687,11 @@ hint();
 
 requestAnimationFrame(() => requestAnimationFrame(() => {
   (window as unknown as { __ready?: boolean }).__ready = true;
+  // город построен и нарисован — загрузка уходит, игрок садится за руль
+  const загрузка = document.getElementById('загрузка');
+  загрузка?.classList.add('готово');
+  setTimeout(() => загрузка?.remove(), 700);
+  if (ИГРОК) seat(true);
 }));
 
 
@@ -742,7 +769,7 @@ const часЖизни = (): number => ЧАС_СТАРТА + cityTime / СЕКУ
  * терминала: пустую улицу снять было можно, а живую — только руками, и
  * поэтому её ни разу и не сняли.
  */
-const СРАЗУ_ГОРОД = query.get('traffic') === '1';
+const СРАЗУ_ГОРОД = query.get('traffic') === '1' || ИГРОК;
 /** Городские часы: по ним живут светофоры. Не связаны с кадрами. */
 let cityTime = 0;
 // свет — до первого кадра: иначе первый кадр ночного города рисуется днём,
