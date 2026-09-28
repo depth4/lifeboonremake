@@ -56,6 +56,8 @@ export const SETUPS: Record<string, Suspension> = {
 
 export interface Passport {
   readonly name: string;
+  /** Коротко — для кнопки и адреса (`?машина=логан`). */
+  readonly ярлык: string;
   readonly mass: number;
   /** Доля веса на передней оси. */
   readonly frontShare: number;
@@ -168,6 +170,7 @@ export const radiusFromRevs = (t: { revsPerMile: number }): number =>
 /** 2013 SRT Viper GTS. Источник — официальный спец-лист Chrysler/SRT. */
 export const VIPER: Passport = {
   name: 'Dodge Viper SRT 2013',
+  ярлык: 'viper',
   mass: 1556.3,
   frontShare: 0.496,
   wheelbase: 2.51,
@@ -237,6 +240,7 @@ export const VIPER: Passport = {
  */
 export const LOGAN: Passport = {
   name: 'Renault Logan 1.6 8V',
+  ярлык: 'логан',
   // снаряжённая 1106 + водитель 75
   mass: 1181,
   frontShare: 0.61, // ОЦЕНКА: переднеприводный седан, мотор над передней осью
@@ -293,7 +297,8 @@ export const LOGAN: Passport = {
     [0.06, 0.24], [0, 0.52], [0.1, 0.76], [1.0, 0.93], [1.9, 1.48], [2.95, 1.517],
     [3.55, 1.06], [4.28, 1.0], [4.346, 0.62], [4.3, 0.26], [3.9, 0.2],
   ],
-  стёкла: { от: 1.95, до: 3.5, низ: 1.0, верх: 1.46 },
+  // до стойки перед задним стеклом: дальше крыша уходит вниз, и стекло торчало бы над ней
+  стёкла: { от: 1.95, до: 3.05, низ: 1.0, верх: 1.44 },
   // сидит выше и ближе к середине машины, чем в Viper
   глаз: [2.2, 1.27],
   цвет: 0x8f989e,

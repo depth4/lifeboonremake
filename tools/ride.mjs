@@ -103,7 +103,9 @@ async function until(name, mark, limit = 45000) {
  * секунды кадра — и поездка превратилась бы в ожидание. Траву проверяют
  * `трава` (без экрана) и выкладка (в собранном файле).
  */
-const url = `http://localhost:${PORT}/?scene=${encodeURIComponent(scene)}&terrain=${terrain}&view=close&трава=нет`;
+// машина — Viper: эталон разгона ниже считается по его паспорту (VIPER),
+// и страница обязана сесть в ту же самую машину
+const url = `http://localhost:${PORT}/?scene=${encodeURIComponent(scene)}&terrain=${terrain}&view=close&трава=нет&машина=${encodeURIComponent(VIPER.ярлык)}`;
 await page.goto(url, { waitUntil: 'load' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 40000 });
 await page.click('button[data-drive="seat"]');

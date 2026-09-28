@@ -17,6 +17,7 @@ import { ЛУНА, лунаНад, создатьНебо, погода, сол�
 import { type Трава, ГАЗОН, создатьТраву } from './растения/показ.ts';
 import { модельВещи } from './модели.ts';
 import { крайМира } from './car/ground.ts';
+import { type Passport, доНоса } from './car/passport.ts';
 import { type Деревья, РАСТВОРИТЬ, РАСТВОРИТЬ_ТОЧКУ, создатьДеревья } from './растения/деревья.ts';
 
 const COLORS: Record<Material, number> = {
@@ -93,6 +94,8 @@ export interface CarView {
   readonly низ: number;
   /** Курс — камере за машиной. */
   readonly yaw: number;
+  /** Какая машина: по паспорту собираются кузов, стёкла, салон, руль. */
+  readonly паспорт: Passport;
   /** Скорость вдоль носа, м/с — камере, чтобы отъезжать на быстром ходу. */
   readonly speed: number;
   readonly wheels: readonly {
@@ -103,26 +106,20 @@ export interface CarView {
 }
 
 /**
- * Кузов: боковой силуэт, выдавленный на ширину машины. Так низкая длинная
- * машина читается с любого ракурса, а коробка — нет.
+ * Кузов: боковой силуэт из паспорта, выдавленный на ширину машины. Так
+ * низкая длинная машина читается с любого ракурса, а коробка — нет.
+ * Нос — там, где его ставит паспорт (`доНоса` от центра масс): иначе
+ * колёса не попадают в арки у машины, чей центр масс не посередине.
  */
-function buildBody(length: number, width: number): THREE.BufferGeometry {
-  const nose = length / 2;
-  // Силуэт сбоку в метрах над землёй: длинный капот, кабина сдвинута назад,
-  // короткий хвост. Обход против часовой стрелки, начиная с носа снизу.
-  const points: [number, number][] = [
-    [nose - 0.08, 0.16], [nose, 0.34], [nose - 0.55, 0.56], [nose - 1.35, 0.66],
-    [nose - 2.05, 0.80], [nose - 2.45, 1.19], [nose - 3.10, 1.21], [nose - 3.55, 0.86],
-    [-nose + 0.35, 0.76], [-nose, 0.60], [-nose - 0.02, 0.30], [-nose + 0.35, 0.14],
-  ];
+function buildBody(p: Passport): THREE.BufferGeometry {
+  const нос = доНоса(p);
   const side = new THREE.Shape();
-  side.moveTo(points[0][0], points[0][1]);
-  for (const [x, y] of points.slice(1)) side.lineTo(x, y);
+  p.силуэт.forEach(([назад, над], i) => (i === 0 ? side.moveTo(нос - назад, над) : side.lineTo(нос - назад, над)));
   side.closePath();
 
   // Кузов рисуется чуть уже настоящего: иначе колёса тонут в нём, а колея —
   // величина физическая, её подгонять под картинку нельзя.
-  const depth = width - 0.24;
+  const depth = p.width - 0.24;
   const geometry = new THREE.ExtrudeGeometry(side, {
     depth, bevelEnabled: true, bevelSize: 0.08, bevelThickness: 0.07, bevelSegments: 2,
   });
@@ -778,10 +775,9 @@ export function show(
   carGroup.add(body);
   // остекление: тёмная лента чуть шире кузова на высоте кабины
   const glass = new THREE.Mesh(
-    new THREE.BoxGeometry(1.32, 0.42, 1.76),
+    new THREE.BoxGeometry(1, 1, 1),
     new THREE.MeshStandardMaterial({ color: 0x1b2226, roughness: 0.16, metalness: 0.35 }),
   );
-  glass.position.set(-0.42, 0.94, 0);
   body.add(glass);
   /**
    * Салон: торпедо и руль. Нужны не для красоты — без них вид «из салона»
@@ -795,13 +791,11 @@ export function show(
     new THREE.BoxGeometry(0.7, 0.3, 1.55),
     new THREE.MeshStandardMaterial({ color: 0x1a1d21, roughness: 0.9 }),
   );
-  dash.position.set(0.78, 0.8, 0);
   interior.add(dash);
   const hoodTop = new THREE.Mesh(
     new THREE.BoxGeometry(1.5, 0.06, 1.6),
     new THREE.MeshStandardMaterial({ color: 0x8e1420, roughness: 0.4, metalness: 0.2 }),
   );
-  hoodTop.position.set(1.6, 0.74, 0);
   interior.add(hoodTop);
   const rim = new THREE.Mesh(
     new THREE.TorusGeometry(0.155, 0.019, 8, 24),
@@ -813,16 +807,37 @@ export function show(
   );
   const steering = new THREE.Group();
   steering.add(rim, spoke);
-  steering.position.set(0.34, 0.83, -0.38);
   steering.rotation.set(0, Math.PI / 2, -Math.PI / 9);
   interior.add(steering);
   body.add(interior);
+  /** Голова водителя в осях кузова: из паспорта; торпедо, руль, капот — от неё. */
+  const голова = new THREE.Vector3();
+  /**
+   * Собрать машину по паспорту: кузов, цвет, стёкла, салон. Места салона
+   * отсчитаны от головы водителя — у Viper они те же, что были до 28.09.
+   */
+  const собратьКузов = (p: Passport): void => {
+    body.geometry.dispose();
+    body.geometry = buildBody(p);
+    (body.material as THREE.MeshStandardMaterial).color.setHex(p.цвет);
+    (hoodTop.material as THREE.MeshStandardMaterial).color.setHex(p.цвет).multiplyScalar(0.8);
+    const нос = доНоса(p), с = p.стёкла;
+    // стекло чуть шире кузова вместе с его скруглёнными кромками (ширина − 0.24 + 2 × 0.07),
+    // иначе оно внутри и окон не видно (снято: Логан сбоку был глухим)
+    glass.scale.set(с.до - с.от, с.верх - с.низ, p.width - 0.07);
+    glass.position.set(нос - (с.от + с.до) / 2, (с.низ + с.верх) / 2, 0);
+    голова.set(нос - p.глаз[0], p.глаз[1], -0.196 * p.width);
+    dash.position.set(голова.x + 1.3, голова.y - 0.36, 0);
+    hoodTop.position.set(голова.x + 2.12, голова.y - 0.42, 0);
+    steering.position.set(голова.x + 0.86, голова.y - 0.33, голова.z);
+  };
 
   const wheelParts: { hub: THREE.Group; tyre: THREE.Mesh }[] = [];
   const руль = new THREE.Quaternion();
   const ВВЕРХ_КУЗОВА = new THREE.Vector3(0, 1, 0);
   scene.add(carGroup);
-  let bodyBuilt = 0;
+  /** Для какой машины собраны кузов и колёса: другая машина — собрать заново. */
+  let собранДля: Passport | null = null;
 
   const wheelMaterial = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.85 });
   const rimMaterial = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.35, metalness: 0.7 });
@@ -1206,10 +1221,10 @@ export function show(
        * без единого отдельного коэффициента «тряски».
        */
       carGroup.updateMatrixWorld(true);
-      const head = body.localToWorld(new THREE.Vector3(-0.52, 1.16, -0.38));
-      const look = body.localToWorld(new THREE.Vector3(24, 1.06, -0.38));
+      const head = body.localToWorld(голова.clone());
+      const look = body.localToWorld(new THREE.Vector3(24, голова.y - 0.1, голова.z));
       camera.position.copy(head);
-      camera.up.copy(body.localToWorld(new THREE.Vector3(-0.52, 2.16, -0.38)).sub(head).normalize());
+      camera.up.copy(body.localToWorld(голова.clone().setY(голова.y + 1)).sub(head).normalize());
       camera.lookAt(look);
       рисовать();
       return;
@@ -1313,9 +1328,13 @@ export function show(
     },
     setCar(view) {
       if (view === null) { carGroup.visible = false; return; }
-      if (bodyBuilt !== view.wheels.length || wheelParts.length === 0) {
-        body.geometry.dispose();
-        body.geometry = buildBody(4.463, 1.941);
+      if (собранДля !== view.паспорт) {
+        собратьКузов(view.паспорт);
+        for (const { hub, tyre } of wheelParts.splice(0)) {
+          scene.remove(hub);
+          tyre.geometry.dispose();
+          for (const c of tyre.children) (c as THREE.Mesh).geometry.dispose();
+        }
         for (const w of view.wheels) {
           const hub = new THREE.Group();
           const tyreGeometry = new THREE.CylinderGeometry(w.radius, w.radius, w.width, 22);
@@ -1329,7 +1348,7 @@ export function show(
           scene.add(hub);
           wheelParts.push({ hub, tyre });
         }
-        bodyBuilt = view.wheels.length;
+        собранДля = view.паспорт;
       }
       carGroup.visible = true;
       // кузов вертится вокруг центра масс: так же, как его вертит физика
@@ -1340,7 +1359,7 @@ export function show(
       carGroup.userData.yaw = view.yaw;
       carGroup.userData.speed = view.speed;
       // руль в салоне крутится на настоящий угол колёс × передаточное рулевой
-      steering.rotation.z = -Math.PI / 9 - (view.wheels[0]?.steer ?? 0) * 16.7;
+      steering.rotation.z = -Math.PI / 9 - (view.wheels[0]?.steer ?? 0) * view.паспорт.рулевое;
       view.wheels.forEach((w, i) => {
         const part = wheelParts[i];
         if (!part) return;

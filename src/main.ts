@@ -21,8 +21,7 @@ import { type View, show, viewFromQuery } from './render.ts';
 import { createBuilder } from './build.ts';
 import { GroundIndex } from './car/ground.ts';
 import { type Плита, крыльцо, площадкаПодСледом } from './city/площадка.ts';
-import { SETUPS, VIPER } from './car/passport.ts';
-import { P_ZERO } from './car/tyre.ts';
+import { МАШИНЫ, type Passport, SETUPS } from './car/passport.ts';
 import { type Car, type Кватернион, type ПозаКузова, createCar, forwardSpeed, step, подвесить, подкрутить, центрКолеса } from './car/car.ts';
 import { createDriver } from './car/controls.ts';
 import { createAim } from './aim.ts';
@@ -66,6 +65,13 @@ const query = new URLSearchParams(location.search);
  * город с трафиком и ничего не отвлекало».
  */
 const ИГРОК = location.search.replace('?', '') === '' || query.get('игрок') === '1';
+/**
+ * В какой машине игрок. `?машина=viper` — выбрать адресом (так делает
+ * `npm run ride`); по умолчанию — первая из `МАШИНЫ` (Логан).
+ * 28.09 Алекс: «Viper не убирай; в игре должно быть много независимых авто».
+ */
+let МАШИНА: Passport = МАШИНЫ.find((p) => p.ярлык === query.get('машина')) ?? МАШИНЫ[0];
+
 const startView = query.get('view') ?? 'road';
 const startScene = query.get('scene') ?? (ИГРОК ? 'большой город' : DEFAULT_SCENE);
 if (ИГРОК) {
@@ -946,10 +952,21 @@ const lidsTop = document.getElementById('lids');
  * Поставить машину на первую дорогу сцены, носом вдоль неё, на трети пути —
  * чтобы перекрёсток был впереди, а не за спиной и не под колёсами.
  */
+/** Пересадить в следующую машину: та же точка, тот же курс, скорость — ноль. */
+function сменитьМашину(): void {
+  МАШИНА = МАШИНЫ[(МАШИНЫ.indexOf(МАШИНА) + 1) % МАШИНЫ.length];
+  if (car !== null) {
+    car = createCar(МАШИНА, car.x, car.z, car.yaw);
+    spinAngle.fill(0);
+    позаДо = null;
+  }
+  drivePanel();
+}
+
 function spawnCar(): Car {
   const shape = world.shapes[0];
   const st = shape?.stations ?? [];
-  if (st.length < 2) return createCar(VIPER, 0, 0, 0);
+  if (st.length < 2) return createCar(МАШИНА, 0, 0, 0);
   const i = Math.min(Math.floor(st.length * 0.32), st.length - 2);
   const dx = st[i + 1].x - st[i].x, dz = st[i + 1].z - st[i].z;
   const len = Math.hypot(dx, dz) || 1;
@@ -961,7 +978,7 @@ function spawnCar(): Car {
    */
   const lane = laneAcross(network.lanes, 0, 1, 0);
   spinAngle.fill(0);
-  return createCar(VIPER, st[i].x - fz * lane, st[i].z + fx * lane, Math.atan2(fz, fx));
+  return createCar(МАШИНА, st[i].x - fz * lane, st[i].z + fx * lane, Math.atan2(fz, fx));
 }
 
 function seat(on: boolean): void {
@@ -984,7 +1001,8 @@ function drivePanel(): void {
     `<button type="button" data-drive="afoot" aria-pressed="${walker !== null}">пешком</button>` +
     (walker === null ? '' : `<button type="button" class="plain" data-drive="sight" aria-pressed="${viewer.sight()}">глаз</button>`) +
     `<button type="button" class="plain" data-drive="assist" aria-pressed="${driver.assist}">помощь рулю</button>` +
-    `<button type="button" class="plain" data-drive="setup">подвеска: ${VIPER.suspension.label}</button>` +
+    `<button type="button" class="plain" data-drive="машина">машина: ${МАШИНА.ярлык}</button>` +
+    `<button type="button" class="plain" data-drive="setup">подвеска: ${МАШИНА.suspension.label}</button>` +
     `<button type="button" class="plain" data-drive="traffic" aria-pressed="${городЖив}">трафик</button>` +
     `<button type="button" class="plain" data-drive="eye">вид: ${eye}</button>` +
     (car === null ? '' : '<button type="button" class="plain" data-drive="park">убрать машину</button>');
@@ -994,7 +1012,7 @@ function drivePanel(): void {
       ? 'геймпад подключён: левый стик — руль, курки — газ и тормоз'
       : 'щёлкни по картинке — мышь возьмёт руль. Влево-вправо — руль, W/S — газ '
         + 'и тормоз, Shift — в пол, X — ручник, R — выровнять руль, [ и ] — острота, '
-        + 'G — помощь, P — подвеска, C — вид из салона, Enter — выйти';
+        + 'G — помощь, P — подвеска, M — другая машина, C — вид из салона, Enter — выйти';
   }
 }
 
@@ -1026,13 +1044,14 @@ el('drive')?.addEventListener('click', (event) => {
     eye = eye === 'сзади' ? 'из салона' : 'сзади';
     viewer.setEye(eye);
     drivePanel();
-  } else if (what === 'setup') {
+  } else if (what === 'машина') сменитьМашину();
+  else if (what === 'setup') {
     // подвеска меняется на ходу: свободные длины пересчитываются, и машина
     // сама садится на новую высоту — это видно
     const names = Object.keys(SETUPS);
-    const next = names[(names.indexOf(VIPER.suspension.label) + 1) % names.length];
-    VIPER.suspension = SETUPS[next];
-    if (car !== null) подвесить(car, VIPER);
+    const next = names[(names.indexOf(МАШИНА.suspension.label) + 1) % names.length];
+    МАШИНА.suspension = SETUPS[next];
+    if (car !== null) подвесить(car, МАШИНА);
     drivePanel();
   }
 });
@@ -1047,11 +1066,12 @@ addEventListener('keydown', (event) => {
   if (event.code === 'Enter' && dash !== null) { seat(!driving); return; }
   if (car === null || !driving) return;
   if (event.code === 'KeyG') { driver.assist = !driver.assist; drivePanel(); }
+  if (event.code === 'KeyM') сменитьМашину();
   if (event.code === 'KeyC') { eye = eye === 'сзади' ? 'из салона' : 'сзади'; viewer.setEye(eye); drivePanel(); }
   if (event.code === 'KeyP') {
     const names = Object.keys(SETUPS);
-    VIPER.suspension = SETUPS[names[(names.indexOf(VIPER.suspension.label) + 1) % names.length]];
-    подвесить(car, VIPER);
+    МАШИНА.suspension = SETUPS[names[(names.indexOf(МАШИНА.suspension.label) + 1) % names.length]];
+    подвесить(car, МАШИНА);
     drivePanel();
   }
 });
@@ -1061,7 +1081,6 @@ drivePanel();
 /** Шаг физики. Не связан с кадрами: на слабой машине счёт тот же. */
 const PHYSICS_STEP = 1 / 300;
 /** Кузов в плане — им машина упирается в твердь. */
-const ГАБАРИТ = { длина: VIPER.length, ширина: VIPER.width };
 /** Чужие машины рядом с пешеходом в этом кадре: подвижная твердь. */
 const машиныРядом: Форма[] = [];
 let bank = 0;
@@ -1284,7 +1303,7 @@ viewer.onFrame((dt) => {
       if (Math.hypot(п.x - walker.x, п.z - walker.z) < 8) машиныРядом.push(коробка(п.x, п.z, п.yaw, LENGTH, 2 * WIDE));
     }
     // своя машина, брошенная у тротуара, тоже твёрдая
-    const своя = car === null ? [] : [коробка(car.x, car.z, car.yaw, VIPER.length, VIPER.width)];
+    const своя = car === null ? [] : [коробка(car.x, car.z, car.yaw, МАШИНА.length, МАШИНА.width)];
     stepPerson(walker, ground, wish, Math.min(dt, 0.1), {
       упор: (x0, z0, x1, z1) => пройти(твердь, x0, z0, x1, z1, ПЛЕЧИ, [...машиныРядом, ...своя]),
     });
@@ -1306,9 +1325,9 @@ viewer.onFrame((dt) => {
   while (bank >= PHYSICS_STEP) {
     // перед последним шагом этого кадра — запомнить, откуда он шагнул
     if (bank < 2 * PHYSICS_STEP) позаДо = позаМашины(car);
-    step(car, VIPER, P_ZERO, (x, z) => ground.sample(x, z), controls, PHYSICS_STEP);
+    step(car, МАШИНА, МАШИНА.шина, (x, z) => ground.sample(x, z), controls, PHYSICS_STEP);
     // твердь — на КАЖДОМ шаге физики: раз в кадр машина успевала зайти в стену на 14 см
-    упереть(твердь, car, ГАБАРИТ, VIPER.mass, VIPER.yawInertia);
+    упереть(твердь, car, { длина: МАШИНА.length, ширина: МАШИНА.width }, МАШИНА.mass, МАШИНА.yawInertia);
     bank -= PHYSICS_STEP;
     simTime += PHYSICS_STEP;
   }
@@ -1326,7 +1345,7 @@ viewer.onFrame((dt) => {
   const стоятРядом = позыСтоянки.filter((п) => Math.hypot(п.x - я.x, п.z - я.z) < 12).map((п) => п.m);
   const blow = !городЖив ? null : bump(world, network, [...traffic, ...стоятРядом], {
     x: car.x, z: car.z, yaw: car.yaw, vx: car.vx, vz: car.vz,
-    yawRate: car.yawRate, mass: VIPER.mass, inertia: VIPER.yawInertia,
+    yawRate: car.yawRate, mass: МАШИНА.mass, inertia: МАШИНА.yawInertia,
   });
   if (blow !== null) {
     car.vx += blow.dvx; car.vz += blow.dvz; car.yawRate += blow.dSpin;
@@ -1339,11 +1358,11 @@ viewer.onFrame((dt) => {
   const шины = car.wheels;
   const видно = позаДо === null || ПОСЛЕДНИЙ_ШАГ ? сейчас : между(позаДо, сейчас, bank / PHYSICS_STEP);
   viewer.setCar({
-    x: видно.x, y: видно.y, z: видно.z, q: видно.q, низ: VIPER.cgHeight,
+    x: видно.x, y: видно.y, z: видно.z, q: видно.q, низ: МАШИНА.cgHeight, паспорт: МАШИНА,
     yaw: car.yaw, speed,
     wheels: видно.колёса.map((w, i) => ({
       ...центрКолеса(видно, шины[i], w.travel), steer: w.steer, spin: spinAngle[i],
-      radius: шины[i].radius, width: i < 2 ? VIPER.wheelFront.width : VIPER.wheelRear.width,
+      radius: шины[i].radius, width: i < 2 ? МАШИНА.wheelFront.width : МАШИНА.wheelRear.width,
     })),
   });
   // колесо на земле кладёт траву по ходу — полосой шириной с шину
@@ -1351,7 +1370,7 @@ viewer.onFrame((dt) => {
     const было = следКолёс[i];
     const где = центрКолеса(car, w, w.travel);
     if (w.down && было) {
-      примятость.примять(было.x, было.z, где.x, где.z, (i < 2 ? VIPER.wheelFront.width : VIPER.wheelRear.width) / 2, true);
+      примятость.примять(было.x, было.z, где.x, где.z, (i < 2 ? МАШИНА.wheelFront.width : МАШИНА.wheelRear.width) / 2, true);
     }
     следКолёс[i] = { x: где.x, z: где.z };
   }
@@ -1361,8 +1380,8 @@ viewer.onFrame((dt) => {
   if (speedo) speedo.textContent = String(Math.round(Math.abs(speed) * 3.6));
   const rev = el('d-rev');
   if (rev) {
-    rev.style.width = `${(car.rpm / VIPER.cutoffRpm) * 100}%`;
-    rev.classList.toggle('red', car.rpm > VIPER.cutoffRpm * 0.92);
+    rev.style.width = `${(car.rpm / МАШИНА.cutoffRpm) * 100}%`;
+    rev.classList.toggle('red', car.rpm > МАШИНА.cutoffRpm * 0.92);
   }
   const gear = el('d-gear');
   if (gear) gear.textContent = car.reverse ? 'R' : Math.abs(speed) < 0.3 ? 'N' : String(car.gear + 1);
@@ -1393,7 +1412,7 @@ viewer.onFrame((dt) => {
   const wheelMark = el('d-wheel');
   if (wheelMark) wheelMark.setAttribute('transform', `rotate(${driver.command * 240})`);
   const realMark = el('d-real');
-  if (realMark) realMark.setAttribute('transform', `rotate(${(car.steer / VIPER.steerLock) * 240})`);
+  if (realMark) realMark.setAttribute('transform', `rotate(${(car.steer / МАШИНА.steerLock) * 240})`);
   const hand = el('d-hand');
   if (hand) hand.style.left = `${50 + driver.command * 50}%`;
   const grips = el('d-grips');
@@ -1472,7 +1491,7 @@ viewer.onFrame((dt) => {
   y: car.y, pitch: car.pitch, roll: car.roll,
   gear: car.gear, reverse: car.reverse, rpm: car.rpm, sim: simTime,
   steer: car.steer, neutral: car.neutral, helped: car.helped, command: driver.command,
-  lock: VIPER.steerLock, assist: driver.assist,
+  lock: МАШИНА.steerLock, assist: driver.assist, машина: МАШИНА.ярлык,
   materials: car.wheels.map((w) => w.material),
   loads: car.wheels.map((w) => Math.round(w.load)),
   use: car.wheels.map((w) => Number(w.use.toFixed(2))),
