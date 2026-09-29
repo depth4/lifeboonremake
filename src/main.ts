@@ -1442,6 +1442,7 @@ viewer.onFrame((dt) => {
     shape: m.shape, s: Number(m.s.toFixed(2)), speed: Number(m.speed.toFixed(2)),
     x: Number(pose.x.toFixed(2)), z: Number(pose.z.toFixed(2)),
     knocked: m.knocked !== null,
+    reason: m.reason,
   };
 });
 

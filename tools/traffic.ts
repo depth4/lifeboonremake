@@ -19,7 +19,7 @@ import {
   ЧАС_УТРА, машиныЖителей, пешеходыЖителей, сколькоМашин, сколькоПешеходов,
 } from '../src/city/жизнь.ts';
 import { type World, buildWorld, nearestRoad } from '../src/world/world.ts';
-import { type Route, WIDE, along, bump, buildNetwork, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
+import { type Route, type Характер, WIDE, along, bump, buildNetwork, характер, moveTraffic, placeTraffic, poseOf, signalsOf, touching, watch } from '../src/city/traffic.ts';
 import { laneAcross, sideOf } from '../src/city/lanes.ts';
 import { TOWN_LIMIT, priorityOf, улица } from '../src/city/signs.ts';
 import { moveWalkers, placeWalkers, walkerPose } from '../src/city/walkers.ts';
@@ -33,6 +33,13 @@ const lawless = mode === 'без-правил';
 /** Заведомо сломанный вариант: походка считается часами, а не пройденным путём. */
 const byClock = mode === 'шаг-по-часам';
 const oneLane = mode === 'одна-полоса';
+/**
+ * Заведомо сломанный вариант: все водители одинаковые, как до 29.09 —
+ * один средний характер, строго по середине полосы, трогаются мгновенно.
+ * Проверка «водители разные» на нём обязана упасть.
+ */
+const роботы = mode === 'роботы';
+const РОБОТ: Характер = { ...характер(0.5), реакция: 0, сдвиг: 0, размах: 0, качка: 0 };
 /**
  * Заведомо сломанный вариант: карман — правая ПОЛОСА ДВИЖЕНИЯ, как было
  * до 17.09. Ровно то устройство, из которого росли объезд по встречной
@@ -227,6 +234,17 @@ const tell = (m: (typeof movers)[number], i: number): string => {
     + `${m.route === null ? 'едет прямо' : `узел ${m.route.junction}→дорога ${m.route.shape}`} `
     + `xz ${p.x.toFixed(1)},${p.z.toFixed(1)}`;
 };
+/** Отход кузова от середины своей полосы, по водителям (каждый десятый кадр). */
+const отходы = new Map<(typeof movers)[number], number[]>();
+const тронулисьСЗадержкой = new Set<(typeof movers)[number]>();
+/**
+ * ШАГ НУЛЕВОЙ ДЛИНЫ. Страница зовёт движение с шагом, какой вышел у кадра, —
+ * и в первый кадр это ноль. 29.09 деление на шаг дало не-число в курсе
+ * машины, и весь вид пешком стал серым: подстройка яркости зрения
+ * усредняет кадр. Проверки шагают по 1/60 и этого не видели.
+ */
+moveTraffic(world, net, movers, 0, 0, { час: ЧАС });
+const нечисла = movers.filter((m) => ![m.yaw, m.s, m.across, m.speed].every(Number.isFinite)).length;
 const startShapes = movers.map((m) => m.shape);
 const startS = movers.map((m) => m.s);
 
@@ -239,8 +257,22 @@ for (let t = 0; t < 120; t += DT) {
    * утреннего города, с 7:48 до 9:48. Медленнее нельзя: иначе за прогон
    * не наступает ни один час выхода, и «кто-то уехал» проверять не на чем.
    */
+  if (роботы) for (const m of movers) (m as { характер: Характер }).характер = РОБОТ;
   moveTraffic(world, net, movers, DT, t,
     { headway: !broken, rules: !lawless, lanes: !oneLane, crossing, час: ЧАС + t / 60 });
+  /**
+   * ── ВОДИТЕЛИ РАЗНЫЕ. Кто едет сам по своей полосе — насколько кузов
+   * не на середине полосы (привычка и гуляние); кто трогался с задержкой.
+   */
+  for (const m of movers) {
+    if (m.reason === 'трогается') тронулисьСЗадержкой.add(m);
+    if (m.speed < 3 || m.route !== null || m.park !== null || m.knocked !== null) continue;
+    const off = m.across - laneAcross(net.lanes, m.shape, m.dir as 1 | -1, m.lane);
+    // перестроение — короткий переход, его медиана по водителю не заметит
+    const ряд = отходы.get(m) ?? [];
+    if (Math.round(t / DT) % 10 === 0) ряд.push(Math.abs(off));
+    отходы.set(m, ряд);
+  }
   if (movers.some((m) => m.reason === 'пешеход')) yieldedToWalker++;
   movers.forEach((m, i) => {
     const parked = m.park?.phase === 'стоит';
@@ -730,7 +762,32 @@ const total = Object.values(reasons).reduce((a, b) => a + b, 0);
 for (const [why, n] of Object.entries(reasons).sort((a, b) => b[1] - a[1]))
   line(`  чем заняты: ${why}`, `${((n / total) * 100).toFixed(0)}%`);
 
+/** Разброс характеров за рулём: насколько различаются интервалы до переднего. */
+const интервалы = movers.map((m) => m.характер.интервал);
+const среднийИнтервал = интервалы.reduce((a, b) => a + b, 0) / Math.max(1, интервалы.length);
+const разбросИнтервала = Math.sqrt(интервалы.reduce((a, b) => a + (b - среднийИнтервал) ** 2, 0) / Math.max(1, интервалы.length));
+/**
+ * Отход от середины полосы — МЕДИАНА по каждому водителю, потом среднее
+ * по водителям. Медиана не замечает коротких перестроений (у робота отход
+ * 0 всё время, кроме них), а привычку держаться правее и гуляние — замечает.
+ */
+const медианы = [...отходы.values()].filter((р) => р.length >= 20)
+  .map((р) => [...р].sort((a, b) => a - b)[Math.floor(р.length / 2)]);
+const гуляниеСр = медианы.reduce((a, b) => a + b, 0) / Math.max(1, медианы.length);
+
 const checks: [string, boolean, string][] = [
+  /**
+   * 29.09 Алекс: «все двигаются как роботы, одинаково, как функции».
+   * Робот — это строго по середине полосы, все с одной дистанцией и все
+   * трогаются в один миг. Три числа против трёх примет робота.
+   */
+  ['шаг нулевой длины не рождает не-чисел', нечисла === 0, `${нечисла} машин с не-числом в курсе, месте или скорости`],
+  ['в полосе не по ниточке', гуляниеСр > 0.08,
+    `кузов обычно в ${(гуляниеСр * 100).toFixed(0)} см от середины своей полосы (${медианы.length} водителей)`],
+  ['водители держат разные дистанции', разбросИнтервала > 0.1,
+    `интервал до переднего ${среднийИнтервал.toFixed(2)} ± ${разбросИнтервала.toFixed(2)} с`],
+  ['очередь трогается не разом', тронулисьСЗадержкой.size >= 3,
+    `${тронулисьСЗадержкой.size} водителей трогались со своей задержкой реакции`],
   ['никто не съехал с проезжей части', offRoad === 0, `${offRoad} случаев, худший ${worstOff.toFixed(2)} м`],
   ['превышают на 20–40, а не втрое', tooFast === 0,
     `самое быстрое ${(fastest * 3.6).toFixed(0)} км/ч, это +${worstSpeeding.toFixed(0)} к знаку`],

@@ -23,6 +23,7 @@ import { type Lanes, buildLanes, laneAcross, laneAt, laneCount } from './lanes.t
 import { type Маршрут, дальше } from './путь.ts';
 import { type Signs, buildSigns, priorityOf } from './signs.ts';
 import { ОТСКОК } from './твердь.ts';
+import type { Личность } from './житель.ts';
 
 const G = 9.80665;
 /** С какой боковой перегрузкой ездит обычный водитель. */
@@ -91,6 +92,13 @@ export interface Mover {
    * и из ограничения на дороге. Личная черта, не меняется.
    */
   haste: number;
+  /**
+   * Как водитель ездит: разгон, торможение, дистанция, реакция, место
+   * в полосе (`Характер`). Выводится при рождении машины из личности
+   * хозяина (`характерВодителя`), у ничьей — из торопливости; дальше не
+   * меняется, поэтому устаревать ему нечему.
+   */
+  readonly характер: Характер;
   /**
    * Скорость, которую он считает своей на нынешней дороге, м/с. Не отдельная
    * правда, а следствие: пересчитывается из `haste` и знака каждый раз,
@@ -162,6 +170,17 @@ export interface Mover {
   route: Route | null;
   /** Сколько секунд стоим и уступаем. Против вечного взаимного «после вас». */
   wait: number;
+  /**
+   * Сколько метров проехала за жизнь. По нему, а не по часам, машина гуляет
+   * в полосе и плавает скоростью: стоящая вбок не ползёт и скорость не меняет.
+   */
+  пробег: number;
+  /**
+   * Сколько секунд стоит, уже МОЖЕТ ехать — и ещё не тронулась. Человек
+   * трогается не в тот же миг, как загорелся зелёный или тронулся передний,
+   * а через свою реакцию. Отсюда волна, с которой трогается очередь.
+   */
+  замешкался: number;
   /**
    * Сбитая машина. Пока это есть, она НЕ участник движения, а тело: катится,
    * тормозит о дорогу и стоит. Полосой её больше не ведёт ничто — правила
@@ -559,8 +578,9 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
     // стоп-линией и проедет на красный, ещё не сделав ни одного решения
     if (net.nodes[shape].some((n) => Math.abs(n.s - s) < 26)) continue;
     const spot = along(world, shape, s);
+    let торопливость = 0;
     movers.push({
-      shape, s, dir, speed: 8 + next() * 5, wait: 0, reason: 'едет', accel: 0,
+      shape, s, dir, speed: 8 + next() * 5, wait: 0, пробег: 0, замешкался: 0, reason: 'едет', accel: 0,
       seed: Math.floor(next() * 2147483647),
       lane: 0,
       across: 0,   // ставится ниже, когда полоса выбрана
@@ -569,7 +589,10 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
       park: null,
       route: null,
       knocked: null,
-      haste: next(),
+      // порядок бросков тот же, что был: расстановка голых сцен не сдвигается
+      haste: (торопливость = next()),
+      // ничья машина: хозяина нет — характер из одной торопливости
+      характер: характер(торопливость),
       /**
        * Желаемая скорость СРАЗУ по знаку той дороги, где машина родилась,
        * а не постоянная на всех.
@@ -593,6 +616,120 @@ export function placeTraffic(world: World, net: Network, count: number, seed = 1
     retune(net, last);
   }
   return movers;
+}
+
+/**
+ * ХАРАКТЕР ВОДИТЕЛЯ. 29.09 Алекс: «все двигаются как роботы, одинаково,
+ * как функции; хочется естественной кривости: чуть не в полосе, чуть
+ * тормозит»; и следом: «лучше, если всё будет зависеть не от случайности,
+ * а от каждого человека — характер, возраст, агрессивность, менталитет».
+ * До этого водители различались одним — желаемой скоростью; разгон,
+ * торможение, дистанция, реакция и место в полосе были у всех одни, и
+ * очередь на зелёный трогалась одним куском.
+ *
+ * У машины с хозяином характер выводится из его ЛИЧНОСТИ (`характерВодителя`):
+ * возраст замедляет реакцию, напор укорачивает дистанцию и торможение,
+ * осторожность их удлиняет, законопослушность держит скорость у знака.
+ * У ничьей машины (голые проверочные сцены) хозяина нет — там характер из
+ * торопливости (`характер`). Один и тот же водитель ведёт себя одинаково
+ * в каждом прогоне: проверки повторяемы. Разбросы — в пределах, в которых
+ * ездят люди.
+ */
+export interface Характер {
+  /** Максимальный разгон, м/с² (у всех было 1.8). */
+  readonly разгон: number;
+  /** Удобное торможение, м/с² (было 2.6). */
+  readonly торможение: number;
+  /** Временной интервал до переднего, с (было 1.3). */
+  readonly интервал: number;
+  /**
+   * Зазор в стоящей пробке, м (было 3.2 у всех). Меньше `ДОЕХАЛ`: машина
+   * встаёт перед точкой на свой зазор, и дальше «доехал» — она обязана
+   * оказаться ближе порога.
+   */
+  readonly зазор: number;
+  /** Через сколько секунд трогается, когда уже можно, с. */
+  readonly реакция: number;
+  /** Привычка держаться правее (+) или левее (−) середины полосы, м. */
+  readonly сдвиг: number;
+  /** Насколько гуляет по полосе, м. */
+  readonly размах: number;
+  /** Длина одного «загуливания», м пути. */
+  readonly волна: number;
+  readonly фаза: number;
+  /** Насколько плавает скорость вокруг желаемой, доля. */
+  readonly качка: number;
+  /** С какой боковой перегрузкой проходит повороты, g (было 0.28 у всех). */
+  readonly поворот: number;
+}
+
+/** Доля от 0 до 1, выведенная из торопливости: k-я независимая черта. */
+function доля(h: number, k: number): number {
+  const x = Math.sin((h + 0.137) * (12.9898 + 7.31 * k) + 78.233 * k) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/** Характер ничьей машины: хозяина нет, есть только торопливость. */
+export function характер(haste: number): Характер {
+  const h = haste, u = (k: number): number => доля(h, k);
+  return {
+    разгон: ACCEL * (0.75 + 0.35 * h + 0.3 * u(0)),
+    торможение: BRAKE * (0.8 + 0.3 * h + 0.3 * u(1)),
+    интервал: HEADWAY * (1.35 - 0.6 * h) * (0.85 + 0.3 * u(2)),
+    зазор: Math.min(ДОЕХАЛ - 0.3, GAP0 * (0.75 + 0.5 * u(3))),
+    реакция: 0.35 + 0.9 * u(4) + 0.3 * (1 - h),
+    сдвиг: (u(5) - 0.5) * 0.5,
+    размах: 0.06 + 0.2 * u(6),
+    волна: 120 + 260 * u(7),
+    фаза: u(8) * 2 * Math.PI,
+    качка: 0.02 + 0.05 * u(9),
+    поворот: COMFORT * (0.8 + 0.4 * h),
+  };
+}
+
+/**
+ * Водитель — это человек за рулём. Торопливость (место в потоке по
+ * скорости) — от напора и неуважения к правилам; остальное — от возраста,
+ * бодрости, осторожности, любопытства (глазеющий гуляет по полосе).
+ */
+export function характерВодителя(л: Личность): { haste: number; характер: Характер } {
+  const u = (k: number): number => доля(л.напор * 0.61 + л.осторожность * 0.37 + л.любопытство * 0.19, k);
+  const haste = Math.max(0, Math.min(0.999, 0.55 * л.напор + 0.4 * (1 - л.законопослушность) + 0.05 * u(0)));
+  const старше = Math.max(0, л.возраст - 30);
+  return {
+    haste,
+    характер: {
+      разгон: ACCEL * (0.7 + 0.6 * л.напор) * (л.возраст > 65 ? 0.85 : 1),
+      торможение: BRAKE * (0.8 + 0.6 * л.напор),
+      интервал: HEADWAY * Math.max(0.55, 0.7 + 0.8 * л.осторожность - 0.3 * л.напор),
+      // не больше, чем «доехал до кармана»: иначе встал бы, не доехав, навсегда
+      зазор: Math.min(ДОЕХАЛ - 0.3, GAP0 * (0.7 + 0.6 * л.осторожность)),
+      реакция: 0.4 + 0.012 * старше + 0.4 * (1 - л.бодрость) + 0.2 * u(1),
+      сдвиг: (u(2) - 0.5) * 0.5,
+      размах: 0.05 + 0.12 * л.любопытство + 0.08 * (1 - л.бодрость),
+      волна: 120 + 260 * u(3),
+      фаза: u(4) * 2 * Math.PI,
+      качка: 0.02 + 0.04 * (1 - л.осторожность),
+      поворот: COMFORT * (0.75 + 0.5 * л.напор),
+    },
+  };
+}
+
+/**
+ * Где в своей полосе водитель держит кузов: его привычка плюс медленное
+ * гуляние по пройденному пути. Прижато к свободной части полосы (ширина
+ * полосы минус кузов, с запасом) — поэтому выехать из полосы из-за
+ * гуляния невыразимо, и на узком проезде гулять просто негде.
+ */
+function гуляние(net: Network, m: Mover, х: Характер): number {
+  const side = m.dir > 0 ? net.lanes[m.shape].forward : net.lanes[m.shape].backward;
+  const width = side[Math.min(side.length - 1, Math.max(0, m.lane))]?.width ?? 0;
+  const свобода = Math.max(0, (width - 2 * WIDE) / 2 - 0.15);
+  const t = (2 * Math.PI * m.пробег) / х.волна + х.фаза;
+  const волна = 0.65 * Math.sin(t) + 0.35 * Math.sin(2.3 * t + 1.7);
+  const вправо = Math.max(-свобода, Math.min(свобода, х.сдвиг + х.размах * волна));
+  // `across` мерится вправо по возрастанию s; для едущего навстречу право — наоборот
+  return вправо * m.dir;
 }
 
 /** Свой генератор: одна и та же машина в одном и том же месте решит одинаково. */
@@ -1120,7 +1257,8 @@ export function poseOf(world: World, net: Network, m: Mover): { x: number; z: nu
  */
 function wantAcross(world: World, net: Network, m: Mover): number {
   const lane = laneMid(net, m);
-  if (m.park === null || m.park.phase === 'выезжает') return lane;
+  if (m.park === null) return lane + гуляние(net, m, m.характер);
+  if (m.park.phase === 'выезжает') return lane;
   const bay = net.bays[m.park.bay];
   const gap = (bay.s - m.s) * m.dir;
   /**
@@ -1187,17 +1325,17 @@ interface Hold { gap: number; speed: number; why: string }
  * строгая — поэтому «красный», «машина впереди» и «крутой поворот»
  * не спорят между собой и не требуют ни одного особого случая.
  */
-function follow(v: number, want: number, holds: readonly Hold[]): { accel: number; why: string } {
+function follow(v: number, want: number, holds: readonly Hold[], х: Характер): { accel: number; why: string } {
   const free = 1 - (v / Math.max(0.5, want)) ** 4;
   let worst = 0, why = 'едет';
   for (const h of holds) {
     const gap = Math.max(0.3, h.gap);
     const closing = v - h.speed;
-    const desired = GAP0 + Math.max(0, v * HEADWAY + (v * closing) / (2 * Math.sqrt(ACCEL * BRAKE)));
+    const desired = х.зазор + Math.max(0, v * х.интервал + (v * closing) / (2 * Math.sqrt(х.разгон * х.торможение)));
     const term = (desired / gap) ** 2;
     if (term > worst) { worst = term; why = h.why; }
   }
-  return { accel: ACCEL * (free - worst), why: worst > Math.max(0, free) ? why : 'едет' };
+  return { accel: х.разгон * (free - worst), why: worst > Math.max(0, free) ? why : 'едет' };
 }
 
 /**
@@ -1205,9 +1343,9 @@ function follow(v: number, want: number, holds: readonly Hold[]): { accel: numbe
  * Стоящей нельзя мерить время как «путь делить на скорость»: скорость ноль,
  * любое время выходит бесконечным, и стоящий не трогается никогда.
  */
-function timeToCover(d: number, v: number): number {
+function timeToCover(d: number, v: number, a = ACCEL): number {
   if (d <= 0) return 0;
-  return (-v + Math.sqrt(v * v + 2 * ACCEL * d)) / ACCEL;
+  return (-v + Math.sqrt(v * v + 2 * a * d)) / a;
 }
 
 /**
@@ -1505,7 +1643,7 @@ export function moveTraffic(
     const { light, left } = lightFor(signal, signal.approaches[t.end.approach], time);
     if (light === 'зелёный') return false;
     if (light === 'красный') return true;
-    const canStop = t.stopGap > (m.speed * m.speed) / (2 * BRAKE) + 1;
+    const canStop = t.stopGap > (m.speed * m.speed) / (2 * m.характер.торможение) + 1;
     const clears = m.speed > 1 && (t.centreGap + CLEAR) / m.speed < left;
     return canStop && !clears;
   });
@@ -1611,6 +1749,7 @@ export function moveTraffic(
     // сбитая машина правилам не подчиняется: она уже не участник, а тело
     if (m.knocked !== null) { rollKnocked(world, net, m, dt, переехал); return; }
     const total = net.length[m.shape];
+    const х = m.характер;
     const holds: Hold[] = [];
 
     /**
@@ -1636,7 +1775,7 @@ export function moveTraffic(
     for (const look of entered[index] > 0 ? [] : [8, 18, 32]) {
       const at = m.s + m.dir * look;
       if (at < 0 || at > total) continue;
-      const limit = Math.sqrt(COMFORT * G * radius(world, m.shape, at));
+      const limit = Math.sqrt(х.поворот * G * radius(world, m.shape, at));
       if (limit < m.cruise) holds.push({ gap: look, speed: limit, why: 'поворот' });
     }
 
@@ -1938,7 +2077,7 @@ export function moveTraffic(
 
         // хватает ли промежутка: успею ли пройти точку до того, как он в неё войдёт
         const foeIn = o.speed < 0.2 ? Infinity : (foeToPoint - HALF) / o.speed;
-        const clear = timeToCover(toPoint + HALF, m.speed);
+        const clear = timeToCover(toPoint + HALF, m.speed, х.разгон);
         if (foeIn > clear + CRITICAL) continue;                // успеваю
 
         /**
@@ -2111,11 +2250,24 @@ export function moveTraffic(
       }
     }
 
-    const drive = follow(m.speed, m.cruise, holds);
+    // скорость плавает вокруг желаемой — медленно, по пройденному пути
+    const плавает = 1 + х.качка * Math.sin((2 * Math.PI * m.пробег) / (0.7 * х.волна) + 1.3 * х.фаза);
+    const drive = follow(m.speed, m.cruise * плавает, holds, х);
     m.reason = drive.why;
-    m.accel = Math.max(-6, Math.min(ACCEL, drive.accel));
-    m.speed = Math.max(0, m.speed + Math.max(-6, Math.min(ACCEL, drive.accel)) * dt);
+    let accel = Math.max(-6, Math.min(х.разгон, drive.accel));
+    /**
+     * РЕАКЦИЯ. Стоит и уже можно ехать — трогается не сразу, а через свою
+     * реакцию. Стоит и держат — счёт сначала: отсчёт начинается с мига,
+     * когда отпустили. Так очередь на зелёный трогается волной.
+     */
+    if (m.speed < 0.3) {
+      if (accel > 0) { m.замешкался += dt; if (m.замешкался < х.реакция) { accel = 0; m.reason = 'трогается'; } }
+      else m.замешкался = 0;
+    } else m.замешкался = 0;
+    m.accel = accel;
+    m.speed = Math.max(0, m.speed + accel * dt);
     m.s += m.speed * m.dir * dt;
+    m.пробег += m.speed * dt;
 
     /**
      * ── ПРОЕЗД ПЕРЕКРЁСТКА. Раньше машина прыгала через узел: пропадала
@@ -2151,7 +2303,16 @@ export function moveTraffic(
      */
     const tail = net.length[m.shape];
     const stopsHere = net.ends[m.shape][m.dir > 0 ? 1 : 0] === null;
-    if (stopsHere && (m.dir > 0 ? m.s > tail - 6 : m.s < 6)) {
+    /**
+     * Где разворачиваться — ТЕМ ЖЕ числом, на котором машина встанет перед
+     * концом тупика: точка остановки (2 м до конца) плюс свой зазор, и полтора
+     * метра запаса. До 29.09 порог был общим — 6 м, а зазор у всех 3.2: машина
+     * вставала в 5.2 м и разворачивалась. С личным зазором осторожный встал
+     * в 6.2 м и стоял там 2248 секунд (`tools/life.ts`). Два числа об одном
+     * и том же разошлись — теперь число одно.
+     */
+    const доРазворота = 2 + m.характер.зазор + 1.5;
+    if (stopsHere && (m.dir > 0 ? m.s > tail - доРазворота : m.s < доРазворота)) {
       const back = -m.dir as 1 | -1;
       /**
        * Занято ли место, куда мы встанем. Смотрим ТУ ПОЛОСУ, в которой
@@ -2229,10 +2390,16 @@ export function moveTraffic(
       const обратно = шагК(назад);
       шаг = (обратно !== 0 && прочь(обратно)) ? обратно : 0;
     }
-    if (шаг !== 0 && прочь(шаг)) m.across += шаг;
+    const вбок = шаг !== 0 && прочь(шаг) ? шаг : 0;
+    m.across += вбок;
 
-    // курс догоняет дорогу, а не прыгает вместе с ней
-    const want = poseOf(world, net, m).yaw;
+    // курс догоняет дорогу, а не прыгает вместе с ней; уходя вбок, нос
+    // смотрит туда, куда кузов едет на самом деле
+    // шаг бывает нулевым (первый кадр страницы): 0 / 0 давало не-число в курсе,
+    // и одна такая машина делала серым весь кадр пешком (подстройка яркости
+    // зрения усредняет кадр) — снято 29.09
+    const увод = m.speed > 1 && m.route === null && dt > 0 ? Math.atan2((вбок / dt) * m.dir, m.speed) : 0;
+    const want = poseOf(world, net, m).yaw + увод;
     const turn = Math.atan2(Math.sin(want - m.yaw), Math.cos(want - m.yaw));
     m.yaw += Math.max(-2.5 * dt, Math.min(2.5 * dt, turn));
   });

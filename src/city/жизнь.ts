@@ -17,13 +17,14 @@
 import type { World } from '../world/world.ts';
 import {
   CRUISE, GAP0, HEADWAY, LENGTH, type Mover, type Network, ОКРАСКА,
-  along, locate, poseOf, retune, touching,
+  along, locate, poseOf, retune, touching, характерВодителя,
 } from './traffic.ts';
 import { laneAcross, laneCount } from './lanes.ts';
 import type { Посёлок } from './plan.ts';
 import { гдеПроём, домНаУчастке } from './дом.ts';
 import {
-  type Дорога, type Житель, type Занятие, type Зачем, type Расселение, СУТКИ, где, гдеМашина, кто, провожатыйКвартиры, чем,
+  type Дорога, type Житель, type Занятие, type Зачем, type Личность, type Расселение, СУТКИ, где, гдеМашина, кто,
+  личность, провожатыйКвартиры, чем,
 } from './житель.ts';
 import type { Вещь } from './двор.ts';
 import { КОЖА, ОДЕЖДА, ШТАНЫ, type Walker, walkerPose, заРуку } from './walkers.ts';
@@ -336,7 +337,7 @@ export function машиныЖителей(
   const встать = (номер: number, доЧаса: number, bay: number): boolean => {
     net.bays[bay].taken = машины.length;
     const dir = (Math.sign(net.bays[bay].across) || 1) as 1 | -1;
-    const м2 = новая(world, net, номер, net.bays[bay].shape, net.bays[bay].s, dir, доЧаса, null, 'любой');
+    const м2 = новая(world, net, номер, личность(р, номер), net.bays[bay].shape, net.bays[bay].s, dir, доЧаса, null, 'любой');
     м2.speed = 0;
     м2.across = net.bays[bay].across;
     м2.park = { bay, phase: 'стоит', доЧаса };
@@ -395,7 +396,7 @@ export function машиныЖителей(
       const предел = маршрут.дороги.length === 1 ? маршрут.цель.s : откуда.s + dir * 60;
       const s = Math.max(12, Math.min(total - 12,
         откуда.s + (предел - откуда.s) * Math.min(0.9, м.доля)));
-      const м3 = новая(world, net, номер, откуда.shape, s, dir, отНачала(доКакогоСтоит(р, ж, д)), маршрут,
+      const м3 = новая(world, net, номер, личность(р, номер), откуда.shape, s, dir, отНачала(доКакогоСтоит(р, ж, д)), маршрут,
         стоянкаПоездки(world, net, р, ж, д));
       /**
        * Машину нельзя поставить в ту же точку, где уже стоит другая.
@@ -588,24 +589,25 @@ export const окраскаМашины = (хозяин: number): (typeof ОКР
  * записать негде.
  */
 function новая(
-  world: World, net: Network, хозяин: number,
+  world: World, net: Network, хозяин: number, л: Личность,
   shape: number, s: number, dir: 1 | -1, доЧаса: number | null, маршрут: Маршрут | null,
   стоянка: Mover['стоянка'],
 ): Mover {
   const spot = along(world, shape, s);
   const сид = зерноМашины(хозяин);
-  const haste = ((сид >>> 8) % 1000) / 1000;
+  // как водит — из того, кто за рулём (`характерВодителя`), а не из зерна машины
+  const { haste, характер } = характерВодителя(л);
   const lane = Math.max(0, laneCount(net.lanes, shape, dir) - 1) === 0
     ? 0 : (сид >>> 3) % laneCount(net.lanes, shape, dir);
   const m: Mover = {
     shape, s, dir,
-    speed: 9, wait: 0, reason: 'едет', accel: 0,
+    speed: 9, wait: 0, пробег: 0, замешкался: 0, reason: 'едет', accel: 0,
     seed: сид,
     lane,
     across: laneAcross(net.lanes, shape, dir, lane),
     хозяин, доЧаса, маршрут, стоянка,
     park: null, route: null, knocked: null,
-    haste,
+    haste, характер,
     cruise: CRUISE,
     yaw: Math.atan2(spot.fz * dir, spot.fx * dir),
     colour: окраскаМашины(хозяин).цвет,
@@ -864,7 +866,7 @@ function выйти(
   if (total < 20) return true;
   for (const сдвиг of [0, 30, -30, 60, -60]) {
     const s0 = Math.max(8, Math.min(total - 8, н.от.s + сдвиг));
-    const м = новая(world, net, номер, н.от.shape, s0, dir, доЧаса, н.маршрут, стоянкаПоездки(world, net, р, ж, д));
+    const м = новая(world, net, номер, личность(р, номер), н.от.shape, s0, dir, доЧаса, н.маршрут, стоянкаПоездки(world, net, р, ж, д));
     м.speed = 0;
     if (нельзяСюда(world, net, с.машины, м, false)) continue;
     с.машины.push(м);
